@@ -1,0 +1,2 @@
+"""Vacancy short normalizer placeholder."""
+

@@ -1,0 +1,2 @@
+"""Sync dictionary command placeholder."""
+

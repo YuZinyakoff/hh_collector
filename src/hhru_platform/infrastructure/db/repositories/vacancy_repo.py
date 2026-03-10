@@ -1,0 +1,2 @@
+"""Vacancy repository placeholder."""
+

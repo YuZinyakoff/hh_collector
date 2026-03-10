@@ -1,0 +1,2 @@
+"""Health command placeholder."""
+

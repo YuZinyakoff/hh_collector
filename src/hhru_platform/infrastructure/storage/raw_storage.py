@@ -1,0 +1,2 @@
+"""Raw storage placeholder."""
+

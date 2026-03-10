@@ -1,0 +1,2 @@
+"""hh API endpoint placeholders."""
+

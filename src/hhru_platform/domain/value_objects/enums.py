@@ -1,0 +1,2 @@
+"""Enum value objects placeholder."""
+

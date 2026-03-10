@@ -1,0 +1,2 @@
+"""Vacancy detail normalizer placeholder."""
+

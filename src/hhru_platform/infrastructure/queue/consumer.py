@@ -1,0 +1,2 @@
+"""Queue consumer placeholder."""
+

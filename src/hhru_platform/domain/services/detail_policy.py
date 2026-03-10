@@ -1,0 +1,2 @@
+"""Detail policy placeholder."""
+

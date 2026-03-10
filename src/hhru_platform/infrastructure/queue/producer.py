@@ -1,0 +1,2 @@
+"""Queue producer placeholder."""
+

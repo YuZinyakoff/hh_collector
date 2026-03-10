@@ -1,0 +1,2 @@
+"""Hash value objects placeholder."""
+

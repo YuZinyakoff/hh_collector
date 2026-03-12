@@ -20,6 +20,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "create-run" in captured.out
     assert "plan-run" in captured.out
     assert "sync-dictionaries" in captured.out
+    assert "process-list-page" in captured.out
 
 
 def test_create_run_cli_prints_created_run(monkeypatch, capsys) -> None:
@@ -279,3 +280,135 @@ def test_sync_dictionaries_cli_prints_sync_summary(monkeypatch, capsys) -> None:
     assert "status=succeeded" in captured.out
     assert "created=2" in captured.out
     assert "updated=1" in captured.out
+
+
+def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) -> None:
+    partition_id = uuid4()
+
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    class FakeCrawlPartitionRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeApiRequestLogRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeRawApiPayloadRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeVacancyRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeVacancySeenEventRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeVacancyCurrentStateRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeHHApiClient:
+        pass
+
+    def fake_process_list_page(
+        command,
+        crawl_partition_repository,
+        api_client,
+        api_request_log_repository,
+        raw_api_payload_repository,
+        vacancy_repository,
+        vacancy_seen_event_repository,
+        vacancy_current_state_repository,
+    ):
+        assert command.partition_id == partition_id
+        assert command.page == 0
+        assert crawl_partition_repository.__class__.__name__ == "FakeCrawlPartitionRepository"
+        assert api_client.__class__.__name__ == "FakeHHApiClient"
+        assert api_request_log_repository.__class__.__name__ == "FakeApiRequestLogRepository"
+        assert raw_api_payload_repository.__class__.__name__ == "FakeRawApiPayloadRepository"
+        assert vacancy_repository.__class__.__name__ == "FakeVacancyRepository"
+        assert (
+            vacancy_seen_event_repository.__class__.__name__
+            == "FakeVacancySeenEventRepository"
+        )
+        assert (
+            vacancy_current_state_repository.__class__.__name__
+            == "FakeVacancyCurrentStateRepository"
+        )
+        return SimpleNamespace(
+            partition_id=partition_id,
+            partition_status="done",
+            page=0,
+            pages_total_expected=12,
+            vacancies_processed=2,
+            vacancies_created=1,
+            seen_events_created=2,
+            request_log_id=41,
+            raw_payload_id=42,
+            error_message=None,
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyCrawlPartitionRepository",
+        FakeCrawlPartitionRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyApiRequestLogRepository",
+        FakeApiRequestLogRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyRawApiPayloadRepository",
+        FakeRawApiPayloadRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyVacancyRepository",
+        FakeVacancyRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyVacancySeenEventRepository",
+        FakeVacancySeenEventRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyVacancyCurrentStateRepository",
+        FakeVacancyCurrentStateRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.HHApiClient",
+        FakeHHApiClient,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.process_list_page",
+        fake_process_list_page,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "process-list-page",
+            "--partition-id",
+            str(partition_id),
+            "--page",
+            "0",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "processed list page" in captured.out
+    assert f"partition_id={partition_id}" in captured.out
+    assert "status=done" in captured.out
+    assert "vacancies_processed=2" in captured.out
+    assert "vacancies_created=1" in captured.out
+    assert "seen_events_created=2" in captured.out

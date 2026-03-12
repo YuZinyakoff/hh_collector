@@ -18,6 +18,13 @@ from hhru_platform.infrastructure.db.repositories.professional_role_repo import 
 from hhru_platform.infrastructure.db.repositories.raw_payload_repo import (
     SqlAlchemyRawApiPayloadRepository,
 )
+from hhru_platform.infrastructure.db.repositories.vacancy_current_state_repo import (
+    SqlAlchemyVacancyCurrentStateRepository,
+)
+from hhru_platform.infrastructure.db.repositories.vacancy_repo import SqlAlchemyVacancyRepository
+from hhru_platform.infrastructure.db.repositories.vacancy_seen_event_repo import (
+    SqlAlchemyVacancySeenEventRepository,
+)
 
 __all__ = [
     "SqlAlchemyApiRequestLogRepository",
@@ -28,4 +35,7 @@ __all__ = [
     "SqlAlchemyDictionarySyncRunRepository",
     "SqlAlchemyProfessionalRoleRepository",
     "SqlAlchemyRawApiPayloadRepository",
+    "SqlAlchemyVacancyCurrentStateRepository",
+    "SqlAlchemyVacancyRepository",
+    "SqlAlchemyVacancySeenEventRepository",
 ]

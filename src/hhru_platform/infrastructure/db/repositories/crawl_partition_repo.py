@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -43,6 +44,58 @@ class SqlAlchemyCrawlPartitionRepository:
         )
         return [self._to_entity(model) for model in self._session.scalars(statement)]
 
+    def get(self, partition_id: UUID) -> CrawlPartition | None:
+        crawl_partition = self._session.get(CrawlPartitionModel, partition_id)
+        if crawl_partition is None:
+            return None
+
+        return self._to_entity(crawl_partition)
+
+    def mark_running(self, partition_id: UUID) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        if crawl_partition.started_at is None:
+            crawl_partition.started_at = datetime.now(UTC)
+        crawl_partition.status = "running"
+        crawl_partition.last_error_message = None
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
+    def record_page_processed(
+        self,
+        *,
+        partition_id: UUID,
+        pages_total_expected: int | None,
+        items_seen_delta: int,
+        status: str,
+    ) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        if crawl_partition.started_at is None:
+            crawl_partition.started_at = datetime.now(UTC)
+        crawl_partition.pages_total_expected = pages_total_expected
+        crawl_partition.pages_processed += 1
+        crawl_partition.items_seen += items_seen_delta
+        crawl_partition.status = status
+        crawl_partition.finished_at = datetime.now(UTC)
+        crawl_partition.last_error_message = None
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
+    def mark_failed(self, *, partition_id: UUID, error_message: str) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        if crawl_partition.started_at is None:
+            crawl_partition.started_at = datetime.now(UTC)
+        crawl_partition.status = "failed"
+        crawl_partition.finished_at = datetime.now(UTC)
+        crawl_partition.last_error_message = error_message
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
     @staticmethod
     def _to_entity(model: CrawlPartitionModel) -> CrawlPartition:
         return CrawlPartition(
@@ -60,3 +113,9 @@ class SqlAlchemyCrawlPartitionRepository:
             last_error_message=model.last_error_message,
             created_at=model.created_at,
         )
+
+    def _get_model(self, partition_id: UUID) -> CrawlPartitionModel:
+        crawl_partition = self._session.get(CrawlPartitionModel, partition_id)
+        if crawl_partition is None:
+            raise LookupError(f"crawl_partition not found: {partition_id}")
+        return crawl_partition

@@ -7,6 +7,9 @@ class CrawlRunStatus(StrEnum):
 
 class CrawlPartitionStatus(StrEnum):
     PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
 
 
 class DictionarySyncStatus(StrEnum):

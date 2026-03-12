@@ -19,6 +19,8 @@ DICTIONARY_ENDPOINTS: dict[str, DictionaryEndpointDefinition] = {
     ),
 }
 
+VACANCY_SEARCH_ENDPOINT = "/vacancies"
+
 
 def get_dictionary_endpoint(dictionary_name: str) -> DictionaryEndpointDefinition:
     try:

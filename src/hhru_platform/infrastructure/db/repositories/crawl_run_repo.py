@@ -30,6 +30,17 @@ class SqlAlchemyCrawlRunRepository:
 
         return self._to_entity(crawl_run)
 
+    def set_partitions_total(self, run_id: UUID, partitions_total: int) -> CrawlRun:
+        crawl_run = self._session.get(CrawlRunModel, run_id)
+        if crawl_run is None:
+            raise LookupError(f"crawl_run not found: {run_id}")
+
+        crawl_run.partitions_total = partitions_total
+        self._session.add(crawl_run)
+        self._session.flush()
+        self._session.refresh(crawl_run)
+        return self._to_entity(crawl_run)
+
     @staticmethod
     def _to_entity(model: CrawlRunModel) -> CrawlRun:
         config_snapshot_json = model.config_snapshot_json or {}

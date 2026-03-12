@@ -34,11 +34,9 @@ CREATE TABLE crawl_partition (
     started_at TIMESTAMPTZ NULL,
     finished_at TIMESTAMPTZ NULL,
     last_error_message TEXT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_crawl_partition_run_key UNIQUE (crawl_run_id, partition_key)
 );
-
-CREATE UNIQUE INDEX uq_crawl_partition_run_key
-    ON crawl_partition(crawl_run_id, partition_key);
 
 CREATE INDEX idx_crawl_partition_run_id
     ON crawl_partition(crawl_run_id);
@@ -105,14 +103,15 @@ CREATE INDEX idx_raw_api_payload_received_at
 
 CREATE TABLE area (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    hh_area_id TEXT NOT NULL UNIQUE,
+    hh_area_id TEXT NOT NULL,
     name TEXT NOT NULL,
     parent_area_id UUID NULL REFERENCES area(id) ON DELETE SET NULL,
     level INT NULL,
     path_text TEXT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_area_hh_area_id UNIQUE (hh_area_id)
 );
 
 CREATE INDEX idx_area_parent_area_id
@@ -120,12 +119,13 @@ CREATE INDEX idx_area_parent_area_id
 
 CREATE TABLE professional_role (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    hh_professional_role_id TEXT NOT NULL UNIQUE,
+    hh_professional_role_id TEXT NOT NULL,
     name TEXT NOT NULL,
     category_name TEXT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_professional_role_hh_professional_role_id UNIQUE (hh_professional_role_id)
 );
 
 CREATE TABLE dictionary_sync_run (
@@ -151,7 +151,7 @@ CREATE INDEX idx_dictionary_sync_run_started_at
 
 CREATE TABLE employer (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    hh_employer_id TEXT NOT NULL UNIQUE,
+    hh_employer_id TEXT NOT NULL,
     name TEXT NOT NULL,
     alternate_url TEXT NULL,
     site_url TEXT NULL,
@@ -160,7 +160,8 @@ CREATE TABLE employer (
     raw_first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     raw_last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_employer_hh_employer_id UNIQUE (hh_employer_id)
 );
 
 CREATE INDEX idx_employer_name
@@ -171,7 +172,7 @@ CREATE INDEX idx_employer_area_id
 
 CREATE TABLE vacancy (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    hh_vacancy_id TEXT NOT NULL UNIQUE,
+    hh_vacancy_id TEXT NOT NULL,
     employer_id UUID NULL REFERENCES employer(id) ON DELETE SET NULL,
     area_id UUID NULL REFERENCES area(id) ON DELETE SET NULL,
     name_current TEXT NOT NULL,
@@ -184,7 +185,8 @@ CREATE TABLE vacancy (
     experience_code TEXT NULL,
     source_type TEXT NOT NULL DEFAULT 'hh_api',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_vacancy_hh_vacancy_id UNIQUE (hh_vacancy_id)
 );
 
 CREATE INDEX idx_vacancy_employer_id
@@ -217,7 +219,8 @@ CREATE TABLE vacancy_seen_event (
     seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     list_position INT NULL,
     short_hash TEXT NOT NULL,
-    short_payload_ref_id BIGINT NULL REFERENCES raw_api_payload(id) ON DELETE SET NULL
+    short_payload_ref_id BIGINT NULL REFERENCES raw_api_payload(id) ON DELETE SET NULL,
+    CONSTRAINT uq_vse_seen UNIQUE (vacancy_id, crawl_partition_id, seen_at)
 );
 
 CREATE INDEX idx_vacancy_seen_event_vacancy_id

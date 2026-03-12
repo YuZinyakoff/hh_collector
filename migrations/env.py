@@ -6,8 +6,8 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from hhru_platform.config.settings import get_settings
-from hhru_platform.infrastructure.db.base import Base
 from hhru_platform.infrastructure.db import models  # noqa: F401
+from hhru_platform.infrastructure.db.base import Base
 
 config = context.config
 

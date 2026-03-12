@@ -49,13 +49,13 @@
 - `id` UUID PK
 - `run_type` text
 - `status` text
-- `started_at` timestamptz
+- `triggered_by` text default `'system'`
+- `config_snapshot_json` jsonb default `'{}'::jsonb`
+- `partitions_total` int default 0
+- `partitions_done` int default 0
+- `partitions_failed` int default 0
+- `started_at` timestamptz default `now()`
 - `finished_at` timestamptz null
-- `triggered_by` text
-- `config_snapshot_json` jsonb
-- `partitions_total` int
-- `partitions_done` int
-- `partitions_failed` int
 - `notes` text null
 
 Индексы:
@@ -80,6 +80,7 @@
 - `started_at` timestamptz null
 - `finished_at` timestamptz null
 - `last_error_message` text null
+- `created_at` timestamptz default `now()`
 
 Ограничения:
 - unique (`crawl_run_id`, `partition_key`)
@@ -101,13 +102,13 @@
 - `crawl_partition_id` UUID null FK
 - `request_type` text
 - `endpoint` text
-- `method` text
-- `params_json` jsonb
+- `method` text default `'GET'`
+- `params_json` jsonb default `'{}'::jsonb`
 - `request_headers_json` jsonb null
 - `status_code` int
 - `latency_ms` int
-- `attempt` int
-- `requested_at` timestamptz
+- `attempt` int default 1
+- `requested_at` timestamptz default `now()`
 - `response_received_at` timestamptz null
 - `error_type` text null
 - `error_message` text null
@@ -130,7 +131,7 @@
 - `entity_hh_id` text null
 - `payload_json` jsonb
 - `payload_hash` text
-- `received_at` timestamptz
+- `received_at` timestamptz default `now()`
 
 Индексы:
 - `idx_raw_api_payload_request_log_id`
@@ -163,6 +164,7 @@
 Индексы:
 - `uq_employer_hh_employer_id`
 - `idx_employer_name`
+- `idx_employer_area_id`
 
 ---
 
@@ -179,6 +181,10 @@
 - `is_active` boolean default true
 - `created_at` timestamptz
 - `updated_at` timestamptz
+
+Индексы:
+- `uq_area_hh_area_id`
+- `idx_area_parent_area_id`
 
 ---
 
@@ -218,6 +224,9 @@
 - `professional_role_id` UUID FK -> professional_role.id
 - PK (`vacancy_id`, `professional_role_id`)
 
+Индексы:
+- `idx_vacancy_prof_role_role_id`
+
 ---
 
 ## 6.5. `professional_role`
@@ -232,6 +241,9 @@
 - `created_at` timestamptz
 - `updated_at` timestamptz
 
+Индексы:
+- `uq_professional_role_hh_professional_role_id`
+
 ---
 
 ## 7. History / State Tracking
@@ -244,7 +256,7 @@
 - `vacancy_id` UUID FK -> vacancy.id
 - `crawl_run_id` UUID FK -> crawl_run.id
 - `crawl_partition_id` UUID FK -> crawl_partition.id
-- `seen_at` timestamptz
+- `seen_at` timestamptz default `now()`
 - `list_position` int null
 - `short_hash` text
 - `short_payload_ref_id` bigint null FK -> raw_api_payload.id
@@ -255,6 +267,7 @@
 Индексы:
 - `idx_vacancy_seen_event_vacancy_id`
 - `idx_vacancy_seen_event_run_id`
+- `idx_vacancy_seen_event_partition_id`
 - `idx_vacancy_seen_event_seen_at`
 
 ---
@@ -266,15 +279,15 @@
 - `vacancy_id` UUID PK FK -> vacancy.id
 - `first_seen_at` timestamptz
 - `last_seen_at` timestamptz
-- `seen_count` int
-- `consecutive_missing_runs` int
-- `is_probably_inactive` boolean
+- `seen_count` int default 1
+- `consecutive_missing_runs` int default 0
+- `is_probably_inactive` boolean default false
 - `last_seen_run_id` UUID null FK -> crawl_run.id
 - `last_short_hash` text null
 - `last_detail_hash` text null
 - `last_detail_fetched_at` timestamptz null
-- `detail_fetch_status` text
-- `updated_at` timestamptz
+- `detail_fetch_status` text default `'not_requested'`
+- `updated_at` timestamptz default `now()`
 
 Индексы:
 - `idx_vacancy_current_state_last_seen_at`
@@ -290,7 +303,7 @@
 - `id` bigserial PK
 - `vacancy_id` UUID FK -> vacancy.id
 - `snapshot_type` text
-- `captured_at` timestamptz
+- `captured_at` timestamptz default `now()`
 - `crawl_run_id` UUID null FK -> crawl_run.id
 - `short_hash` text null
 - `detail_hash` text null
@@ -317,9 +330,9 @@
 - `vacancy_id` UUID FK -> vacancy.id
 - `crawl_run_id` UUID null FK -> crawl_run.id
 - `reason` text
-- `attempt` int
+- `attempt` int default 1
 - `status` text
-- `requested_at` timestamptz
+- `requested_at` timestamptz default `now()`
 - `finished_at` timestamptz null
 - `error_message` text null
 
@@ -338,12 +351,16 @@
 Поля:
 - `id` UUID PK
 - `dictionary_name` text
-- `started_at` timestamptz
-- `finished_at` timestamptz null
 - `status` text
 - `etag` text null
 - `source_status_code` int null
 - `notes` text null
+- `started_at` timestamptz default `now()`
+- `finished_at` timestamptz null
+
+Индексы:
+- `idx_dictionary_sync_run_name`
+- `idx_dictionary_sync_run_started_at`
 
 ---
 
@@ -408,12 +425,18 @@
 - `employer.hh_employer_id`
 - `area.hh_area_id`
 - `professional_role.hh_professional_role_id`
-- `vacancy_seen_event(vacancy_id, seen_at desc)`
+- `area(parent_area_id)`
+- `employer(area_id)`
+- `vacancy_seen_event(vacancy_id)`
 - `vacancy_seen_event(crawl_run_id)`
-- `vacancy_snapshot(vacancy_id, captured_at desc)`
-- `vacancy_current_state(last_seen_at)`
-- `crawl_partition(crawl_run_id, status)`
-- `api_request_log(requested_at, status_code)`
+- `vacancy_seen_event(crawl_partition_id)`
+- `vacancy_snapshot(vacancy_id)`
+- `vacancy_current_state(last_seen_at desc)`
+- `vacancy_professional_role(professional_role_id)`
+- `crawl_partition(crawl_run_id)`
+- `crawl_partition(status)`
+- `api_request_log(requested_at desc)`
+- `api_request_log(status_code)`
 
 ---
 

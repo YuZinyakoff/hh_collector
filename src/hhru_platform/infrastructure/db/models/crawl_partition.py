@@ -1,8 +1,10 @@
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint, func, text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hhru_platform.infrastructure.db.base import Base
@@ -19,17 +21,42 @@ class CrawlPartition(Base):
 
     id = uuid_pk_column()
     crawl_run_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("crawl_run.id"),
+        PGUUID(as_uuid=True),
+        ForeignKey("crawl_run.id", ondelete="CASCADE"),
         nullable=False,
     )
     partition_key: Mapped[str] = mapped_column(Text, nullable=False)
-    params_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    params_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False)
     pages_total_expected: Mapped[int | None] = mapped_column(Integer)
-    pages_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    items_seen: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pages_processed: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    items_seen: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    retry_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

@@ -20,6 +20,7 @@ DICTIONARY_ENDPOINTS: dict[str, DictionaryEndpointDefinition] = {
 }
 
 VACANCY_SEARCH_ENDPOINT = "/vacancies"
+VACANCY_DETAIL_ENDPOINT_TEMPLATE = "/vacancies/{vacancy_id}"
 
 
 def get_dictionary_endpoint(dictionary_name: str) -> DictionaryEndpointDefinition:
@@ -30,3 +31,7 @@ def get_dictionary_endpoint(dictionary_name: str) -> DictionaryEndpointDefinitio
         raise ValueError(
             f"Unsupported dictionary_name {dictionary_name!r}. Expected one of: {supported}."
         ) from error
+
+
+def get_vacancy_detail_endpoint(hh_vacancy_id: str) -> str:
+    return VACANCY_DETAIL_ENDPOINT_TEMPLATE.format(vacancy_id=hh_vacancy_id)

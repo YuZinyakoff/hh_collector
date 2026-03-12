@@ -71,3 +71,28 @@ class HHVacancySearchResponse(TypedDict, total=False):
     page: int
     pages: int
     per_page: int
+
+
+class HHKeySkillPayload(TypedDict, total=False):
+    name: str
+
+
+class HHVacancyDetailPayload(TypedDict, total=False):
+    id: str
+    name: str
+    description: str | None
+    branded_description: str | None
+    alternate_url: str | None
+    archived: bool
+    area: HHAreaReferencePayload | None
+    created_at: str
+    initial_created_at: str
+    employer: HHEmployerShortPayload | None
+    employment: HHLookupPayload | None
+    experience: HHLookupPayload | None
+    key_skills: list[HHKeySkillPayload]
+    professional_roles: list[HHLookupPayload]
+    published_at: str
+    salary: dict[str, object] | None
+    salary_range: dict[str, object] | None
+    schedule: HHLookupPayload | None

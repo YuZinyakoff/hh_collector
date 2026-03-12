@@ -1,6 +1,7 @@
 import argparse
 
 from hhru_platform.config.logging import configure_logging
+from hhru_platform.interfaces.cli.commands.detail import register_detail_commands
 from hhru_platform.interfaces.cli.commands.dictionary import register_dictionary_commands
 from hhru_platform.interfaces.cli.commands.health import register_health_commands
 from hhru_platform.interfaces.cli.commands.list_page import register_list_page_commands
@@ -16,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_partition_commands(subparsers)
     register_dictionary_commands(subparsers)
     register_list_page_commands(subparsers)
+    register_detail_commands(subparsers)
     return parser
 
 

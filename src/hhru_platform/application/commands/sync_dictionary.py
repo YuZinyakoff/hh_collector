@@ -74,6 +74,7 @@ class ApiRequestLogRepository(Protocol):
         *,
         crawl_run_id: UUID | None,
         crawl_partition_id: UUID | None,
+        requested_at: datetime,
         request_type: str,
         endpoint: str,
         method: str,
@@ -93,6 +94,7 @@ class RawApiPayloadRepository(Protocol):
         self,
         *,
         api_request_log_id: int,
+        received_at: datetime,
         endpoint_type: str,
         entity_hh_id: str | None,
         payload_json: object,
@@ -122,6 +124,7 @@ def sync_dictionary(
     request_log_id = api_request_log_repository.add(
         crawl_run_id=None,
         crawl_partition_id=None,
+        requested_at=response.requested_at,
         request_type="dictionary_sync",
         endpoint=response.endpoint,
         method=response.method,
@@ -138,6 +141,7 @@ def sync_dictionary(
     if _payload_is_present(response.payload_json):
         raw_payload_id = raw_api_payload_repository.add(
             api_request_log_id=request_log_id,
+            received_at=response.response_received_at or response.requested_at,
             endpoint_type=f"dictionary.{command.dictionary_name}",
             entity_hh_id=None,
             payload_json=response.payload_json,

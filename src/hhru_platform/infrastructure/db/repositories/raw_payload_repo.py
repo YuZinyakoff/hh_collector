@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ class SqlAlchemyRawApiPayloadRepository:
         self,
         *,
         api_request_log_id: int,
+        received_at: datetime,
         endpoint_type: str,
         entity_hh_id: str | None,
         payload_json: Any,
@@ -27,6 +29,7 @@ class SqlAlchemyRawApiPayloadRepository:
             entity_hh_id=entity_hh_id,
             payload_json=payload_json,
             payload_hash=_build_payload_hash(payload_json),
+            received_at=received_at or datetime.now(UTC),
         )
         self._session.add(payload)
         self._session.flush()

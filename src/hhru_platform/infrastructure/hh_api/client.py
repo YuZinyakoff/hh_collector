@@ -9,10 +9,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from hhru_platform.application.dto import DictionaryFetchResponse, VacancySearchResponse
+from hhru_platform.application.dto import (
+    DictionaryFetchResponse,
+    VacancyDetailResponse,
+    VacancySearchResponse,
+)
 from hhru_platform.infrastructure.hh_api.endpoints import (
     VACANCY_SEARCH_ENDPOINT,
     get_dictionary_endpoint,
+    get_vacancy_detail_endpoint,
 )
 
 
@@ -66,6 +71,24 @@ class HHApiClient:
         response = self._perform_get(VACANCY_SEARCH_ENDPOINT, params_json=params_json)
         return VacancySearchResponse(
             endpoint=VACANCY_SEARCH_ENDPOINT,
+            method=response.method,
+            params_json=response.params_json,
+            request_headers_json=response.request_headers_json,
+            status_code=response.status_code,
+            headers=response.headers,
+            latency_ms=response.latency_ms,
+            requested_at=response.requested_at,
+            response_received_at=response.response_received_at,
+            payload_json=response.payload_json,
+            error_type=response.error_type,
+            error_message=response.error_message,
+        )
+
+    def fetch_vacancy_detail(self, hh_vacancy_id: str) -> VacancyDetailResponse:
+        endpoint = get_vacancy_detail_endpoint(hh_vacancy_id)
+        response = self._perform_get(endpoint, params_json={})
+        return VacancyDetailResponse(
+            endpoint=endpoint,
             method=response.method,
             params_json=response.params_json,
             request_headers_json=response.request_headers_json,

@@ -96,6 +96,7 @@ class ApiRequestLogRepository(Protocol):
         *,
         crawl_run_id: UUID | None,
         crawl_partition_id: UUID | None,
+        requested_at: datetime,
         request_type: str,
         endpoint: str,
         method: str,
@@ -115,6 +116,7 @@ class RawApiPayloadRepository(Protocol):
         self,
         *,
         api_request_log_id: int,
+        received_at: datetime,
         endpoint_type: str,
         entity_hh_id: str | None,
         payload_json: object,
@@ -179,6 +181,7 @@ def process_list_page(
     request_log_id = api_request_log_repository.add(
         crawl_run_id=partition.crawl_run_id,
         crawl_partition_id=partition.id,
+        requested_at=response.requested_at,
         request_type="vacancy_search",
         endpoint=response.endpoint,
         method=response.method,
@@ -195,6 +198,7 @@ def process_list_page(
     if _payload_is_present(response.payload_json):
         raw_payload_id = raw_api_payload_repository.add(
             api_request_log_id=request_log_id,
+            received_at=response.response_received_at or response.requested_at,
             endpoint_type="vacancies.search",
             entity_hh_id=None,
             payload_json=response.payload_json,

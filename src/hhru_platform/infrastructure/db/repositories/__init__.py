@@ -8,6 +8,9 @@ from hhru_platform.infrastructure.db.repositories.crawl_partition_repo import (
     SqlAlchemyCrawlPartitionRepository,
 )
 from hhru_platform.infrastructure.db.repositories.crawl_run_repo import SqlAlchemyCrawlRunRepository
+from hhru_platform.infrastructure.db.repositories.detail_fetch_attempt_repo import (
+    SqlAlchemyDetailFetchAttemptRepository,
+)
 from hhru_platform.infrastructure.db.repositories.dictionary_store import SqlAlchemyDictionaryStore
 from hhru_platform.infrastructure.db.repositories.dictionary_sync_run_repo import (
     SqlAlchemyDictionarySyncRunRepository,
@@ -25,12 +28,16 @@ from hhru_platform.infrastructure.db.repositories.vacancy_repo import SqlAlchemy
 from hhru_platform.infrastructure.db.repositories.vacancy_seen_event_repo import (
     SqlAlchemyVacancySeenEventRepository,
 )
+from hhru_platform.infrastructure.db.repositories.vacancy_snapshot_repo import (
+    SqlAlchemyVacancySnapshotRepository,
+)
 
 __all__ = [
     "SqlAlchemyApiRequestLogRepository",
     "SqlAlchemyAreaRepository",
     "SqlAlchemyCrawlPartitionRepository",
     "SqlAlchemyCrawlRunRepository",
+    "SqlAlchemyDetailFetchAttemptRepository",
     "SqlAlchemyDictionaryStore",
     "SqlAlchemyDictionarySyncRunRepository",
     "SqlAlchemyProfessionalRoleRepository",
@@ -38,4 +45,5 @@ __all__ = [
     "SqlAlchemyVacancyCurrentStateRepository",
     "SqlAlchemyVacancyRepository",
     "SqlAlchemyVacancySeenEventRepository",
+    "SqlAlchemyVacancySnapshotRepository",
 ]

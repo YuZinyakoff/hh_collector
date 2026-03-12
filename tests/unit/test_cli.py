@@ -21,6 +21,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "plan-run" in captured.out
     assert "sync-dictionaries" in captured.out
     assert "process-list-page" in captured.out
+    assert "fetch-vacancy-detail" in captured.out
 
 
 def test_create_run_cli_prints_created_run(monkeypatch, capsys) -> None:
@@ -412,3 +413,130 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
     assert "vacancies_processed=2" in captured.out
     assert "vacancies_created=1" in captured.out
     assert "seen_events_created=2" in captured.out
+
+
+def test_fetch_vacancy_detail_cli_prints_fetch_summary(monkeypatch, capsys) -> None:
+    vacancy_id = uuid4()
+
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    class FakeVacancyRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeDetailFetchAttemptRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeApiRequestLogRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeRawApiPayloadRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeVacancySnapshotRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeVacancyCurrentStateRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeHHApiClient:
+        pass
+
+    def fake_fetch_vacancy_detail(
+        command,
+        vacancy_repository,
+        api_client,
+        detail_fetch_attempt_repository,
+        api_request_log_repository,
+        raw_api_payload_repository,
+        vacancy_snapshot_repository,
+        vacancy_current_state_repository,
+    ):
+        assert command.vacancy_id == vacancy_id
+        assert command.reason == "manual_refetch"
+        assert vacancy_repository.__class__.__name__ == "FakeVacancyRepository"
+        assert api_client.__class__.__name__ == "FakeHHApiClient"
+        assert (
+            detail_fetch_attempt_repository.__class__.__name__
+            == "FakeDetailFetchAttemptRepository"
+        )
+        assert api_request_log_repository.__class__.__name__ == "FakeApiRequestLogRepository"
+        assert raw_api_payload_repository.__class__.__name__ == "FakeRawApiPayloadRepository"
+        assert vacancy_snapshot_repository.__class__.__name__ == "FakeVacancySnapshotRepository"
+        assert (
+            vacancy_current_state_repository.__class__.__name__
+            == "FakeVacancyCurrentStateRepository"
+        )
+        return SimpleNamespace(
+            vacancy_id=vacancy_id,
+            hh_vacancy_id="pytest-detail-vacancy",
+            detail_fetch_status="succeeded",
+            snapshot_id=51,
+            request_log_id=52,
+            raw_payload_id=53,
+            detail_fetch_attempt_id=54,
+            error_message=None,
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyVacancyRepository",
+        FakeVacancyRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyDetailFetchAttemptRepository",
+        FakeDetailFetchAttemptRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyApiRequestLogRepository",
+        FakeApiRequestLogRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyRawApiPayloadRepository",
+        FakeRawApiPayloadRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyVacancySnapshotRepository",
+        FakeVacancySnapshotRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyVacancyCurrentStateRepository",
+        FakeVacancyCurrentStateRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.HHApiClient",
+        FakeHHApiClient,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.fetch_vacancy_detail",
+        fake_fetch_vacancy_detail,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "fetch-vacancy-detail",
+            "--vacancy-id",
+            str(vacancy_id),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "fetched vacancy detail" in captured.out
+    assert f"vacancy_id={vacancy_id}" in captured.out
+    assert "hh_vacancy_id=pytest-detail-vacancy" in captured.out
+    assert "detail_fetch_status=succeeded" in captured.out
+    assert "snapshot_id=51" in captured.out

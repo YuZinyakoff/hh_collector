@@ -39,6 +39,7 @@ class SqlAlchemyVacancyCurrentStateRepository:
                     "is_probably_inactive": False,
                     "last_seen_run_id": crawl_run_id,
                     "last_short_hash": observation.short_hash,
+                    "updated_at": observed_at,
                 }
                 for observation in observation_batch
             ]
@@ -59,6 +60,50 @@ class SqlAlchemyVacancyCurrentStateRepository:
 
         self._session.flush()
         return len(observations)
+
+    def record_detail_fetch(
+        self,
+        *,
+        vacancy_id: UUID,
+        recorded_at: datetime,
+        detail_hash: str | None,
+        detail_fetch_status: str,
+    ) -> None:
+        insert_statement = insert(VacancyCurrentState).values(
+            [
+                {
+                    "vacancy_id": vacancy_id,
+                    "first_seen_at": recorded_at,
+                    "last_seen_at": recorded_at,
+                    "seen_count": 1,
+                    "consecutive_missing_runs": 0,
+                    "is_probably_inactive": False,
+                    "last_detail_hash": detail_hash,
+                    "last_detail_fetched_at": recorded_at if detail_hash is not None else None,
+                    "detail_fetch_status": detail_fetch_status,
+                    "updated_at": recorded_at,
+                }
+            ]
+        )
+        upsert_statement = insert_statement.on_conflict_do_update(
+            index_elements=[VacancyCurrentState.vacancy_id],
+            set_={
+                "last_detail_hash": (
+                    insert_statement.excluded.last_detail_hash
+                    if detail_hash is not None
+                    else VacancyCurrentState.last_detail_hash
+                ),
+                "last_detail_fetched_at": (
+                    insert_statement.excluded.last_detail_fetched_at
+                    if detail_hash is not None
+                    else VacancyCurrentState.last_detail_fetched_at
+                ),
+                "detail_fetch_status": insert_statement.excluded.detail_fetch_status,
+                "updated_at": func.now(),
+            },
+        )
+        self._session.execute(upsert_statement)
+        self._session.flush()
 
 
 def _batched(

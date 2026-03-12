@@ -24,7 +24,7 @@ class RawApiPayload(Base):
     )
     endpoint_type: Mapped[str] = mapped_column(Text, nullable=False)
     entity_hh_id: Mapped[str | None] = mapped_column(Text)
-    payload_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    payload_json: Mapped[Any] = mapped_column(JSONB, nullable=False)
     payload_hash: Mapped[str] = mapped_column(Text, nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

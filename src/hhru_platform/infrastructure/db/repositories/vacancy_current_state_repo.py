@@ -4,12 +4,20 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from hhru_platform.application.dto import ObservedVacancyRecord
-from hhru_platform.infrastructure.db.models.vacancy_current_state import VacancyCurrentState
+from hhru_platform.domain.entities.vacancy_current_state import (
+    VacancyCurrentState as VacancyCurrentStateEntity,
+)
+from hhru_platform.domain.entities.vacancy_current_state import (
+    VacancyCurrentStateReconciliationUpdate,
+)
+from hhru_platform.infrastructure.db.models.vacancy_current_state import (
+    VacancyCurrentState as VacancyCurrentStateModel,
+)
 
 UPSERT_BATCH_SIZE = 1000
 
@@ -43,12 +51,12 @@ class SqlAlchemyVacancyCurrentStateRepository:
                 }
                 for observation in observation_batch
             ]
-            insert_statement = insert(VacancyCurrentState).values(insert_values)
+            insert_statement = insert(VacancyCurrentStateModel).values(insert_values)
             upsert_statement = insert_statement.on_conflict_do_update(
-                index_elements=[VacancyCurrentState.vacancy_id],
+                index_elements=[VacancyCurrentStateModel.vacancy_id],
                 set_={
                     "last_seen_at": insert_statement.excluded.last_seen_at,
-                    "seen_count": VacancyCurrentState.seen_count + 1,
+                    "seen_count": VacancyCurrentStateModel.seen_count + 1,
                     "consecutive_missing_runs": 0,
                     "is_probably_inactive": False,
                     "last_seen_run_id": insert_statement.excluded.last_seen_run_id,
@@ -69,7 +77,7 @@ class SqlAlchemyVacancyCurrentStateRepository:
         detail_hash: str | None,
         detail_fetch_status: str,
     ) -> None:
-        insert_statement = insert(VacancyCurrentState).values(
+        insert_statement = insert(VacancyCurrentStateModel).values(
             [
                 {
                     "vacancy_id": vacancy_id,
@@ -86,17 +94,17 @@ class SqlAlchemyVacancyCurrentStateRepository:
             ]
         )
         upsert_statement = insert_statement.on_conflict_do_update(
-            index_elements=[VacancyCurrentState.vacancy_id],
+            index_elements=[VacancyCurrentStateModel.vacancy_id],
             set_={
                 "last_detail_hash": (
                     insert_statement.excluded.last_detail_hash
                     if detail_hash is not None
-                    else VacancyCurrentState.last_detail_hash
+                    else VacancyCurrentStateModel.last_detail_hash
                 ),
                 "last_detail_fetched_at": (
                     insert_statement.excluded.last_detail_fetched_at
                     if detail_hash is not None
-                    else VacancyCurrentState.last_detail_fetched_at
+                    else VacancyCurrentStateModel.last_detail_fetched_at
                 ),
                 "detail_fetch_status": insert_statement.excluded.detail_fetch_status,
                 "updated_at": func.now(),
@@ -104,6 +112,47 @@ class SqlAlchemyVacancyCurrentStateRepository:
         )
         self._session.execute(upsert_statement)
         self._session.flush()
+
+    def list_all(self) -> list[VacancyCurrentStateEntity]:
+        statement = select(VacancyCurrentStateModel).order_by(VacancyCurrentStateModel.vacancy_id)
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def apply_reconciliation_updates(
+        self,
+        *,
+        updated_at: datetime,
+        updates: Sequence[VacancyCurrentStateReconciliationUpdate],
+    ) -> int:
+        for update in updates:
+            model = self._session.get(VacancyCurrentStateModel, update.vacancy_id)
+            if model is None:
+                raise LookupError(f"vacancy_current_state not found: {update.vacancy_id}")
+
+            model.consecutive_missing_runs = update.consecutive_missing_runs
+            model.is_probably_inactive = update.is_probably_inactive
+            model.last_seen_run_id = update.last_seen_run_id
+            model.updated_at = updated_at
+            self._session.add(model)
+
+        self._session.flush()
+        return len(updates)
+
+    @staticmethod
+    def _to_entity(model: VacancyCurrentStateModel) -> VacancyCurrentStateEntity:
+        return VacancyCurrentStateEntity(
+            vacancy_id=model.vacancy_id,
+            first_seen_at=model.first_seen_at,
+            last_seen_at=model.last_seen_at,
+            seen_count=model.seen_count,
+            consecutive_missing_runs=model.consecutive_missing_runs,
+            is_probably_inactive=model.is_probably_inactive,
+            last_seen_run_id=model.last_seen_run_id,
+            last_short_hash=model.last_short_hash,
+            last_detail_hash=model.last_detail_hash,
+            last_detail_fetched_at=model.last_detail_fetched_at,
+            detail_fetch_status=model.detail_fetch_status,
+            updated_at=model.updated_at,
+        )
 
 
 def _batched(

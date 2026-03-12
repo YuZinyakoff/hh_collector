@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from hhru_platform.domain.entities.crawl_run import CrawlRun
+from hhru_platform.domain.value_objects.enums import CrawlRunStatus
 from hhru_platform.infrastructure.db.models.crawl_run import CrawlRun as CrawlRunModel
 
 
@@ -36,6 +38,30 @@ class SqlAlchemyCrawlRunRepository:
             raise LookupError(f"crawl_run not found: {run_id}")
 
         crawl_run.partitions_total = partitions_total
+        self._session.add(crawl_run)
+        self._session.flush()
+        self._session.refresh(crawl_run)
+        return self._to_entity(crawl_run)
+
+    def complete(
+        self,
+        *,
+        run_id: UUID,
+        finished_at: datetime,
+        partitions_done: int,
+        partitions_failed: int,
+        notes: str | None = None,
+    ) -> CrawlRun:
+        crawl_run = self._session.get(CrawlRunModel, run_id)
+        if crawl_run is None:
+            raise LookupError(f"crawl_run not found: {run_id}")
+
+        crawl_run.status = CrawlRunStatus.COMPLETED.value
+        crawl_run.finished_at = finished_at
+        crawl_run.partitions_done = partitions_done
+        crawl_run.partitions_failed = partitions_failed
+        if notes is not None:
+            crawl_run.notes = notes
         self._session.add(crawl_run)
         self._session.flush()
         self._session.refresh(crawl_run)

@@ -76,6 +76,18 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main fetch-vac
 - есть `snapshot_id`
 - есть `request_log_id`, `raw_payload_id`, `detail_fetch_attempt_id`
 
+6. Выполнить reconciliation для завершения run:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main reconcile-run --run-id <run_id>
+```
+
+Ожидаемо:
+- `reconciled crawl run`
+- `vacancies_observed_in_run>=0`
+- есть `missing_updated`, `marked_inactive`
+- `status=completed`
+
 ## Notes
 
 - `process-list-page` и `fetch-vacancy-detail` используют официальный live hh API, поэтому конкретные `hh_vacancy_id`, счётчики и тексты вакансий будут меняться.

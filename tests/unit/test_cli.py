@@ -22,6 +22,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "sync-dictionaries" in captured.out
     assert "process-list-page" in captured.out
     assert "fetch-vacancy-detail" in captured.out
+    assert "reconcile-run" in captured.out
 
 
 def test_create_run_cli_prints_created_run(monkeypatch, capsys) -> None:
@@ -551,3 +552,110 @@ def test_fetch_vacancy_detail_cli_prints_fetch_summary(monkeypatch, capsys) -> N
     assert "hh_vacancy_id=pytest-detail-vacancy" in captured.out
     assert "detail_fetch_status=succeeded" in captured.out
     assert "snapshot_id=51" in captured.out
+    assert "request_log_id=52" in captured.out
+    assert "raw_payload_id=53" in captured.out
+    assert "detail_fetch_attempt_id=54" in captured.out
+
+
+def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) -> None:
+    crawl_run_id = uuid4()
+
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    class FakeCrawlRunRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeCrawlPartitionRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeVacancySeenEventRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeVacancyCurrentStateRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeReconciliationPolicy:
+        pass
+
+    def fake_reconcile_run(
+        command,
+        crawl_run_repository,
+        crawl_partition_repository,
+        vacancy_seen_event_repository,
+        vacancy_current_state_repository,
+        reconciliation_policy,
+    ):
+        assert command.crawl_run_id == crawl_run_id
+        assert crawl_run_repository.__class__.__name__ == "FakeCrawlRunRepository"
+        assert crawl_partition_repository.__class__.__name__ == "FakeCrawlPartitionRepository"
+        assert (
+            vacancy_seen_event_repository.__class__.__name__
+            == "FakeVacancySeenEventRepository"
+        )
+        assert (
+            vacancy_current_state_repository.__class__.__name__
+            == "FakeVacancyCurrentStateRepository"
+        )
+        assert reconciliation_policy.__class__.__name__ == "FakeReconciliationPolicy"
+        return SimpleNamespace(
+            crawl_run_id=crawl_run_id,
+            observed_in_run_count=12,
+            missing_updated_count=7,
+            marked_inactive_count=3,
+            run_status="completed",
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reconcile.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reconcile.SqlAlchemyCrawlRunRepository",
+        FakeCrawlRunRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reconcile.SqlAlchemyCrawlPartitionRepository",
+        FakeCrawlPartitionRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reconcile.SqlAlchemyVacancySeenEventRepository",
+        FakeVacancySeenEventRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reconcile.SqlAlchemyVacancyCurrentStateRepository",
+        FakeVacancyCurrentStateRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reconcile.MissingRunsReconciliationPolicyV1",
+        FakeReconciliationPolicy,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reconcile.reconcile_run",
+        fake_reconcile_run,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "reconcile-run",
+            "--run-id",
+            str(crawl_run_id),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "reconciled crawl run" in captured.out
+    assert f"run_id={crawl_run_id}" in captured.out
+    assert "vacancies_observed_in_run=12" in captured.out
+    assert "missing_updated=7" in captured.out
+    assert "marked_inactive=3" in captured.out
+    assert "status=completed" in captured.out

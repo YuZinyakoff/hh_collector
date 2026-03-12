@@ -3,6 +3,7 @@ from enum import StrEnum
 
 class CrawlRunStatus(StrEnum):
     CREATED = "created"
+    COMPLETED = "completed"
 
 
 class CrawlPartitionStatus(StrEnum):

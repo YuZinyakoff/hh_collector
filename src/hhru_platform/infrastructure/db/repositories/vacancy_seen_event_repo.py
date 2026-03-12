@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
 from hhru_platform.application.dto import ObservedVacancyRecord
@@ -42,3 +42,12 @@ class SqlAlchemyVacancySeenEventRepository:
         self._session.execute(insert(VacancySeenEvent), values)
         self._session.flush()
         return len(values)
+
+    def list_distinct_vacancy_ids_by_run(self, crawl_run_id: UUID) -> list[UUID]:
+        statement = (
+            select(VacancySeenEvent.vacancy_id)
+            .where(VacancySeenEvent.crawl_run_id == crawl_run_id)
+            .distinct()
+            .order_by(VacancySeenEvent.vacancy_id)
+        )
+        return list(self._session.scalars(statement))

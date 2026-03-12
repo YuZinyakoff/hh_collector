@@ -9,6 +9,7 @@ from hhru_platform.application.dto import (
     NormalizedVacancySearchPage,
     NormalizedVacancyShortRecord,
     ObservedVacancyRecord,
+    StoredVacancyReference,
     VacancySearchResponse,
     VacancyUpsertResult,
 )
@@ -61,6 +62,7 @@ class ProcessListPageResult:
     seen_events_created: int
     request_log_id: int
     raw_payload_id: int | None
+    processed_vacancies: list[StoredVacancyReference]
     error_message: str | None
 
 
@@ -221,6 +223,7 @@ def process_list_page(
             seen_events_created=0,
             request_log_id=request_log_id,
             raw_payload_id=raw_payload_id,
+            processed_vacancies=[],
             error_message=str(error),
         )
 
@@ -256,6 +259,7 @@ def process_list_page(
         seen_events_created=seen_events_created,
         request_log_id=request_log_id,
         raw_payload_id=raw_payload_id,
+        processed_vacancies=upsert_result.vacancies,
         error_message=None,
     )
 

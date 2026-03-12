@@ -72,6 +72,8 @@ def handle_process_list_page(args: argparse.Namespace) -> int:
     print(f"seen_events_created={result.seen_events_created}")
     print(f"request_log_id={result.request_log_id}")
     print(f"raw_payload_id={result.raw_payload_id}")
+    for vacancy in result.processed_vacancies:
+        print(f"vacancy={vacancy.id} hh_vacancy_id={vacancy.hh_vacancy_id}")
 
     if result.error_message is not None:
         print(f"error={result.error_message}", file=sys.stderr)

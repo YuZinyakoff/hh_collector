@@ -213,6 +213,8 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
     assert result.seen_events_created == 2
     assert result.request_log_id == 1
     assert result.raw_payload_id == 1
+    assert len(result.processed_vacancies) == 2
+    assert all(result.processed_vacancies)
     assert result.error_message is None
     assert api_request_log_repository.records[0]["request_type"] == "vacancy_search"
     assert raw_api_payload_repository.records[0]["endpoint_type"] == "vacancies.search"

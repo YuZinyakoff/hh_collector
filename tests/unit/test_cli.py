@@ -352,6 +352,16 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
             seen_events_created=2,
             request_log_id=41,
             raw_payload_id=42,
+            processed_vacancies=[
+                SimpleNamespace(
+                    id=uuid4(),
+                    hh_vacancy_id="pytest-vacancy-1",
+                ),
+                SimpleNamespace(
+                    id=uuid4(),
+                    hh_vacancy_id="pytest-vacancy-2",
+                ),
+            ],
             error_message=None,
         )
 
@@ -413,6 +423,7 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
     assert "vacancies_processed=2" in captured.out
     assert "vacancies_created=1" in captured.out
     assert "seen_events_created=2" in captured.out
+    assert "hh_vacancy_id=pytest-vacancy-1" in captured.out
 
 
 def test_fetch_vacancy_detail_cli_prints_fetch_summary(monkeypatch, capsys) -> None:

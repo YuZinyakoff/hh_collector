@@ -1,8 +1,9 @@
 from datetime import datetime
+from uuid import UUID as PyUUID
 from uuid import uuid4
 
 from sqlalchemy import DateTime, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -20,9 +21,9 @@ class TimestampMixin:
     )
 
 
-def uuid_pk_column() -> Mapped[object]:
+def uuid_pk_column() -> Mapped[PyUUID]:
     return mapped_column(
-        UUID(as_uuid=True),
+        PGUUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
         server_default=text("gen_random_uuid()"),

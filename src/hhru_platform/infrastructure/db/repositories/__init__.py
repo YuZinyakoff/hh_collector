@@ -15,6 +15,9 @@ from hhru_platform.infrastructure.db.repositories.dictionary_store import SqlAlc
 from hhru_platform.infrastructure.db.repositories.dictionary_sync_run_repo import (
     SqlAlchemyDictionarySyncRunRepository,
 )
+from hhru_platform.infrastructure.db.repositories.employer_repo import (
+    SqlAlchemyEmployerRepository,
+)
 from hhru_platform.infrastructure.db.repositories.professional_role_repo import (
     SqlAlchemyProfessionalRoleRepository,
 )
@@ -23,6 +26,9 @@ from hhru_platform.infrastructure.db.repositories.raw_payload_repo import (
 )
 from hhru_platform.infrastructure.db.repositories.vacancy_current_state_repo import (
     SqlAlchemyVacancyCurrentStateRepository,
+)
+from hhru_platform.infrastructure.db.repositories.vacancy_professional_role_repo import (
+    SqlAlchemyVacancyProfessionalRoleRepository,
 )
 from hhru_platform.infrastructure.db.repositories.vacancy_repo import SqlAlchemyVacancyRepository
 from hhru_platform.infrastructure.db.repositories.vacancy_seen_event_repo import (
@@ -40,9 +46,11 @@ __all__ = [
     "SqlAlchemyDetailFetchAttemptRepository",
     "SqlAlchemyDictionaryStore",
     "SqlAlchemyDictionarySyncRunRepository",
+    "SqlAlchemyEmployerRepository",
     "SqlAlchemyProfessionalRoleRepository",
     "SqlAlchemyRawApiPayloadRepository",
     "SqlAlchemyVacancyCurrentStateRepository",
+    "SqlAlchemyVacancyProfessionalRoleRepository",
     "SqlAlchemyVacancyRepository",
     "SqlAlchemyVacancySeenEventRepository",
     "SqlAlchemyVacancySnapshotRepository",

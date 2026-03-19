@@ -17,6 +17,9 @@ from hhru_platform.application.dto import (
     VacancyUpsertResult,
 )
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
+from hhru_platform.infrastructure.hh_api.user_agent import (
+    HHApiUserAgentValidationError,
+)
 
 
 class InMemoryCrawlPartitionRepository:
@@ -72,6 +75,14 @@ class StaticVacancySearchApiClient:
         assert params_json["per_page"] == 2
         assert params_json["text"] == "pytest list search"
         return self._response
+
+
+class InvalidUserAgentVacancySearchApiClient:
+    def search_vacancies(self, params_json: dict[str, object]) -> VacancySearchResponse:
+        raise HHApiUserAgentValidationError(
+            "hhru-platform/0.1 (contact: change-me@example.com)",
+            "placeholder value is not allowed",
+        )
 
 
 class InMemoryApiRequestLogRepository:
@@ -170,9 +181,18 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
                     "created_at": "2026-03-12T09:30:00+0300",
                     "published_at": "2026-03-12T10:00:00+0300",
                     "alternate_url": "https://hh.ru/vacancy/pytest-vacancy-1",
+                    "employer": {
+                        "id": "pytest-employer-1",
+                        "name": "Pytest Employer One",
+                        "alternate_url": "https://hh.ru/employer/pytest-employer-1",
+                        "trusted": True,
+                    },
                     "employment": {"id": "full", "name": "Full"},
                     "schedule": {"id": "remote", "name": "Remote"},
                     "experience": {"id": "between1And3", "name": "1-3 years"},
+                    "professional_roles": [
+                        {"id": "pytest-role-python", "name": "Python Developer"}
+                    ],
                 },
                 {
                     "id": "pytest-vacancy-2",
@@ -181,9 +201,17 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
                     "created_at": "2026-03-12T09:35:00+0300",
                     "published_at": "2026-03-12T10:05:00+0300",
                     "alternate_url": "https://hh.ru/vacancy/pytest-vacancy-2",
+                    "employer": {
+                        "id": "pytest-employer-2",
+                        "name": "Pytest Employer Two",
+                    },
                     "employment": {"id": "part", "name": "Part time"},
                     "schedule": {"id": "fullDay", "name": "Full day"},
                     "experience": {"id": "noExperience", "name": "No experience"},
+                    "professional_roles": [
+                        {"id": "pytest-role-data", "name": "Data Engineer"},
+                        {"id": "pytest-role-python", "name": "Python Developer"},
+                    ],
                 },
             ],
             "found": 11,
@@ -219,6 +247,15 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
     assert api_request_log_repository.records[0]["request_type"] == "vacancy_search"
     assert raw_api_payload_repository.records[0]["endpoint_type"] == "vacancies.search"
     assert len(vacancy_repository.records) == 2
+    assert vacancy_repository.records[0].employer is not None
+    assert vacancy_repository.records[0].employer.hh_employer_id == "pytest-employer-1"
+    assert vacancy_repository.records[0].professional_role_hh_ids == ("pytest-role-python",)
+    assert vacancy_repository.records[1].employer is not None
+    assert vacancy_repository.records[1].employer.hh_employer_id == "pytest-employer-2"
+    assert vacancy_repository.records[1].professional_role_hh_ids == (
+        "pytest-role-data",
+        "pytest-role-python",
+    )
     assert [
         observation.list_position for observation in vacancy_seen_event_repository.observations
     ] == [0, 1]
@@ -253,3 +290,42 @@ def test_process_list_page_raises_when_partition_is_missing() -> None:
             vacancy_seen_event_repository=RecordingVacancySeenEventRepository(),
             vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(),
         )
+
+
+def test_process_list_page_marks_partition_failed_when_live_search_user_agent_is_invalid() -> None:
+    partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=uuid4(),
+        partition_key="pytest-list-partition",
+        params_json={"params": {"text": "pytest list search", "per_page": 2}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+    )
+    crawl_partition_repository = InMemoryCrawlPartitionRepository(partition)
+
+    result = process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=crawl_partition_repository,
+        api_client=InvalidUserAgentVacancySearchApiClient(),
+        api_request_log_repository=InMemoryApiRequestLogRepository(),
+        raw_api_payload_repository=InMemoryRawApiPayloadRepository(),
+        vacancy_repository=RecordingVacancyRepository(),
+        vacancy_seen_event_repository=RecordingVacancySeenEventRepository(),
+        vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(),
+    )
+
+    assert result.partition_status == "failed"
+    assert result.request_log_id is None
+    assert result.raw_payload_id is None
+    assert result.vacancies_processed == 0
+    assert result.processed_vacancies == []
+    assert result.error_message is not None
+    assert "Invalid HH API User-Agent for live vacancy search" in result.error_message
+    assert partition.last_error_message == result.error_message

@@ -16,6 +16,12 @@ from hhru_platform.application.dto import (
 from hhru_platform.domain.entities.vacancy import Vacancy
 from hhru_platform.infrastructure.db.models.area import Area as AreaModel
 from hhru_platform.infrastructure.db.models.vacancy import Vacancy as VacancyModel
+from hhru_platform.infrastructure.db.repositories.employer_repo import (
+    SqlAlchemyEmployerRepository,
+)
+from hhru_platform.infrastructure.db.repositories.vacancy_professional_role_repo import (
+    SqlAlchemyVacancyProfessionalRoleRepository,
+)
 
 UPSERT_BATCH_SIZE = 1000
 
@@ -23,6 +29,10 @@ UPSERT_BATCH_SIZE = 1000
 class SqlAlchemyVacancyRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+        self._employer_repository = SqlAlchemyEmployerRepository(session)
+        self._vacancy_professional_role_repository = SqlAlchemyVacancyProfessionalRoleRepository(
+            session
+        )
 
     def get(self, vacancy_id: UUID) -> Vacancy | None:
         model = self._session.get(VacancyModel, vacancy_id)
@@ -45,11 +55,19 @@ class SqlAlchemyVacancyRepository:
             )
         )
         area_ids_by_hh_id = self._load_area_ids(deduplicated_records)
+        employer_ids_by_hh_id = self._employer_repository.upsert_many(
+            [record.employer for record in deduplicated_records if record.employer is not None]
+        )
 
         for record_batch in _batched(deduplicated_records, UPSERT_BATCH_SIZE):
             insert_values = [
                 {
                     "hh_vacancy_id": record.hh_vacancy_id,
+                    "employer_id": (
+                        employer_ids_by_hh_id.get(record.employer.hh_employer_id)
+                        if record.employer is not None
+                        else None
+                    ),
                     "area_id": (
                         area_ids_by_hh_id.get(record.area_hh_id)
                         if record.area_hh_id is not None
@@ -70,6 +88,10 @@ class SqlAlchemyVacancyRepository:
             upsert_statement = insert_statement.on_conflict_do_update(
                 index_elements=[VacancyModel.hh_vacancy_id],
                 set_={
+                    "employer_id": func.coalesce(
+                        insert_statement.excluded.employer_id,
+                        VacancyModel.employer_id,
+                    ),
                     "area_id": insert_statement.excluded.area_id,
                     "name_current": insert_statement.excluded.name_current,
                     "published_at": insert_statement.excluded.published_at,
@@ -100,6 +122,13 @@ class SqlAlchemyVacancyRepository:
             )
             for hh_vacancy_id in hh_vacancy_ids
         ]
+        self._vacancy_professional_role_repository.add_links(
+            vacancy_role_hh_ids={
+                stored_models[record.hh_vacancy_id].id: record.professional_role_hh_ids
+                for record in deduplicated_records
+                if record.professional_role_hh_ids
+            }
+        )
         created_count = len(hh_vacancy_ids) - len(existing_ids)
         return VacancyUpsertResult(created_count=created_count, vacancies=stored_references)
 
@@ -113,6 +142,12 @@ class SqlAlchemyVacancyRepository:
         if model is None:
             raise LookupError(f"vacancy not found: {vacancy_id}")
 
+        if detail.employer is not None:
+            employer_ids_by_hh_id = self._employer_repository.upsert_many([detail.employer])
+            model.employer_id = employer_ids_by_hh_id.get(
+                detail.employer.hh_employer_id,
+                model.employer_id,
+            )
         model.area_id = self._resolve_area_id(detail.area_hh_id)
         model.name_current = detail.name_current
         model.published_at = detail.published_at
@@ -123,6 +158,10 @@ class SqlAlchemyVacancyRepository:
         model.experience_code = detail.experience_code
         model.source_type = "hh_api"
         self._session.flush()
+        if detail.professional_role_hh_ids:
+            self._vacancy_professional_role_repository.add_links(
+                vacancy_role_hh_ids={model.id: detail.professional_role_hh_ids}
+            )
         return _to_entity(model)
 
     def _load_area_ids(

@@ -38,10 +38,18 @@ LOGGER = logging.getLogger(__name__)
 
 
 class RunCollectionOnceStepError(RuntimeError):
-    def __init__(self, *, step: str, message: str, run_id: UUID | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        step: str,
+        message: str,
+        run_id: UUID | None = None,
+        list_page_results: tuple[ProcessListPageResult, ...] = (),
+    ) -> None:
         super().__init__(message)
         self.step = step
         self.run_id = run_id
+        self.list_page_results = list_page_results
 
 
 @dataclass(slots=True, frozen=True)
@@ -77,26 +85,59 @@ class RunCollectionOnceCommand:
 
 @dataclass(slots=True, frozen=True)
 class RunCollectionOnceResult:
-    run_id: UUID
+    status: str
+    run_id: UUID | None
     run_type: str
     triggered_by: str
     dictionary_results: tuple[SyncDictionaryResult, ...]
     planned_partition_ids: tuple[UUID, ...]
     list_page_results: tuple[ProcessListPageResult, ...]
     detail_results: tuple[FetchVacancyDetailResult, ...]
-    reconciliation_result: ReconcileRunResult
+    reconciliation_result: ReconcileRunResult | None
+    failed_step: str | None = None
+    error_message: str | None = None
+    completed_steps: tuple[str, ...] = ()
+    skipped_steps: tuple[str, ...] = ()
 
     @property
     def partitions_planned(self) -> int:
         return len(self.planned_partition_ids)
 
     @property
-    def partitions_processed(self) -> int:
+    def partitions_attempted(self) -> int:
         return len({result.partition_id for result in self.list_page_results})
 
     @property
+    def partitions_processed(self) -> int:
+        partition_failures: dict[UUID, bool] = {}
+        for result in self.list_page_results:
+            partition_failures[result.partition_id] = partition_failures.get(
+                result.partition_id,
+                False,
+            ) or _is_failed_page_result(result)
+        return sum(1 for failed in partition_failures.values() if not failed)
+
+    @property
+    def partitions_failed(self) -> int:
+        partition_failures: dict[UUID, bool] = {}
+        for result in self.list_page_results:
+            partition_failures[result.partition_id] = partition_failures.get(
+                result.partition_id,
+                False,
+            ) or _is_failed_page_result(result)
+        return sum(1 for failed in partition_failures.values() if failed)
+
+    @property
     def list_pages_processed(self) -> int:
+        return sum(1 for result in self.list_page_results if not _is_failed_page_result(result))
+
+    @property
+    def list_pages_attempted(self) -> int:
         return len(self.list_page_results)
+
+    @property
+    def list_pages_failed(self) -> int:
+        return sum(1 for result in self.list_page_results if _is_failed_page_result(result))
 
     @property
     def vacancies_found(self) -> int:
@@ -116,6 +157,8 @@ class RunCollectionOnceResult:
 
     @property
     def reconciliation_status(self) -> str:
+        if self.reconciliation_result is None:
+            return "skipped"
         return self.reconciliation_result.run_status
 
 
@@ -147,19 +190,44 @@ def run_collection_once(
         triggered_by=command.triggered_by,
     )
     current_run_id: UUID | None = None
+    dictionary_results: tuple[SyncDictionaryResult, ...] = ()
+    planned_partition_ids: tuple[UUID, ...] = ()
+    list_page_results: tuple[ProcessListPageResult, ...] = ()
+    detail_results: tuple[FetchVacancyDetailResult, ...] = ()
+    completed_steps: list[str] = []
 
     try:
         dictionary_results = tuple(_sync_requested_dictionaries(command, sync_dictionary_step))
+        if command.sync_dictionaries:
+            completed_steps.append("sync_dictionaries")
 
-        crawl_run = create_crawl_run_step(
-            CreateCrawlRunCommand(
-                run_type=command.run_type,
-                triggered_by=command.triggered_by,
+        try:
+            crawl_run = create_crawl_run_step(
+                CreateCrawlRunCommand(
+                    run_type=command.run_type,
+                    triggered_by=command.triggered_by,
+                )
             )
-        )
+        except Exception as error:
+            raise RunCollectionOnceStepError(
+                step="create_crawl_run",
+                message=str(error),
+                run_id=current_run_id,
+            ) from error
         current_run_id = crawl_run.id
+        completed_steps.append("create_crawl_run")
 
-        plan_result = plan_run_step(PlanRunCommand(crawl_run_id=crawl_run.id))
+        try:
+            plan_result = plan_run_step(PlanRunCommand(crawl_run_id=crawl_run.id))
+        except Exception as error:
+            raise RunCollectionOnceStepError(
+                step="plan_sweep",
+                message=str(error),
+                run_id=current_run_id,
+            ) from error
+        planned_partition_ids = tuple(partition.id for partition in plan_result.partitions)
+        completed_steps.append("plan_sweep")
+
         list_page_results = tuple(
             _process_partitions(
                 plan_result=plan_result,
@@ -167,21 +235,72 @@ def run_collection_once(
                 process_list_page_step=process_list_page_step,
             )
         )
+        completed_steps.append("process_list_page")
 
         detail_candidates = list(_collect_unique_vacancies(list_page_results).values())
-        detail_results = tuple(
-            fetch_vacancy_detail_step(
-                FetchVacancyDetailCommand(
-                    vacancy_id=vacancy.id,
-                    reason="run_once",
-                    attempt=1,
-                    crawl_run_id=crawl_run.id,
+        try:
+            detail_results = tuple(
+                fetch_vacancy_detail_step(
+                    FetchVacancyDetailCommand(
+                        vacancy_id=vacancy.id,
+                        reason="run_once",
+                        attempt=1,
+                        crawl_run_id=crawl_run.id,
+                    )
                 )
+                for vacancy in detail_candidates[: command.detail_limit]
             )
-            for vacancy in detail_candidates[: command.detail_limit]
-        )
+        except Exception as error:
+            raise RunCollectionOnceStepError(
+                step="fetch_vacancy_detail",
+                message=str(error),
+                run_id=current_run_id,
+                list_page_results=list_page_results,
+            ) from error
+        if command.detail_limit > 0:
+            completed_steps.append("fetch_vacancy_detail")
 
-        reconciliation_result = reconcile_run_step(ReconcileRunCommand(crawl_run_id=crawl_run.id))
+        try:
+            reconciliation_result = reconcile_run_step(
+                ReconcileRunCommand(crawl_run_id=crawl_run.id)
+            )
+        except Exception as error:
+            raise RunCollectionOnceStepError(
+                step="reconcile_run",
+                message=str(error),
+                run_id=current_run_id,
+                list_page_results=list_page_results,
+            ) from error
+        completed_steps.append("reconcile_run")
+    except RunCollectionOnceStepError as error:
+        result = _build_failed_result(
+            command=command,
+            run_id=error.run_id or current_run_id,
+            dictionary_results=dictionary_results,
+            planned_partition_ids=planned_partition_ids,
+            list_page_results=error.list_page_results or list_page_results,
+            detail_results=detail_results,
+            failed_step=error.step,
+            error_message=str(error),
+            completed_steps=tuple(completed_steps),
+        )
+        record_operation_failed(
+            LOGGER,
+            operation="run_collection_once",
+            started_at=started_at,
+            error_type="RunCollectionOnceStepError",
+            error_message=result.error_message or str(error),
+            run_id=result.run_id,
+            sync_dictionaries=command.sync_dictionaries,
+            pages_per_partition=command.pages_per_partition,
+            detail_limit=command.detail_limit,
+            run_type=command.run_type,
+            triggered_by=command.triggered_by,
+            failed_step=result.failed_step,
+            completed_steps=",".join(result.completed_steps) or None,
+            skipped_steps=",".join(result.skipped_steps) or None,
+        )
+        return result
     except Exception as error:
         record_operation_failed(
             LOGGER,
@@ -200,14 +319,16 @@ def run_collection_once(
         raise
 
     result = RunCollectionOnceResult(
+        status="succeeded",
         run_id=crawl_run.id,
         run_type=command.run_type,
         triggered_by=command.triggered_by,
         dictionary_results=dictionary_results,
-        planned_partition_ids=tuple(partition.id for partition in plan_result.partitions),
+        planned_partition_ids=planned_partition_ids,
         list_page_results=list_page_results,
         detail_results=detail_results,
         reconciliation_result=reconciliation_result,
+        completed_steps=tuple(completed_steps),
     )
     record_operation_succeeded(
         LOGGER,
@@ -218,8 +339,10 @@ def run_collection_once(
         triggered_by=result.triggered_by,
         dictionaries_synced=len(result.dictionary_results),
         partitions_planned=result.partitions_planned,
+        partitions_failed=result.partitions_failed,
         partitions_processed=result.partitions_processed,
         list_pages_processed=result.list_pages_processed,
+        list_pages_failed=result.list_pages_failed,
         vacancies_found=result.vacancies_found,
         detail_fetch_attempted=result.detail_fetch_attempted,
         detail_fetch_failed=result.detail_fetch_failed,
@@ -244,7 +367,7 @@ def _sync_requested_dictionaries(
             or result.error_message is not None
         ):
             raise RunCollectionOnceStepError(
-                step="sync_dictionary",
+                step="sync_dictionaries",
                 message=(
                     f"dictionary sync failed for {dictionary_name}: "
                     f"{result.error_message or result.status}"
@@ -266,20 +389,37 @@ def _process_partitions(
             if expected_pages is not None and page_number >= expected_pages:
                 break
 
-            page_result = process_list_page_step(
-                ProcessListPageCommand(
-                    partition_id=partition.id,
-                    page=page_number,
+            try:
+                page_result = process_list_page_step(
+                    ProcessListPageCommand(
+                        partition_id=partition.id,
+                        page=page_number,
+                    )
                 )
-            )
+            except Exception as error:
+                raise RunCollectionOnceStepError(
+                    step="process_list_page",
+                    message=(
+                        "process_list_page raised an exception for "
+                        f"partition {partition.id} page {page_number}: {error}"
+                    ),
+                    run_id=partition.crawl_run_id,
+                    list_page_results=tuple(results),
+                ) from error
             results.append(page_result)
             if page_result.pages_total_expected is not None:
                 expected_pages = page_result.pages_total_expected
-            if (
-                page_result.partition_status == CrawlPartitionStatus.FAILED.value
-                or page_result.error_message is not None
-            ):
-                break
+            if _is_failed_page_result(page_result):
+                raise RunCollectionOnceStepError(
+                    step="process_list_page",
+                    message=(
+                        "process_list_page failed for "
+                        f"partition {partition.id} page {page_result.page}: "
+                        f"{page_result.error_message or page_result.partition_status}"
+                    ),
+                    run_id=partition.crawl_run_id,
+                    list_page_results=tuple(results),
+                )
     return results
 
 
@@ -291,3 +431,54 @@ def _collect_unique_vacancies(
         for vacancy in page_result.processed_vacancies:
             vacancies_by_id.setdefault(vacancy.id, vacancy)
     return vacancies_by_id
+
+
+def _is_failed_page_result(result: ProcessListPageResult) -> bool:
+    return (
+        result.partition_status == CrawlPartitionStatus.FAILED.value
+        or result.error_message is not None
+    )
+
+
+def _build_failed_result(
+    *,
+    command: RunCollectionOnceCommand,
+    run_id: UUID | None,
+    dictionary_results: tuple[SyncDictionaryResult, ...],
+    planned_partition_ids: tuple[UUID, ...],
+    list_page_results: tuple[ProcessListPageResult, ...],
+    detail_results: tuple[FetchVacancyDetailResult, ...],
+    failed_step: str,
+    error_message: str,
+    completed_steps: tuple[str, ...],
+) -> RunCollectionOnceResult:
+    return RunCollectionOnceResult(
+        status="failed",
+        run_id=run_id,
+        run_type=command.run_type,
+        triggered_by=command.triggered_by,
+        dictionary_results=dictionary_results,
+        planned_partition_ids=planned_partition_ids,
+        list_page_results=list_page_results,
+        detail_results=detail_results,
+        reconciliation_result=None,
+        failed_step=failed_step,
+        error_message=error_message,
+        completed_steps=completed_steps,
+        skipped_steps=tuple(
+            step
+            for step in _expected_steps(command)
+            if step not in completed_steps and step != failed_step
+        ),
+    )
+
+
+def _expected_steps(command: RunCollectionOnceCommand) -> tuple[str, ...]:
+    steps: list[str] = []
+    if command.sync_dictionaries:
+        steps.append("sync_dictionaries")
+    steps.extend(("create_crawl_run", "plan_sweep", "process_list_page"))
+    if command.detail_limit > 0:
+        steps.append("fetch_vacancy_detail")
+    steps.append("reconcile_run")
+    return tuple(steps)

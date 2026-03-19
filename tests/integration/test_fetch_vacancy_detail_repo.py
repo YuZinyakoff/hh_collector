@@ -29,6 +29,8 @@ from hhru_platform.infrastructure.db.session import (
 TEST_USER_AGENT = "pytest-fetch-vacancy-detail"
 TEST_AREA_HH_ID = "pytest-detail-area"
 TEST_VACANCY_HH_ID = "pytest-detail-vacancy"
+TEST_EMPLOYER_HH_ID = "pytest-detail-employer"
+TEST_ROLE_HH_IDS = ("pytest-detail-role-python", "pytest-detail-role-data")
 
 
 class StaticVacancyDetailApiClient:
@@ -56,10 +58,19 @@ class StaticVacancyDetailApiClient:
                 "area": {"id": TEST_AREA_HH_ID, "name": "Pytest Area"},
                 "created_at": "2026-03-12T09:30:00+0300",
                 "initial_created_at": "2026-03-11T09:00:00+0300",
+                "employer": {
+                    "id": TEST_EMPLOYER_HH_ID,
+                    "name": "Pytest Detail Employer",
+                    "alternate_url": "https://hh.ru/employer/pytest-detail-employer",
+                    "trusted": True,
+                },
                 "employment": {"id": "full", "name": "Full employment"},
                 "experience": {"id": "between1And3", "name": "1-3 years"},
                 "key_skills": [{"name": "Python"}, {"name": "PostgreSQL"}],
-                "professional_roles": [{"id": "96", "name": "Programmer, developer"}],
+                "professional_roles": [
+                    {"id": TEST_ROLE_HH_IDS[0], "name": "Python Developer"},
+                    {"id": TEST_ROLE_HH_IDS[1], "name": "Data Engineer"},
+                ],
                 "published_at": "2026-03-12T10:00:00+0300",
                 "salary": {"currency": "RUR", "from": 200000, "to": 300000, "gross": False},
                 "schedule": {"id": "remote", "name": "Remote"},
@@ -150,6 +161,27 @@ def _cleanup_test_rows(engine) -> None:
                 """
             ),
             {"user_agent": TEST_USER_AGENT},
+        )
+        connection.execute(
+            text(
+                """
+                DELETE FROM employer
+                WHERE hh_employer_id = :hh_employer_id
+                """
+            ),
+            {"hh_employer_id": TEST_EMPLOYER_HH_ID},
+        )
+        connection.execute(
+            text(
+                """
+                DELETE FROM professional_role
+                WHERE hh_professional_role_id IN (:role_one, :role_two)
+                """
+            ),
+            {
+                "role_one": TEST_ROLE_HH_IDS[0],
+                "role_two": TEST_ROLE_HH_IDS[1],
+            },
         )
         connection.execute(
             text(
@@ -250,6 +282,28 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
                     "updated_at": datetime(2026, 3, 12, 11, 0, tzinfo=UTC),
                 },
             )
+            session.execute(
+                text(
+                    """
+                    INSERT INTO professional_role (
+                        hh_professional_role_id,
+                        name,
+                        category_name,
+                        is_active
+                    )
+                    VALUES
+                        (:role_one, :role_one_name, 'Pytest Category', TRUE),
+                        (:role_two, :role_two_name, 'Pytest Category', TRUE)
+                    ON CONFLICT (hh_professional_role_id) DO NOTHING
+                    """
+                ),
+                {
+                    "role_one": TEST_ROLE_HH_IDS[0],
+                    "role_one_name": "Python Developer",
+                    "role_two": TEST_ROLE_HH_IDS[1],
+                    "role_two_name": "Data Engineer",
+                },
+            )
 
             result = fetch_vacancy_detail(
                 FetchVacancyDetailCommand(vacancy_id=created_vacancy_id),
@@ -278,17 +332,42 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
                     SELECT v.hh_vacancy_id,
                            v.name_current,
                            v.alternate_url,
+                           e.hh_employer_id AS employer_hh_id,
+                           e.name AS employer_name,
                            v.employment_type_code,
                            v.schedule_type_code,
                            v.experience_code,
                            a.hh_area_id AS area_hh_id
                     FROM vacancy AS v
                     LEFT JOIN area AS a ON a.id = v.area_id
+                    LEFT JOIN employer AS e ON e.id = v.employer_id
                     WHERE v.id = :vacancy_id
                     """
                 ),
                 {"vacancy_id": created_vacancy_id},
             ).mappings().one()
+            employer_row = connection.execute(
+                text(
+                    """
+                    SELECT hh_employer_id, name, alternate_url, is_trusted
+                    FROM employer
+                    WHERE hh_employer_id = :hh_employer_id
+                    """
+                ),
+                {"hh_employer_id": TEST_EMPLOYER_HH_ID},
+            ).mappings().one()
+            vacancy_role_rows = connection.execute(
+                text(
+                    """
+                    SELECT pr.hh_professional_role_id
+                    FROM vacancy_professional_role AS vpr
+                    JOIN professional_role AS pr ON pr.id = vpr.professional_role_id
+                    WHERE vpr.vacancy_id = :vacancy_id
+                    ORDER BY pr.hh_professional_role_id
+                    """
+                ),
+                {"vacancy_id": created_vacancy_id},
+            ).mappings().all()
             attempt_row = connection.execute(
                 text(
                     """
@@ -344,10 +423,20 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
         assert vacancy_row["hh_vacancy_id"] == TEST_VACANCY_HH_ID
         assert vacancy_row["name_current"] == "Lead Python Engineer"
         assert vacancy_row["alternate_url"] == f"https://hh.ru/vacancy/{TEST_VACANCY_HH_ID}"
+        assert vacancy_row["employer_hh_id"] == TEST_EMPLOYER_HH_ID
+        assert vacancy_row["employer_name"] == "Pytest Detail Employer"
         assert vacancy_row["employment_type_code"] == "full"
         assert vacancy_row["schedule_type_code"] == "remote"
         assert vacancy_row["experience_code"] == "between1And3"
         assert vacancy_row["area_hh_id"] == TEST_AREA_HH_ID
+        assert employer_row["hh_employer_id"] == TEST_EMPLOYER_HH_ID
+        assert employer_row["name"] == "Pytest Detail Employer"
+        assert employer_row["alternate_url"] == "https://hh.ru/employer/pytest-detail-employer"
+        assert employer_row["is_trusted"] is True
+        assert [row["hh_professional_role_id"] for row in vacancy_role_rows] == [
+            TEST_ROLE_HH_IDS[1],
+            TEST_ROLE_HH_IDS[0],
+        ]
         assert attempt_row["reason"] == "manual_refetch"
         assert attempt_row["attempt"] == 1
         assert attempt_row["status"] == "succeeded"

@@ -21,7 +21,14 @@ cp .env.example .env
 - `HHRU_ENV=production`
 - `HHRU_DB_PASSWORD`
 - `HHRU_HH_API_USER_AGENT`
-- `HHRU_DB_BIND_HOST`, `HHRU_REDIS_BIND_HOST`, `HHRU_METRICS_BIND_HOST`, `HHRU_PROMETHEUS_BIND_HOST`
+- `HHRU_GRAFANA_ADMIN_PASSWORD`
+- `HHRU_DB_BIND_HOST`, `HHRU_REDIS_BIND_HOST`, `HHRU_METRICS_BIND_HOST`, `HHRU_PROMETHEUS_BIND_HOST`, `HHRU_GRAFANA_BIND_HOST`
+
+Требование к `HHRU_HH_API_USER_AGENT`:
+
+- для live vacancy search нужен реальный `User-Agent` с рабочим contact value;
+- placeholder-значения вроде `hhru-platform/0.1`, `change-me@example.com`, `your_email@example.com` теперь блокируются до похода в live `/vacancies`;
+- быстрый preflight можно посмотреть через `health-check`, поле `hh_api_user_agent_live_search_valid`.
 
 ## 3. Запуск сервисов
 
@@ -31,7 +38,7 @@ cp .env.example .env
 make up
 ```
 
-Если нужен Prometheus:
+Если нужен Prometheus и Grafana:
 
 ```bash
 make up-observability
@@ -43,6 +50,7 @@ make up-observability
 - `redis`
 - `metrics`
 - `prometheus` только при `up-observability`
+- `grafana` только при `up-observability`
 
 Операционные CLI-команды запускаются on-demand через `docker compose run --rm`.
 
@@ -75,6 +83,16 @@ curl http://127.0.0.1:8001/metrics
 curl http://127.0.0.1:9090/-/ready
 ```
 
+Если поднят observability profile, открыть:
+
+- Grafana: `http://127.0.0.1:3000`
+- Prometheus: `http://127.0.0.1:9090`
+
+Dashboards provisioned автоматически из репозитория:
+
+- `Collector Overview`
+- `HH API / Ingest Health`
+
 ## 6. Операторские CLI-команды
 
 Самый короткий run-once сценарий:
@@ -84,6 +102,12 @@ docker compose --profile ops run --rm app run-once --sync-dictionaries yes --pag
 ```
 
 `run-once` — это orchestration-lite shortcut поверх существующих MVP slices. Он не заменяет scheduler и не создаёт очередь.
+
+Новая семантика `run-once` для critical step:
+
+- если `process-list-page` завершился с ошибкой, `run-once` завершится с `status=failed` и кодом выхода `1`;
+- итоговый summary покажет `failed_step`, `completed_steps`, `skipped_steps`;
+- шаги после критичного сбоя, включая detail fetch и reconciliation, не запускаются.
 
 Примеры текущего manual flow в контейнере:
 
@@ -126,6 +150,7 @@ make restore BACKUP_FILE=/backups/<file>.dump
 
 - `docker compose ps`
 - `docker compose logs --tail=100 metrics`
+- `docker compose logs --tail=100 grafana`
 - `docker compose logs --tail=100 postgres`
 - `make compose-show-metrics`
 

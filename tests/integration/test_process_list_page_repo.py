@@ -35,6 +35,8 @@ TEST_TRIGGERED_BY = "pytest-process-list-page"
 TEST_USER_AGENT = "pytest-process-list-page"
 TEST_PARTITION_KEY = "pytest-process-list-page-partition"
 TEST_AREA_HH_ID = "pytest-process-list-area"
+TEST_EMPLOYER_IDS = ("pytest-process-list-employer-1", "pytest-process-list-employer-2")
+TEST_ROLE_IDS = ("pytest-process-list-role-python", "pytest-process-list-role-data")
 TEST_VACANCY_IDS = ("pytest-process-list-vacancy-1", "pytest-process-list-vacancy-2")
 
 
@@ -65,9 +67,18 @@ class StaticVacancySearchApiClient:
                         "created_at": "2026-03-12T09:30:00+0300",
                         "published_at": "2026-03-12T10:00:00+0300",
                         "alternate_url": "https://hh.ru/vacancy/pytest-process-list-vacancy-1",
+                        "employer": {
+                            "id": TEST_EMPLOYER_IDS[0],
+                            "name": "Pytest Employer One",
+                            "alternate_url": "https://hh.ru/employer/pytest-process-list-employer-1",
+                            "trusted": True,
+                        },
                         "employment": {"id": "full", "name": "Full"},
                         "schedule": {"id": "remote", "name": "Remote"},
                         "experience": {"id": "between1And3", "name": "1-3 years"},
+                        "professional_roles": [
+                            {"id": TEST_ROLE_IDS[0], "name": "Python Developer"}
+                        ],
                     },
                     {
                         "id": TEST_VACANCY_IDS[1],
@@ -76,9 +87,17 @@ class StaticVacancySearchApiClient:
                         "created_at": "2026-03-12T09:35:00+0300",
                         "published_at": "2026-03-12T10:05:00+0300",
                         "alternate_url": "https://hh.ru/vacancy/pytest-process-list-vacancy-2",
+                        "employer": {
+                            "id": TEST_EMPLOYER_IDS[1],
+                            "name": "Pytest Employer Two",
+                        },
                         "employment": {"id": "part", "name": "Part time"},
                         "schedule": {"id": "fullDay", "name": "Full day"},
                         "experience": {"id": "noExperience", "name": "No experience"},
+                        "professional_roles": [
+                            {"id": TEST_ROLE_IDS[1], "name": "Data Engineer"},
+                            {"id": TEST_ROLE_IDS[0], "name": "Python Developer"},
+                        ],
                     },
                 ],
                 "found": 7,
@@ -130,6 +149,28 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                     "path_text": "Test Area",
                 },
             )
+            session.execute(
+                text(
+                    """
+                    INSERT INTO professional_role (
+                        hh_professional_role_id,
+                        name,
+                        category_name,
+                        is_active
+                    )
+                    VALUES
+                        (:role_one, :role_one_name, 'Pytest Category', TRUE),
+                        (:role_two, :role_two_name, 'Pytest Category', TRUE)
+                    ON CONFLICT (hh_professional_role_id) DO NOTHING
+                    """
+                ),
+                {
+                    "role_one": TEST_ROLE_IDS[0],
+                    "role_one_name": "Python Developer",
+                    "role_two": TEST_ROLE_IDS[1],
+                    "role_two_name": "Data Engineer",
+                },
+            )
 
             crawl_run_repository = SqlAlchemyCrawlRunRepository(session)
             crawl_partition_repository = SqlAlchemyCrawlPartitionRepository(session)
@@ -171,12 +212,15 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                     """
                     SELECT v.hh_vacancy_id,
                            v.name_current,
+                           e.hh_employer_id AS employer_hh_id,
+                           e.name AS employer_name,
                            v.employment_type_code,
                            v.schedule_type_code,
                            v.experience_code,
                            a.hh_area_id AS area_hh_id
                     FROM vacancy AS v
                     LEFT JOIN area AS a ON a.id = v.area_id
+                    LEFT JOIN employer AS e ON e.id = v.employer_id
                     WHERE v.hh_vacancy_id IN (:vacancy_one, :vacancy_two)
                     ORDER BY v.hh_vacancy_id
                     """
@@ -210,6 +254,36 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                         SELECT id FROM vacancy WHERE hh_vacancy_id IN (:vacancy_one, :vacancy_two)
                     )
                     ORDER BY vacancy_id
+                    """
+                ),
+                {
+                    "vacancy_one": TEST_VACANCY_IDS[0],
+                    "vacancy_two": TEST_VACANCY_IDS[1],
+                },
+            ).mappings().all()
+            employer_rows = connection.execute(
+                text(
+                    """
+                    SELECT hh_employer_id, name, alternate_url, is_trusted
+                    FROM employer
+                    WHERE hh_employer_id IN (:employer_one, :employer_two)
+                    ORDER BY hh_employer_id
+                    """
+                ),
+                {
+                    "employer_one": TEST_EMPLOYER_IDS[0],
+                    "employer_two": TEST_EMPLOYER_IDS[1],
+                },
+            ).mappings().all()
+            vacancy_role_rows = connection.execute(
+                text(
+                    """
+                    SELECT v.hh_vacancy_id, pr.hh_professional_role_id
+                    FROM vacancy_professional_role AS vpr
+                    JOIN vacancy AS v ON v.id = vpr.vacancy_id
+                    JOIN professional_role AS pr ON pr.id = vpr.professional_role_id
+                    WHERE v.hh_vacancy_id IN (:vacancy_one, :vacancy_two)
+                    ORDER BY v.hh_vacancy_id, pr.hh_professional_role_id
                     """
                 ),
                 {
@@ -251,10 +325,25 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
 
         assert [row["hh_vacancy_id"] for row in vacancy_rows] == list(TEST_VACANCY_IDS)
         assert all(row["area_hh_id"] == TEST_AREA_HH_ID for row in vacancy_rows)
+        assert [row["employer_hh_id"] for row in vacancy_rows] == list(TEST_EMPLOYER_IDS)
+        assert vacancy_rows[0]["employer_name"] == "Pytest Employer One"
+        assert vacancy_rows[1]["employer_name"] == "Pytest Employer Two"
         assert vacancy_rows[0]["employment_type_code"] == "full"
         assert vacancy_rows[0]["schedule_type_code"] == "remote"
         assert vacancy_rows[0]["experience_code"] == "between1And3"
         assert vacancy_rows[1]["employment_type_code"] == "part"
+        assert [row["hh_employer_id"] for row in employer_rows] == list(TEST_EMPLOYER_IDS)
+        assert employer_rows[0]["alternate_url"] == "https://hh.ru/employer/pytest-process-list-employer-1"
+        assert employer_rows[0]["is_trusted"] is True
+        assert employer_rows[1]["alternate_url"] is None
+        assert employer_rows[1]["is_trusted"] is None
+        assert [
+            (row["hh_vacancy_id"], row["hh_professional_role_id"]) for row in vacancy_role_rows
+        ] == [
+            (TEST_VACANCY_IDS[0], TEST_ROLE_IDS[0]),
+            (TEST_VACANCY_IDS[1], TEST_ROLE_IDS[1]),
+            (TEST_VACANCY_IDS[1], TEST_ROLE_IDS[0]),
+        ]
         assert len(seen_event_rows) == 2
         assert [row["list_position"] for row in seen_event_rows] == [0, 1]
         assert all(row["short_payload_ref_id"] == raw_payload_row["id"] for row in seen_event_rows)
@@ -289,6 +378,30 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                     """
                 ),
                 {"triggered_by": TEST_TRIGGERED_BY},
+            )
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM employer
+                    WHERE hh_employer_id IN (:employer_one, :employer_two)
+                    """
+                ),
+                {
+                    "employer_one": TEST_EMPLOYER_IDS[0],
+                    "employer_two": TEST_EMPLOYER_IDS[1],
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    DELETE FROM professional_role
+                    WHERE hh_professional_role_id IN (:role_one, :role_two)
+                    """
+                ),
+                {
+                    "role_one": TEST_ROLE_IDS[0],
+                    "role_two": TEST_ROLE_IDS[1],
+                },
             )
             connection.execute(
                 text(

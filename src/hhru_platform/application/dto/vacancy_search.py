@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from hhru_platform.application.dto.enrichment import NormalizedEmployerReference
+
 
 @dataclass(slots=True, frozen=True)
 class VacancySearchResponse:
@@ -32,6 +34,8 @@ class NormalizedVacancyShortRecord:
     employment_type_code: str | None
     schedule_type_code: str | None
     experience_code: str | None
+    employer: NormalizedEmployerReference | None
+    professional_role_hh_ids: tuple[str, ...]
     short_hash: str
     list_position: int
 

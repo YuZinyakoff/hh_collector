@@ -8,7 +8,7 @@ up:
 	$(COMPOSE) up -d postgres redis metrics
 
 up-observability:
-	$(COMPOSE) --profile observability up -d postgres redis metrics prometheus
+	$(COMPOSE) --profile observability up -d postgres redis metrics prometheus grafana
 
 down:
 	$(COMPOSE) down

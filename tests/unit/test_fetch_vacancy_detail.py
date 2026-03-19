@@ -141,10 +141,18 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_raw_and_current_state() 
             "area": {"id": "pytest-area", "name": "Test Area"},
             "created_at": "2026-03-12T09:30:00+0300",
             "initial_created_at": "2026-03-11T09:00:00+0300",
+            "employer": {
+                "id": "pytest-employer-1",
+                "name": "Pytest Employer One",
+                "alternate_url": "https://hh.ru/employer/pytest-employer-1",
+                "trusted": True,
+            },
             "employment": {"id": "full", "name": "Full employment"},
             "experience": {"id": "between1And3", "name": "1-3 years"},
             "key_skills": [{"name": "Python"}, {"name": "SQL"}],
-            "professional_roles": [{"id": "96", "name": "Programmer, developer"}],
+            "professional_roles": [
+                {"id": "pytest-role-python", "name": "Programmer, developer"}
+            ],
             "published_at": "2026-03-12T10:00:00+0300",
             "salary": {"currency": "RUR", "from": 200000, "to": 300000, "gross": False},
             "schedule": {"id": "remote", "name": "Remote"},
@@ -174,6 +182,11 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_raw_and_current_state() 
     assert raw_api_payload_repository.records[0]["endpoint_type"] == "vacancies.detail"
     assert vacancy_repository.updated_detail is not None
     assert vacancy_repository.updated_detail.name_current == "Senior Python Engineer"
+    assert vacancy_repository.updated_detail.employer is not None
+    assert vacancy_repository.updated_detail.employer.hh_employer_id == "pytest-employer-1"
+    assert vacancy_repository.updated_detail.professional_role_hh_ids == (
+        "pytest-role-python",
+    )
     assert vacancy_snapshot_repository.records[0]["snapshot_type"] == "detail"
     assert vacancy_snapshot_repository.records[0]["change_reason"] == "manual_refetch"
     assert (

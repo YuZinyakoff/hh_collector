@@ -21,6 +21,9 @@ from hhru_platform.infrastructure.hh_api.endpoints import (
     get_dictionary_endpoint,
     get_vacancy_detail_endpoint,
 )
+from hhru_platform.infrastructure.hh_api.user_agent import (
+    validate_live_vacancy_search_user_agent,
+)
 from hhru_platform.infrastructure.observability.metrics import get_metrics_registry
 
 
@@ -45,14 +48,14 @@ class HHApiClient:
         *,
         base_url: str = "https://api.hh.ru",
         timeout: float = 30.0,
-        user_agent: str = "hhru-platform/0.1",
+        user_agent: str = "hhru-platform/0.1 (contact: change-me@example.com)",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._user_agent = user_agent
 
     @classmethod
-    def from_settings(cls, settings: Settings | None = None) -> "HHApiClient":
+    def from_settings(cls, settings: Settings | None = None) -> HHApiClient:
         resolved_settings = settings or get_settings()
         return cls(
             base_url=resolved_settings.hh_api_base_url,
@@ -80,6 +83,7 @@ class HHApiClient:
         )
 
     def search_vacancies(self, params_json: Mapping[str, object]) -> VacancySearchResponse:
+        self.validate_live_vacancy_search_user_agent()
         response = self._perform_get(VACANCY_SEARCH_ENDPOINT, params_json=params_json)
         return VacancySearchResponse(
             endpoint=VACANCY_SEARCH_ENDPOINT,
@@ -95,6 +99,9 @@ class HHApiClient:
             error_type=response.error_type,
             error_message=response.error_message,
         )
+
+    def validate_live_vacancy_search_user_agent(self) -> None:
+        validate_live_vacancy_search_user_agent(self._user_agent)
 
     def fetch_vacancy_detail(self, hh_vacancy_id: str) -> VacancyDetailResponse:
         endpoint = get_vacancy_detail_endpoint(hh_vacancy_id)

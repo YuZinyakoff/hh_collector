@@ -27,6 +27,7 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-once 
 ```
 
 Ожидаемо:
+- `status=succeeded`
 - есть `run_id`
 - `partitions_processed>=1`
 - `list_pages_processed>=1`
@@ -35,6 +36,12 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-once 
 - `reconciliation_status=completed`
 
 Эта команда использует те же самые existing slices, что и пошаговый manual flow ниже. Если нужно точечно диагностировать отдельный этап, используй ручные команды из следующего раздела.
+
+Если `HHRU_HH_API_USER_AGENT` оставлен placeholder-значением вроде `hhru-platform/0.1` или `change-me@example.com`, live `run-once` теперь не маскирует это как happy path:
+
+- `process-list-page` помечает partition как `failed`;
+- `run-once` завершится с `status=failed`, `failed_step=process_list_page` и кодом выхода `1`;
+- detail fetch и reconciliation будут пропущены и отражены в `skipped_steps`.
 
 ## Happy Path
 

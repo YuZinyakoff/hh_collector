@@ -67,6 +67,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     )
     assert "redis_url=redis://redis.internal:6379/1" in captured.out
     assert "hh_api_user_agent=hhru-platform/0.1 (contact: ops@example.com)" in captured.out
+    assert "hh_api_user_agent_live_search_valid=yes" in captured.out
     assert "metrics_state_path=.state/metrics/metrics.json" in captured.out
     assert "backup_retention_days=14" in captured.out
 
@@ -87,6 +88,7 @@ def test_run_once_cli_prints_summary(monkeypatch, capsys) -> None:
         assert "fetch_vacancy_detail_step" in kwargs
         assert "reconcile_run_step" in kwargs
         return RunCollectionOnceResult(
+            status="succeeded",
             run_id=run_id,
             run_type="weekly_sweep",
             triggered_by="cli",
@@ -101,6 +103,7 @@ def test_run_once_cli_prints_summary(monkeypatch, capsys) -> None:
                 marked_inactive_count=0,
                 run_status="completed",
             ),
+            completed_steps=("create_crawl_run", "plan_sweep", "reconcile_run"),
         )
 
     monkeypatch.setattr(
@@ -130,11 +133,69 @@ def test_run_once_cli_prints_summary(monkeypatch, capsys) -> None:
 
     assert exit_code == 0
     assert "completed run-once collection" in captured.out
+    assert "status=succeeded" in captured.out
     assert f"run_id={run_id}" in captured.out
     assert "partitions_planned=1" in captured.out
+    assert "partitions_attempted=0" in captured.out
     assert "list_pages_processed=0" in captured.out
     assert "detail_fetch_attempted=0" in captured.out
     assert "reconciliation_status=completed" in captured.out
+    assert "completed_steps=create_crawl_run,plan_sweep,reconcile_run" in captured.out
+    assert "failed_step=-" in captured.out
+
+
+def test_run_once_cli_returns_non_zero_and_prints_failure_summary(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+
+    def fake_run_collection_once(command, **kwargs) -> RunCollectionOnceResult:
+        return RunCollectionOnceResult(
+            status="failed",
+            run_id=run_id,
+            run_type=command.run_type,
+            triggered_by=command.triggered_by,
+            dictionary_results=(),
+            planned_partition_ids=(uuid4(),),
+            list_page_results=(),
+            detail_results=(),
+            reconciliation_result=None,
+            failed_step="process_list_page",
+            error_message="Invalid HH API User-Agent for live vacancy search",
+            completed_steps=("create_crawl_run", "plan_sweep"),
+            skipped_steps=("fetch_vacancy_detail", "reconcile_run"),
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.run_once.run_collection_once",
+        fake_run_collection_once,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-once",
+            "--pages-per-partition",
+            "1",
+            "--detail-limit",
+            "1",
+            "--run-type",
+            "weekly_sweep",
+            "--triggered-by",
+            "cli",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "failed run-once collection" in captured.out
+    assert "status=failed" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "reconciliation_status=skipped" in captured.out
+    assert "completed_steps=create_crawl_run,plan_sweep" in captured.out
+    assert "skipped_steps=fetch_vacancy_detail,reconcile_run" in captured.out
+    assert "failed_step=process_list_page" in captured.out
+    assert "error=Invalid HH API User-Agent for live vacancy search" in captured.out
 
 
 def test_create_run_cli_prints_created_run(monkeypatch, capsys) -> None:

@@ -5,6 +5,7 @@ from hhru_platform.application.dto.dictionary_sync import (
     DictionaryFetchResponse,
     DictionaryPersistSummary,
 )
+from hhru_platform.application.dto.enrichment import NormalizedEmployerReference
 from hhru_platform.application.dto.vacancy_detail import (
     NormalizedVacancyDetail,
     VacancyDetailResponse,
@@ -21,6 +22,7 @@ from hhru_platform.application.dto.vacancy_search import (
 __all__ = [
     "DictionaryFetchResponse",
     "DictionaryPersistSummary",
+    "NormalizedEmployerReference",
     "NormalizedVacancyDetail",
     "NormalizedVacancySearchPage",
     "NormalizedVacancyShortRecord",

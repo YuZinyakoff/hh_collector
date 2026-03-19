@@ -5,7 +5,14 @@ import json
 from datetime import datetime
 from typing import Any
 
-from hhru_platform.application.dto import NormalizedVacancyDetail
+from hhru_platform.application.dto import (
+    NormalizedEmployerReference,
+    NormalizedVacancyDetail,
+)
+from hhru_platform.infrastructure.normalization.employer_normalizer import (
+    EmployerNormalizationError,
+    normalize_employer_reference,
+)
 
 
 class VacancyDetailNormalizationError(ValueError):
@@ -22,6 +29,11 @@ def normalize_vacancy_detail(payload_json: object) -> NormalizedVacancyDetail:
     created_at_hh = _parse_datetime(payload_json.get("initial_created_at"))
     if created_at_hh is None:
         created_at_hh = _parse_datetime(payload_json.get("created_at"))
+    try:
+        employer = normalize_employer_reference(payload_json.get("employer"))
+    except EmployerNormalizationError as error:
+        raise VacancyDetailNormalizationError(str(error)) from error
+    professional_role_hh_ids = _normalize_lookup_ids(payload_json.get("professional_roles"))
 
     normalized_json: dict[str, object] = {
         "hh_vacancy_id": hh_vacancy_id,
@@ -31,11 +43,11 @@ def normalize_vacancy_detail(payload_json: object) -> NormalizedVacancyDetail:
         "alternate_url": _optional_string(payload_json.get("alternate_url")),
         "archived": _optional_bool(payload_json.get("archived")),
         "area": _normalize_area(payload_json.get("area")),
-        "employer": _normalize_employer(payload_json.get("employer")),
+        "employer": _employer_to_json(employer),
         "employment_type_code": _lookup_id(payload_json.get("employment")),
         "schedule_type_code": _lookup_id(payload_json.get("schedule")),
         "experience_code": _lookup_id(payload_json.get("experience")),
-        "professional_role_hh_ids": _normalize_lookup_ids(payload_json.get("professional_roles")),
+        "professional_role_hh_ids": list(professional_role_hh_ids),
         "key_skill_names": _normalize_key_skills(payload_json.get("key_skills")),
         "salary": _optional_mapping(payload_json.get("salary")),
         "salary_range": _optional_mapping(payload_json.get("salary_range")),
@@ -53,6 +65,8 @@ def normalize_vacancy_detail(payload_json: object) -> NormalizedVacancyDetail:
         employment_type_code=_lookup_id(payload_json.get("employment")),
         schedule_type_code=_lookup_id(payload_json.get("schedule")),
         experience_code=_lookup_id(payload_json.get("experience")),
+        employer=employer,
+        professional_role_hh_ids=professional_role_hh_ids,
         normalized_json=normalized_json,
         detail_hash=_build_detail_hash(normalized_json),
     )
@@ -69,21 +83,24 @@ def _normalize_area(payload: object) -> dict[str, object] | None:
     }
 
 
-def _normalize_employer(payload: object) -> dict[str, object] | None:
+def _employer_to_json(
+    payload: NormalizedEmployerReference | None,
+) -> dict[str, object] | None:
     if payload is None:
         return None
-    if not isinstance(payload, dict):
-        raise VacancyDetailNormalizationError("employer must be an object")
     return {
-        "hh_employer_id": _optional_string(payload.get("id")),
-        "name": _optional_string(payload.get("name")),
-        "alternate_url": _optional_string(payload.get("alternate_url")),
+        "hh_employer_id": payload.hh_employer_id,
+        "name": payload.name,
+        "alternate_url": payload.alternate_url,
+        "site_url": payload.site_url,
+        "area_hh_id": payload.area_hh_id,
+        "is_trusted": payload.is_trusted,
     }
 
 
-def _normalize_lookup_ids(payload: object) -> list[str]:
+def _normalize_lookup_ids(payload: object) -> tuple[str, ...]:
     if payload is None:
-        return []
+        return ()
     if not isinstance(payload, list):
         raise VacancyDetailNormalizationError("professional_roles must be a list")
     normalized_ids: list[str] = []
@@ -91,7 +108,7 @@ def _normalize_lookup_ids(payload: object) -> list[str]:
         lookup_id = _lookup_id(item)
         if lookup_id is not None:
             normalized_ids.append(lookup_id)
-    return normalized_ids
+    return tuple(dict.fromkeys(normalized_ids))
 
 
 def _normalize_key_skills(payload: object) -> list[str]:

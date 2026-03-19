@@ -9,6 +9,10 @@ from hhru_platform.application.dto import (
     NormalizedVacancySearchPage,
     NormalizedVacancyShortRecord,
 )
+from hhru_platform.infrastructure.normalization.employer_normalizer import (
+    EmployerNormalizationError,
+    normalize_employer_reference,
+)
 
 
 class VacancySearchNormalizationError(ValueError):
@@ -46,6 +50,10 @@ def _normalize_vacancy_item(
 ) -> NormalizedVacancyShortRecord:
     if not isinstance(payload, dict):
         raise VacancySearchNormalizationError("vacancy item must be an object")
+    try:
+        employer = normalize_employer_reference(payload.get("employer"))
+    except EmployerNormalizationError as error:
+        raise VacancySearchNormalizationError(str(error)) from error
 
     return NormalizedVacancyShortRecord(
         hh_vacancy_id=_require_string(payload, "id"),
@@ -57,6 +65,8 @@ def _normalize_vacancy_item(
         employment_type_code=_lookup_id(payload.get("employment")),
         schedule_type_code=_lookup_id(payload.get("schedule")),
         experience_code=_lookup_id(payload.get("experience")),
+        employer=employer,
+        professional_role_hh_ids=_normalize_lookup_ids(payload.get("professional_roles")),
         short_hash=_build_short_hash(payload),
         list_position=list_position,
     )
@@ -92,6 +102,20 @@ def _optional_int(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise VacancySearchNormalizationError("expected integer-compatible value")
     return value
+
+
+def _normalize_lookup_ids(payload: object) -> tuple[str, ...]:
+    if payload is None:
+        return ()
+    if not isinstance(payload, list):
+        raise VacancySearchNormalizationError("professional_roles must be a list")
+
+    normalized_ids: list[str] = []
+    for item in payload:
+        lookup_id = _lookup_id(item)
+        if lookup_id is not None:
+            normalized_ids.append(lookup_id)
+    return tuple(dict.fromkeys(normalized_ids))
 
 
 def _parse_datetime(value: object) -> datetime | None:

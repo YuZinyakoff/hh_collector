@@ -16,6 +16,9 @@ from hhru_platform.application.dto import (
 )
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.value_objects.enums import CrawlPartitionStatus
+from hhru_platform.infrastructure.hh_api.user_agent import (
+    HHApiUserAgentValidationError,
+)
 from hhru_platform.infrastructure.normalization.vacancy_short_normalizer import (
     VacancySearchNormalizationError,
     normalize_vacancy_search_page,
@@ -68,7 +71,7 @@ class ProcessListPageResult:
     vacancies_processed: int
     vacancies_created: int
     seen_events_created: int
-    request_log_id: int
+    request_log_id: int | None
     raw_payload_id: int | None
     processed_vacancies: list[StoredVacancyReference]
     error_message: str | None
@@ -194,7 +197,39 @@ def process_list_page(
         if not isinstance(page_number, int):
             raise TypeError("search parameter page must be an integer")
 
-        response = api_client.search_vacancies(search_params)
+        try:
+            response = api_client.search_vacancies(search_params)
+        except HHApiUserAgentValidationError as error:
+            failed_partition = crawl_partition_repository.mark_failed(
+                partition_id=partition.id,
+                error_message=str(error),
+            )
+            result = ProcessListPageResult(
+                partition_id=partition.id,
+                partition_status=failed_partition.status,
+                page=page_number,
+                pages_total_expected=None,
+                vacancies_processed=0,
+                vacancies_created=0,
+                seen_events_created=0,
+                request_log_id=None,
+                raw_payload_id=None,
+                processed_vacancies=[],
+                error_message=str(error),
+            )
+            record_operation_failed(
+                LOGGER,
+                operation="process_list_page",
+                started_at=started_at,
+                error_type=error.__class__.__name__,
+                error_message=str(error),
+                level=logging.ERROR,
+                run_id=partition.crawl_run_id,
+                partition_id=partition.id,
+                page=page_number,
+            )
+            return result
+
         request_log_id = api_request_log_repository.add(
             crawl_run_id=partition.crawl_run_id,
             crawl_partition_id=partition.id,

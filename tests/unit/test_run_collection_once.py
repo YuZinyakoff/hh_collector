@@ -182,12 +182,136 @@ def test_run_collection_once_sequences_existing_slices_and_builds_summary() -> N
         ("detail", vacancy_two.id, run_id, "run_once"),
         ("reconcile", run_id),
     ]
+    assert result.status == "succeeded"
     assert result.run_id == run_id
     assert result.partitions_planned == 1
+    assert result.partitions_attempted == 1
     assert result.partitions_processed == 1
+    assert result.partitions_failed == 0
+    assert result.list_pages_attempted == 2
     assert result.list_pages_processed == 2
+    assert result.list_pages_failed == 0
     assert result.vacancies_found == 3
     assert result.detail_fetch_attempted == 2
     assert result.detail_fetch_succeeded == 2
     assert result.detail_fetch_failed == 0
     assert result.reconciliation_status == "completed"
+    assert result.failed_step is None
+    assert result.error_message is None
+    assert result.completed_steps == (
+        "sync_dictionaries",
+        "create_crawl_run",
+        "plan_sweep",
+        "process_list_page",
+        "fetch_vacancy_detail",
+        "reconcile_run",
+    )
+    assert result.skipped_steps == ()
+
+
+def test_run_collection_once_fails_fast_when_process_list_page_returns_failed_result() -> None:
+    run_id = uuid4()
+    partition_id = uuid4()
+    events: list[tuple[object, ...]] = []
+
+    def sync_dictionary_step(command):
+        raise AssertionError(f"unexpected dictionary sync {command.dictionary_name}")
+
+    def create_crawl_run_step(command):
+        events.append(("create", command.run_type, command.triggered_by))
+        return CrawlRun(
+            id=run_id,
+            run_type=command.run_type,
+            status="created",
+            started_at=datetime(2026, 3, 13, 12, 0, tzinfo=UTC),
+            finished_at=None,
+            triggered_by=command.triggered_by,
+            config_snapshot_json={},
+            partitions_total=0,
+            partitions_done=0,
+            partitions_failed=0,
+            notes=None,
+        )
+
+    def plan_run_step(command):
+        events.append(("plan", command.crawl_run_id))
+        partition = CrawlPartition(
+            id=partition_id,
+            crawl_run_id=command.crawl_run_id,
+            partition_key="global-default",
+            params_json={"scope": "global"},
+            status="pending",
+            pages_total_expected=None,
+            pages_processed=0,
+            items_seen=0,
+            retry_count=0,
+            started_at=None,
+            finished_at=None,
+            last_error_message=None,
+            created_at=datetime(2026, 3, 13, 12, 1, tzinfo=UTC),
+        )
+        return PlanRunResult(
+            crawl_run_id=command.crawl_run_id,
+            created_partitions=[partition],
+            partitions=[partition],
+        )
+
+    def process_list_page_step(command):
+        events.append(("page", command.partition_id, command.page))
+        return ProcessListPageResult(
+            partition_id=command.partition_id,
+            partition_status="failed",
+            page=0,
+            pages_total_expected=None,
+            vacancies_processed=0,
+            vacancies_created=0,
+            seen_events_created=0,
+            request_log_id=None,
+            raw_payload_id=None,
+            processed_vacancies=[],
+            error_message="Invalid HH API User-Agent for live vacancy search",
+        )
+
+    def fetch_vacancy_detail_step(command):
+        raise AssertionError(f"unexpected detail fetch {command.vacancy_id}")
+
+    def reconcile_run_step(command):
+        raise AssertionError(f"unexpected reconcile {command.crawl_run_id}")
+
+    result = run_collection_once(
+        RunCollectionOnceCommand(
+            sync_dictionaries=False,
+            pages_per_partition=1,
+            detail_limit=3,
+            run_type="weekly_sweep",
+            triggered_by="cli",
+        ),
+        sync_dictionary_step=sync_dictionary_step,
+        create_crawl_run_step=create_crawl_run_step,
+        plan_run_step=plan_run_step,
+        process_list_page_step=process_list_page_step,
+        fetch_vacancy_detail_step=fetch_vacancy_detail_step,
+        reconcile_run_step=reconcile_run_step,
+    )
+
+    assert events == [
+        ("create", "weekly_sweep", "cli"),
+        ("plan", run_id),
+        ("page", partition_id, 0),
+    ]
+    assert result.status == "failed"
+    assert result.run_id == run_id
+    assert result.failed_step == "process_list_page"
+    assert result.error_message is not None
+    assert "Invalid HH API User-Agent" in result.error_message
+    assert result.partitions_planned == 1
+    assert result.partitions_attempted == 1
+    assert result.partitions_processed == 0
+    assert result.partitions_failed == 1
+    assert result.list_pages_attempted == 1
+    assert result.list_pages_processed == 0
+    assert result.list_pages_failed == 1
+    assert result.detail_fetch_attempted == 0
+    assert result.reconciliation_status == "skipped"
+    assert result.completed_steps == ("create_crawl_run", "plan_sweep")
+    assert result.skipped_steps == ("fetch_vacancy_detail", "reconcile_run")

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from hhru_platform.application.dto.enrichment import NormalizedEmployerReference
+
 
 @dataclass(slots=True, frozen=True)
 class VacancyDetailResponse:
@@ -31,5 +33,7 @@ class NormalizedVacancyDetail:
     employment_type_code: str | None
     schedule_type_code: str | None
     experience_code: str | None
+    employer: NormalizedEmployerReference | None
+    professional_role_hh_ids: tuple[str, ...]
     normalized_json: dict[str, object]
     detail_hash: str

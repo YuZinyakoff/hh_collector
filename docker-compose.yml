@@ -111,6 +111,24 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
 
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    profiles: ["observability"]
+    restart: unless-stopped
+    ports:
+      - "${HHRU_GRAFANA_BIND_HOST:-127.0.0.1}:${HHRU_GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${HHRU_GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${HHRU_GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/collector-overview.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
   backup:
     build:
       context: .
@@ -137,3 +155,4 @@ volumes:
   postgres_data:
   redis_data:
   prometheus_data:
+  grafana_data:

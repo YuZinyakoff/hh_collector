@@ -103,6 +103,37 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 - поставить `list_page_job` для стартовых страниц;
 - при необходимости адаптивно дробить слишком широкие партиции.
 
+### Planner v2 foundation
+
+`planner v1` сохраняется как legacy smoke-path с одной глобальной partition для orchestration-lite сценариев.
+
+`planner v2` является foundation для exhaustive collection architecture:
+
+- initial planning строит не одну global partition, а набор disjoint area-root partitions;
+- каждая partition хранится как узел дерева с `parent_partition_id`, `depth`, `scope_key`;
+- saturated partition переводится в `split_required`, а после materialized split в `split_done`;
+- children получают более узкий area scope и продолжают tree lineage того же `crawl_run`.
+
+Поверх foundation реализован `list engine v2`:
+
+- выбирает `pending` terminal leaves;
+- дочитывает non-saturated leaf по страницам до конца;
+- интерпретирует `pages_total_expected >= 100` как saturation policy v1;
+- для saturated leaf читает первую страницу, фиксирует что scope слишком широк, и materialize'ит child partitions через area split;
+- трактует `done + covered` как полно покрытый leaf, а `split_done + split` как coverage delegation на children.
+
+На текущем шаге scheduler/queue orchestration всё ещё не реализованы:
+
+- execution остаётся управляемым через CLI/use-case;
+- unattended queue-based recursion остаётся следующим этапом.
+
+Поверх tree execution добавлен минимальный reporting layer:
+
+- `show-run-coverage` считает coverage summary из текущего набора `crawl_partition` этого run;
+- `show-run-tree` печатает компактное text-tree представление с `depth`, `scope_key`, `status`, `coverage_status`;
+- completion ratio интерпретируется как `covered_terminal_partitions / terminal_partitions`;
+- run coverage не хранится отдельной таблицей, а вычисляется из tree semantics на чтении.
+
 ### Вход
 - `crawl_run_id`
 - конфигурация sweep policy
@@ -127,10 +158,12 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 - создать seen events;
 - обновить current state;
 - создать detail jobs по правилам;
-- при наличии следующей страницы поставить продолжение в очередь.
+- при наличии следующей страницы продолжить pagination loop внутри того же terminal partition;
+- при saturation не считать parent scope покрытым и split'нуть его в child partitions.
 
 ### Вход
-`list_page_job`
+- `list_page_job` для legacy flow;
+- `process_partition_v2(partition_id)` для planner-v2 tree execution.
 
 ### Выход
 - `api_request_log`
@@ -138,7 +171,8 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 - `vacancy_seen_event`
 - обновление `vacancy_current_state`
 - `detail_fetch_job`
-- следующий `list_page_job`
+- либо следующий page того же leaf scope;
+- либо child partitions для следующего прохода по дереву.
 
 ---
 
@@ -228,6 +262,16 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 - `show-run`
 - `show-partition`
 - `health-check`
+
+Текущий operator path для planner/list execution:
+
+- `plan-run` для legacy single-partition smoke flow;
+- `plan-run-v2` для создания area-root tree;
+- `process-list-page` для legacy page-by-page flow;
+- `process-partition-v2` для одного terminal leaf с pagination/saturation handling;
+- `run-list-engine-v2` для прохода по всем pending terminal leaves внутри `crawl_run`.
+- `show-run-coverage` для tree-based coverage summary;
+- `show-run-tree` для компактного tree view без SQL.
 
 ### Назначение
 - ручной запуск;

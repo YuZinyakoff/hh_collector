@@ -70,9 +70,18 @@
 Поля:
 - `id` UUID PK
 - `crawl_run_id` UUID FK -> crawl_run.id
+- `parent_partition_id` UUID null FK -> crawl_partition.id
 - `partition_key` text
+- `scope_key` text
 - `params_json` jsonb
 - `status` text
+- `depth` int default 0
+- `split_dimension` text null
+- `split_value` text null
+- `planner_policy_version` text default `'v1'`
+- `is_terminal` boolean default true
+- `is_saturated` boolean default false
+- `coverage_status` text default `'unassessed'`
 - `pages_total_expected` int null
 - `pages_processed` int default 0
 - `items_seen` int default 0
@@ -84,10 +93,31 @@
 
 Ограничения:
 - unique (`crawl_run_id`, `partition_key`)
+- unique (`crawl_run_id`, `scope_key`)
 
 Индексы:
 - `idx_crawl_partition_run_id`
 - `idx_crawl_partition_status`
+- `idx_crawl_partition_parent_partition_id`
+- `idx_crawl_partition_coverage_status`
+
+Семантика planner v2:
+
+- root partitions имеют `parent_partition_id = null` и `depth = 0`;
+- child partitions указывают на parent узел того же `crawl_run`;
+- `status` описывает lifecycle партиции как operational unit;
+- `coverage_status` описывает outcome покрытия search scope;
+- `scope_key` задаёт каноническую identity search scope внутри `crawl_run`;
+- `done + covered` означает terminal leaf, полностью дочитанный по pagination loop;
+- `split_done + split` означает saturated parent, который не считается покрытым сам по себе и делегирует coverage child partitions;
+- `unresolved` означает scope, который не удалось сузить текущей split-policy и который нельзя считать покрытым.
+
+Reporting semantics на уровне `crawl_run` выводятся из этих же полей:
+
+- `coverage_ratio = covered_terminal_partitions / terminal_partitions`;
+- `pending_terminal_partitions` показывают, сколько leaf scopes ещё не покрыто;
+- `split_partitions` показывают, сколько parent scopes делегировали coverage детям;
+- `failed` и `unresolved` не должны интерпретироваться как покрытые части дерева.
 
 ---
 
@@ -382,6 +412,7 @@
 Ключевые связи:
 
 - `crawl_run 1:N crawl_partition`
+- `crawl_partition 1:N crawl_partition` via `parent_partition_id`
 - `crawl_run 1:N api_request_log`
 - `crawl_partition 1:N api_request_log`
 - `api_request_log 1:1..N raw_api_payload`

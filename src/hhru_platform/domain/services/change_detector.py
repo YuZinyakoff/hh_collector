@@ -1,2 +1,1 @@
 """Change detector placeholder."""
-

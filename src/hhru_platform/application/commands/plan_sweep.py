@@ -52,6 +52,15 @@ class CrawlPartitionRepository(Protocol):
         partition_key: str,
         status: str,
         params_json: dict[str, object],
+        parent_partition_id: UUID | None = None,
+        depth: int = 0,
+        split_dimension: str | None = None,
+        split_value: str | None = None,
+        scope_key: str | None = None,
+        planner_policy_version: str = "v1",
+        is_terminal: bool = True,
+        is_saturated: bool = False,
+        coverage_status: str = "unassessed",
     ) -> CrawlPartition:
         """Persist and return a newly created crawl partition."""
 
@@ -95,6 +104,15 @@ def plan_sweep(
                     partition_key=definition.partition_key,
                     status=CrawlPartitionStatus.PENDING.value,
                     params_json=dict(definition.params_json),
+                    parent_partition_id=definition.parent_partition_id,
+                    depth=definition.depth,
+                    split_dimension=definition.split_dimension,
+                    split_value=definition.split_value,
+                    scope_key=definition.scope_key,
+                    planner_policy_version=definition.planner_policy_version,
+                    is_terminal=definition.is_terminal,
+                    is_saturated=definition.is_saturated,
+                    coverage_status=definition.coverage_status,
                 )
                 created_partitions.append(partition)
                 existing_partitions[partition.partition_key] = partition
@@ -112,9 +130,7 @@ def plan_sweep(
             started_at=started_at,
             error_type=error.__class__.__name__,
             error_message=str(error),
-            level=logging.WARNING
-            if isinstance(error, CrawlRunNotFoundError)
-            else logging.ERROR,
+            level=logging.WARNING if isinstance(error, CrawlRunNotFoundError) else logging.ERROR,
             run_id=command.crawl_run_id,
         )
         raise

@@ -9,8 +9,19 @@ class CrawlRunStatus(StrEnum):
 class CrawlPartitionStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    SPLIT_REQUIRED = "split_required"
+    SPLIT_DONE = "split_done"
     DONE = "done"
     FAILED = "failed"
+    UNRESOLVED = "unresolved"
+
+
+class CrawlPartitionCoverageStatus(StrEnum):
+    UNASSESSED = "unassessed"
+    COVERED = "covered"
+    SATURATED = "saturated"
+    SPLIT = "split"
+    UNRESOLVED = "unresolved"
 
 
 class DictionarySyncStatus(StrEnum):

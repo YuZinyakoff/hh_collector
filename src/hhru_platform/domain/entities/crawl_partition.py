@@ -21,3 +21,12 @@ class CrawlPartition:
     finished_at: datetime | None
     last_error_message: str | None
     created_at: datetime
+    parent_partition_id: UUID | None = None
+    depth: int = 0
+    split_dimension: str | None = None
+    split_value: str | None = None
+    scope_key: str | None = None
+    planner_policy_version: str = "v1"
+    is_terminal: bool = True
+    is_saturated: bool = False
+    coverage_status: str = "unassessed"

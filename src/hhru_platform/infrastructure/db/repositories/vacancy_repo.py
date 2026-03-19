@@ -51,7 +51,9 @@ class SqlAlchemyVacancyRepository:
         hh_vacancy_ids = [record.hh_vacancy_id for record in deduplicated_records]
         existing_ids = set(
             self._session.scalars(
-                select(VacancyModel.hh_vacancy_id).where(VacancyModel.hh_vacancy_id.in_(hh_vacancy_ids))
+                select(VacancyModel.hh_vacancy_id).where(
+                    VacancyModel.hh_vacancy_id.in_(hh_vacancy_ids)
+                )
             )
         )
         area_ids_by_hh_id = self._load_area_ids(deduplicated_records)
@@ -182,9 +184,7 @@ class SqlAlchemyVacancyRepository:
     def _resolve_area_id(self, area_hh_id: str | None) -> UUID | None:
         if area_hh_id is None:
             return None
-        return self._session.scalar(
-            select(AreaModel.id).where(AreaModel.hh_area_id == area_hh_id)
-        )
+        return self._session.scalar(select(AreaModel.id).where(AreaModel.hh_area_id == area_hh_id))
 
 
 def _deduplicate_records(

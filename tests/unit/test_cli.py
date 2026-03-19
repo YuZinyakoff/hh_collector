@@ -23,10 +23,17 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "plan-run" in captured.out
+    assert "plan-run-v2" in captured.out
+    assert "split-partition" in captured.out
+    assert "show-run-coverage" in captured.out
+    assert "show-run-tree" in captured.out
     assert "sync-dictionaries" in captured.out
     assert "process-list-page" in captured.out
+    assert "process-partition-v2" in captured.out
+    assert "run-list-engine-v2" in captured.out
     assert "fetch-vacancy-detail" in captured.out
     assert "reconcile-run" in captured.out
+    assert "study-detail-payloads" in captured.out
     assert "show-metrics" in captured.out
     assert "serve-metrics" in captured.out
 
@@ -198,6 +205,80 @@ def test_run_once_cli_returns_non_zero_and_prints_failure_summary(monkeypatch, c
     assert "error=Invalid HH API User-Agent for live vacancy search" in captured.out
 
 
+def test_study_detail_payloads_cli_prints_report_summary(monkeypatch, capsys, tmp_path) -> None:
+    report_directory = tmp_path / "detail-study"
+    report_json_path = report_directory / "report.json"
+    summary_markdown_path = report_directory / "summary.md"
+    run_id = uuid4()
+
+    def fake_study_detail_payloads(command, **kwargs):
+        assert command.sample_size == 3
+        assert command.repeat_fetches == 2
+        assert command.pause_seconds == 1.5
+        assert command.crawl_run_id == run_id
+        assert command.output_dir == report_directory
+        assert "resolve_latest_crawl_run_id_step" in kwargs
+        assert "load_candidates_step" in kwargs
+        assert "load_raw_payload_step" in kwargs
+        assert "fetch_detail_step" in kwargs
+        return SimpleNamespace(
+            crawl_run_id=run_id,
+            sample_size_requested=3,
+            sample_size_selected=3,
+            vacancies_with_search_sample=3,
+            vacancies_with_successful_detail=3,
+            raw_comparable_pairs=6,
+            raw_changed_pairs=1,
+            normalized_comparable_pairs=6,
+            normalized_changed_pairs=0,
+            report_directory=report_directory,
+            report_json_path=report_json_path,
+            summary_markdown_path=summary_markdown_path,
+            recommendation=(
+                "Prefer exhaustive list coverage plus selective detail fetches on first_seen, "
+                "short_changed, and a TTL refresh."
+            ),
+            detail_only_research_fields=("description", "key_skills[].name"),
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.research.study_detail_payloads",
+        fake_study_detail_payloads,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "study-detail-payloads",
+            "--sample-size",
+            "3",
+            "--repeat-fetches",
+            "2",
+            "--pause-seconds",
+            "1.5",
+            "--crawl-run-id",
+            str(run_id),
+            "--output-dir",
+            str(report_directory),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed detail payload study" in captured.out
+    assert f"crawl_run_id={run_id}" in captured.out
+    assert "sample_size_selected=3" in captured.out
+    assert "raw_changed_pairs=1" in captured.out
+    assert "normalized_changed_pairs=0" in captured.out
+    assert "detail_only_research_fields=description,key_skills[].name" in captured.out
+    assert "recommended_policy=Prefer exhaustive list coverage plus selective detail fetches" in (
+        captured.out
+    )
+    assert f"report_directory={report_directory}" in captured.out
+
+
 def test_create_run_cli_prints_created_run(monkeypatch, capsys) -> None:
     created_run = CrawlRun(
         id=uuid4(),
@@ -331,6 +412,357 @@ def test_plan_run_cli_prints_planned_partitions(monkeypatch, capsys) -> None:
     assert f"run_id={created_partition.crawl_run_id}" in captured.out
     assert "partitions_created=1" in captured.out
     assert f"key={created_partition.partition_key}" in captured.out
+
+
+def test_plan_run_v2_cli_prints_tree_roots(monkeypatch, capsys) -> None:
+    created_partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=uuid4(),
+        partition_key="area:113",
+        params_json={"planner_policy": "area_exhaustive_v2", "params": {"area": "113"}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 19, 12, 5, tzinfo=UTC),
+        parent_partition_id=None,
+        depth=0,
+        split_dimension="area",
+        split_value="113",
+        scope_key="area:113",
+        planner_policy_version="v2",
+        is_terminal=True,
+        is_saturated=False,
+        coverage_status="unassessed",
+    )
+
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    def fake_plan_sweep_v2(
+        command,
+        crawl_run_repository,
+        crawl_partition_repository,
+        area_repository,
+    ):
+        assert command.crawl_run_id == created_partition.crawl_run_id
+        assert crawl_run_repository.__class__.__name__ == "FakeCrawlRunRepository"
+        assert crawl_partition_repository.__class__.__name__ == "FakeCrawlPartitionRepository"
+        assert area_repository.__class__.__name__ == "FakeAreaRepository"
+        return SimpleNamespace(
+            crawl_run_id=created_partition.crawl_run_id,
+            created_partitions=[created_partition],
+            partitions=[created_partition],
+        )
+
+    class FakeCrawlRunRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeCrawlPartitionRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeAreaRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.SqlAlchemyCrawlRunRepository",
+        FakeCrawlRunRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.SqlAlchemyCrawlPartitionRepository",
+        FakeCrawlPartitionRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.SqlAlchemyAreaRepository",
+        FakeAreaRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.plan_sweep_v2",
+        fake_plan_sweep_v2,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "plan-run-v2",
+            "--run-id",
+            str(created_partition.crawl_run_id),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "planned crawl partitions with planner v2" in captured.out
+    assert f"run_id={created_partition.crawl_run_id}" in captured.out
+    assert "partitions_created=1" in captured.out
+    assert "scope_key=area:113" in captured.out
+    assert "depth=0" in captured.out
+
+
+def test_split_partition_cli_prints_child_partition_summary(monkeypatch, capsys) -> None:
+    parent_partition_id = uuid4()
+    run_id = uuid4()
+    child_partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=run_id,
+        partition_key="area:1",
+        params_json={"planner_policy": "area_exhaustive_v2", "params": {"area": "1"}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 19, 12, 6, tzinfo=UTC),
+        parent_partition_id=parent_partition_id,
+        depth=1,
+        split_dimension="area",
+        split_value="1",
+        scope_key="area:1",
+        planner_policy_version="v2",
+        is_terminal=True,
+        is_saturated=False,
+        coverage_status="unassessed",
+    )
+    parent_partition = CrawlPartition(
+        id=parent_partition_id,
+        crawl_run_id=run_id,
+        partition_key="area:113",
+        params_json={"planner_policy": "area_exhaustive_v2", "params": {"area": "113"}},
+        status="split_done",
+        pages_total_expected=2000,
+        pages_processed=1,
+        items_seen=100,
+        retry_count=0,
+        started_at=datetime(2026, 3, 19, 12, 0, tzinfo=UTC),
+        finished_at=datetime(2026, 3, 19, 12, 7, tzinfo=UTC),
+        last_error_message=None,
+        created_at=datetime(2026, 3, 19, 12, 0, tzinfo=UTC),
+        parent_partition_id=None,
+        depth=0,
+        split_dimension="area",
+        split_value="113",
+        scope_key="area:113",
+        planner_policy_version="v2",
+        is_terminal=False,
+        is_saturated=True,
+        coverage_status="split",
+    )
+
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    class FakeCrawlRunRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeCrawlPartitionRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeAreaRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    def fake_split_partition(
+        command,
+        crawl_partition_repository,
+        crawl_run_repository,
+        area_repository,
+    ):
+        assert command.partition_id == parent_partition_id
+        assert crawl_partition_repository.__class__.__name__ == "FakeCrawlPartitionRepository"
+        assert crawl_run_repository.__class__.__name__ == "FakeCrawlRunRepository"
+        assert area_repository.__class__.__name__ == "FakeAreaRepository"
+        return SimpleNamespace(
+            parent_partition=parent_partition,
+            created_children=(child_partition,),
+            children=(child_partition,),
+            resolution_message=None,
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.SqlAlchemyCrawlRunRepository",
+        FakeCrawlRunRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.SqlAlchemyCrawlPartitionRepository",
+        FakeCrawlPartitionRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.SqlAlchemyAreaRepository",
+        FakeAreaRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.partition.split_partition",
+        fake_split_partition,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "split-partition",
+            "--partition-id",
+            str(parent_partition_id),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "split crawl partition" in captured.out
+    assert f"partition_id={parent_partition_id}" in captured.out
+    assert "status=split_done" in captured.out
+    assert "children_created=1" in captured.out
+    assert "children_total=1" in captured.out
+    assert "scope_key=area:1" in captured.out
+
+
+def test_show_run_coverage_cli_prints_tree_based_summary(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+
+    def fake_load_run_coverage_report(crawl_run_id):
+        assert crawl_run_id == run_id
+        return SimpleNamespace(
+            crawl_run=SimpleNamespace(id=run_id, run_type="weekly_sweep", status="created"),
+            summary=SimpleNamespace(
+                crawl_run_id=run_id,
+                run_type="weekly_sweep",
+                run_status="created",
+                total_partitions=6,
+                root_partitions=4,
+                terminal_partitions=5,
+                covered_terminal_partitions=2,
+                pending_partitions=1,
+                pending_terminal_partitions=1,
+                running_partitions=1,
+                split_partitions=1,
+                unresolved_partitions=1,
+                failed_partitions=0,
+                coverage_ratio=0.4,
+                is_fully_covered=False,
+            ),
+            tree_rows=(),
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reporting._load_run_coverage_report",
+        fake_load_run_coverage_report,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "show-run-coverage",
+            "--run-id",
+            str(run_id),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "run coverage summary" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "root_partitions=4" in captured.out
+    assert "covered_terminal_partitions=2" in captured.out
+    assert "pending_terminal_partitions=1" in captured.out
+    assert "coverage_ratio=0.4000" in captured.out
+    assert "fully_covered=no" in captured.out
+
+
+def test_show_run_tree_cli_prints_nested_partition_rows(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+    root_partition_id = uuid4()
+    child_partition_id = uuid4()
+
+    def fake_load_run_coverage_report(crawl_run_id):
+        assert crawl_run_id == run_id
+        return SimpleNamespace(
+            crawl_run=SimpleNamespace(id=run_id, run_type="weekly_sweep", status="created"),
+            summary=SimpleNamespace(),
+            tree_rows=(
+                SimpleNamespace(
+                    partition_id=root_partition_id,
+                    parent_partition_id=None,
+                    depth=0,
+                    scope_key="area:113",
+                    status="split_done",
+                    coverage_status="split",
+                    is_terminal=False,
+                    is_saturated=True,
+                ),
+                SimpleNamespace(
+                    partition_id=child_partition_id,
+                    parent_partition_id=root_partition_id,
+                    depth=1,
+                    scope_key="area:1",
+                    status="done",
+                    coverage_status="covered",
+                    is_terminal=True,
+                    is_saturated=False,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.reporting._load_run_coverage_report",
+        fake_load_run_coverage_report,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "show-run-tree",
+            "--run-id",
+            str(run_id),
+            "--max-depth",
+            "1",
+            "--max-rows",
+            "10",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "run partition tree" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "shown_rows=2" in captured.out
+    assert (
+        "partition="
+        f"{root_partition_id} parent=- depth=0 scope_key=area:113 status=split_done"
+        in captured.out
+    )
+    assert (
+        "  partition="
+        f"{child_partition_id} parent={root_partition_id} depth=1 scope_key=area:1"
+        in captured.out
+    )
 
 
 def test_sync_dictionaries_cli_prints_sync_summary(monkeypatch, capsys) -> None:
@@ -595,6 +1027,162 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
     assert "vacancies_created=1" in captured.out
     assert "seen_events_created=2" in captured.out
     assert "hh_vacancy_id=pytest-vacancy-1" in captured.out
+
+
+def test_process_partition_v2_cli_prints_partition_summary(monkeypatch, capsys) -> None:
+    partition_id = uuid4()
+    run_id = uuid4()
+
+    def fake_execute_process_partition_v2_step(command, *, api_client, saturation_policy):
+        assert command.partition_id == partition_id
+        assert api_client.__class__.__name__ == "FakeHHApiClient"
+        assert saturation_policy.__class__.__name__ == "FakeSaturationPolicy"
+        return SimpleNamespace(
+            partition_id=partition_id,
+            crawl_run_id=run_id,
+            status="succeeded",
+            final_partition_status="done",
+            final_coverage_status="covered",
+            pages_attempted=3,
+            pages_processed=3,
+            vacancies_found=5,
+            vacancies_created=4,
+            seen_events_created=5,
+            saturated=False,
+            children_created_count=0,
+            children_total_count=0,
+            saturation_reason=None,
+            error_message=None,
+        )
+
+    class FakeHHApiClient:
+        pass
+
+    class FakeSaturationPolicy:
+        pass
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_engine._execute_process_partition_v2_step",
+        fake_execute_process_partition_v2_step,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_engine.HHApiClient.from_settings",
+        FakeHHApiClient,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_engine.PartitionSaturationPolicyV1",
+        FakeSaturationPolicy,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "process-partition-v2",
+            "--partition-id",
+            str(partition_id),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "processed crawl partition with list engine v2" in captured.out
+    assert f"partition_id={partition_id}" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "partition_final_status=done" in captured.out
+    assert "coverage_status=covered" in captured.out
+    assert "pages_processed=3" in captured.out
+    assert "vacancies_found=5" in captured.out
+    assert "saturated=no" in captured.out
+
+
+def test_run_list_engine_v2_cli_prints_run_summary(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+    first_partition_id = uuid4()
+
+    def fake_run_list_engine_v2(
+        command,
+        crawl_run_repository,
+        crawl_partition_repository,
+        process_partition_v2_step,
+    ):
+        assert command.crawl_run_id == run_id
+        assert command.partition_limit == 2
+        assert crawl_run_repository.__class__.__name__ == "_SessionlessCrawlRunRepository"
+        assert (
+            crawl_partition_repository.__class__.__name__
+            == "_SessionlessCrawlPartitionRepository"
+        )
+        assert callable(process_partition_v2_step)
+        return SimpleNamespace(
+            status="succeeded",
+            crawl_run_id=run_id,
+            partitions_attempted=2,
+            partitions_completed=2,
+            partitions_failed=0,
+            pages_attempted=4,
+            pages_processed=4,
+            vacancies_found=7,
+            vacancies_created=6,
+            seen_events_created=7,
+            saturated_partitions=1,
+            children_created_total=2,
+            remaining_pending_terminal_count=0,
+            partition_results=(
+                SimpleNamespace(
+                    partition_id=first_partition_id,
+                    final_partition_status="split_done",
+                    final_coverage_status="split",
+                    pages_processed=1,
+                    saturated=True,
+                    children_created_count=2,
+                ),
+            ),
+        )
+
+    class FakeHHApiClient:
+        pass
+
+    class FakeSaturationPolicy:
+        pass
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_engine.run_list_engine_v2",
+        fake_run_list_engine_v2,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_engine.HHApiClient.from_settings",
+        FakeHHApiClient,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_engine.PartitionSaturationPolicyV1",
+        FakeSaturationPolicy,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-list-engine-v2",
+            "--run-id",
+            str(run_id),
+            "--partition-limit",
+            "2",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed list engine v2 run" in captured.out
+    assert "status=succeeded" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "partitions_attempted=2" in captured.out
+    assert "pages_processed=4" in captured.out
+    assert "saturated_partitions=1" in captured.out
+    assert "children_created_total=2" in captured.out
+    assert f"partition={first_partition_id}" in captured.out
 
 
 def test_fetch_vacancy_detail_cli_prints_fetch_summary(monkeypatch, capsys) -> None:

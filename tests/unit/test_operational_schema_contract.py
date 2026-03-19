@@ -75,9 +75,18 @@ def test_operational_metadata_constraints_defaults_and_indexes_match_contract() 
     assert "DESC" in _index_sql("crawl_run", "idx_crawl_run_started_at")
 
     assert "uq_crawl_partition_run_key" in _unique_constraint_names("crawl_partition")
+    assert "uq_crawl_partition_run_scope_key" in _unique_constraint_names("crawl_partition")
     assert _foreign_key_ondelete("crawl_partition", "crawl_run_id") == "CASCADE"
+    assert _foreign_key_ondelete("crawl_partition", "parent_partition_id") == "SET NULL"
     assert _server_default_sql("crawl_partition", "params_json") == "'{}'::jsonb"
+    assert _server_default_sql("crawl_partition", "depth") == "0"
+    assert _server_default_sql("crawl_partition", "planner_policy_version") == "'v1'"
+    assert _server_default_sql("crawl_partition", "is_terminal") == "true"
+    assert _server_default_sql("crawl_partition", "is_saturated") == "false"
+    assert _server_default_sql("crawl_partition", "coverage_status") == "'unassessed'"
     assert "created_at" in Base.metadata.tables["crawl_partition"].c
+    assert "idx_crawl_partition_parent_partition_id" in _metadata_index_names()
+    assert "idx_crawl_partition_coverage_status" in _metadata_index_names()
 
     assert _foreign_key_ondelete("api_request_log", "crawl_run_id") == "SET NULL"
     assert _foreign_key_ondelete("api_request_log", "crawl_partition_id") == "SET NULL"
@@ -138,7 +147,10 @@ def test_operational_metadata_constraints_defaults_and_indexes_match_contract() 
 
 def test_schema_sources_keep_same_table_and_index_sets() -> None:
     schema_sql = Path("schema.sql").read_text(encoding="utf-8")
-    migration_sql = Path("migrations/versions/0001_initial_schema.py").read_text(encoding="utf-8")
+    migration_sql = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("migrations/versions").glob("*.py"))
+    )
 
     schema_tables = set(re.findall(r"^CREATE TABLE ([a-z_]+) \(", schema_sql, re.MULTILINE))
     migration_tables = set(re.findall(r'op\.create_table\(\s*"([a-z_]+)"', migration_sql))

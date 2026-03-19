@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from hhru_platform.application.dto import DictionaryPersistSummary
+from hhru_platform.domain.entities.area import Area
 from hhru_platform.infrastructure.db.models.area import Area as AreaModel
 from hhru_platform.infrastructure.normalization.dictionary_normalizers import (
     NormalizedAreaRecord,
@@ -18,6 +19,44 @@ UPSERT_BATCH_SIZE = 1000
 class SqlAlchemyAreaRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def list_active_root_areas(self) -> list[Area]:
+        statement = (
+            select(AreaModel)
+            .where(
+                AreaModel.is_active.is_(True),
+                AreaModel.parent_area_id.is_(None),
+            )
+            .order_by(
+                AreaModel.level.asc().nullsfirst(),
+                AreaModel.path_text.asc().nullslast(),
+                AreaModel.name.asc(),
+                AreaModel.hh_area_id.asc(),
+            )
+        )
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def list_active_children_by_hh_area_id(self, parent_hh_area_id: str) -> list[Area]:
+        parent_area_id = self._session.scalar(
+            select(AreaModel.id).where(AreaModel.hh_area_id == parent_hh_area_id)
+        )
+        if parent_area_id is None:
+            return []
+
+        statement = (
+            select(AreaModel)
+            .where(
+                AreaModel.is_active.is_(True),
+                AreaModel.parent_area_id == parent_area_id,
+            )
+            .order_by(
+                AreaModel.level.asc().nullsfirst(),
+                AreaModel.path_text.asc().nullslast(),
+                AreaModel.name.asc(),
+                AreaModel.hh_area_id.asc(),
+            )
+        )
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
 
     def upsert_many(self, records: Sequence[NormalizedAreaRecord]) -> DictionaryPersistSummary:
         if not records:
@@ -97,6 +136,18 @@ class SqlAlchemyAreaRepository:
             created_count=created_count,
             updated_count=len(hh_area_ids) - created_count,
             deactivated_count=deactivated_count,
+        )
+
+    @staticmethod
+    def _to_entity(model: AreaModel) -> Area:
+        return Area(
+            id=model.id,
+            hh_area_id=model.hh_area_id,
+            name=model.name,
+            parent_area_id=model.parent_area_id,
+            level=model.level,
+            path_text=model.path_text,
+            is_active=model.is_active,
         )
 
 

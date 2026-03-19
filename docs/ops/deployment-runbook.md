@@ -16,6 +16,8 @@
 cp .env.example .env
 ```
 
+`.env` теперь может содержать одновременно app runtime settings и compose-only переменные для bind/UI. Python CLI игнорирует лишние compose-only ключи и использует только свои объявленные `HHRU_*` поля.
+
 Минимально проверить и изменить:
 
 - `HHRU_ENV=production`

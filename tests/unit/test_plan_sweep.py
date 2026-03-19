@@ -45,6 +45,15 @@ class InMemoryCrawlPartitionRepository:
         partition_key: str,
         status: str,
         params_json: dict[str, object],
+        parent_partition_id: UUID | None = None,
+        depth: int = 0,
+        split_dimension: str | None = None,
+        split_value: str | None = None,
+        scope_key: str | None = None,
+        planner_policy_version: str = "v1",
+        is_terminal: bool = True,
+        is_saturated: bool = False,
+        coverage_status: str = "unassessed",
     ) -> CrawlPartition:
         partition = CrawlPartition(
             id=uuid4(),
@@ -60,6 +69,15 @@ class InMemoryCrawlPartitionRepository:
             finished_at=None,
             last_error_message=None,
             created_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+            parent_partition_id=parent_partition_id,
+            depth=depth,
+            split_dimension=split_dimension,
+            split_value=split_value,
+            scope_key=scope_key or partition_key,
+            planner_policy_version=planner_policy_version,
+            is_terminal=is_terminal,
+            is_saturated=is_saturated,
+            coverage_status=coverage_status,
         )
         self._partitions.append(partition)
         return partition

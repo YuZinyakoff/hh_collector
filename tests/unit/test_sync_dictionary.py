@@ -134,8 +134,7 @@ def test_sync_dictionary_returns_successful_summary_and_logs_payload() -> None:
     assert api_request_log_repository.records[0]["endpoint"] == "/areas"
     assert raw_api_payload_repository.records[0]["endpoint_type"] == "dictionary.areas"
     assert (
-        sync_run_repository.runs[result.sync_run_id].notes
-        == "created=1; updated=0; deactivated=0"
+        sync_run_repository.runs[result.sync_run_id].notes == "created=1; updated=0; deactivated=0"
     )
 
 

@@ -35,10 +35,30 @@ class MetricsState(TypedDict):
     operation_duration_sum: dict[str, float]
     operation_last_success_timestamp: dict[str, float]
     records_written_total: dict[str, int]
+    run_tree_coverage_gauge: dict[str, float]
     upstream_request_total: dict[str, int]
     upstream_request_duration_bucket: dict[str, int]
     upstream_request_duration_count: dict[str, int]
     upstream_request_duration_sum: dict[str, float]
+
+
+RUN_TREE_COVERAGE_METRIC_HELP: Final[dict[str, str]] = {
+    "hhru_run_tree_coverage_ratio": (
+        "Coverage ratio for a crawl_run based on covered terminal partitions."
+    ),
+    "hhru_run_tree_covered_terminal_partitions": (
+        "Number of covered terminal partitions in a crawl_run tree."
+    ),
+    "hhru_run_tree_pending_terminal_partitions": (
+        "Number of pending terminal partitions in a crawl_run tree."
+    ),
+    "hhru_run_tree_split_partitions": (
+        "Number of split or saturated partitions in a crawl_run tree."
+    ),
+    "hhru_run_tree_unresolved_partitions": (
+        "Number of unresolved partitions in a crawl_run tree."
+    ),
+}
 
 
 class FileBackedMetricsRegistry:
@@ -90,6 +110,36 @@ class FileBackedMetricsRegistry:
                 )
         except Exception as error:
             LOGGER.warning("metrics record counter update failed: %s", error)
+
+    def set_run_tree_coverage(
+        self,
+        *,
+        run_id: str,
+        run_type: str,
+        coverage_ratio: float,
+        covered_terminal_partitions: int,
+        pending_terminal_partitions: int,
+        split_partitions: int,
+        unresolved_partitions: int,
+    ) -> None:
+        metric_values = {
+            "hhru_run_tree_coverage_ratio": max(coverage_ratio, 0.0),
+            "hhru_run_tree_covered_terminal_partitions": float(
+                max(covered_terminal_partitions, 0)
+            ),
+            "hhru_run_tree_pending_terminal_partitions": float(
+                max(pending_terminal_partitions, 0)
+            ),
+            "hhru_run_tree_split_partitions": float(max(split_partitions, 0)),
+            "hhru_run_tree_unresolved_partitions": float(max(unresolved_partitions, 0)),
+        }
+        try:
+            with self._mutating_state() as state:
+                for metric_name, value in metric_values.items():
+                    key = _triple_key(metric_name, run_id, run_type)
+                    state["run_tree_coverage_gauge"][key] = value
+        except Exception as error:
+            LOGGER.warning("metrics run coverage gauge update failed: %s", error)
 
     def record_upstream_request(
         self,
@@ -173,9 +223,7 @@ class FileBackedMetricsRegistry:
                 "# TYPE hhru_operation_last_success_timestamp_seconds gauge",
             ]
         )
-        for operation, timestamp_value in sorted(
-            state["operation_last_success_timestamp"].items()
-        ):
+        for operation, timestamp_value in sorted(state["operation_last_success_timestamp"].items()):
             lines.append(
                 "hhru_operation_last_success_timestamp_seconds"
                 f'{{operation="{_label_value(operation)}"}} {timestamp_value:.3f}'
@@ -198,6 +246,22 @@ class FileBackedMetricsRegistry:
                 f'record_type="{_label_value(record_type)}"}} '
                 f"{value}"
             )
+
+        for metric_name, help_text in RUN_TREE_COVERAGE_METRIC_HELP.items():
+            lines.extend(
+                [
+                    f"# HELP {metric_name} {help_text}",
+                    f"# TYPE {metric_name} gauge",
+                ]
+            )
+            for key, value in sorted(state["run_tree_coverage_gauge"].items()):
+                recorded_metric_name, run_id, run_type = _split_triple_key(key)
+                if recorded_metric_name != metric_name:
+                    continue
+                lines.append(
+                    f'{metric_name}{{run_id="{_label_value(run_id)}",'
+                    f'run_type="{_label_value(run_type)}"}} {value:.6f}'
+                )
 
         lines.extend(
             [
@@ -383,6 +447,7 @@ def _empty_state() -> MetricsState:
         operation_duration_sum={},
         operation_last_success_timestamp={},
         records_written_total={},
+        run_tree_coverage_gauge={},
         upstream_request_total={},
         upstream_request_duration_bucket={},
         upstream_request_duration_count={},
@@ -407,6 +472,7 @@ def _deserialize_state(raw_state: str) -> MetricsState:
             loaded.get("operation_last_success_timestamp")
         ),
         records_written_total=_coerce_int_map(loaded.get("records_written_total")),
+        run_tree_coverage_gauge=_coerce_float_map(loaded.get("run_tree_coverage_gauge")),
         upstream_request_total=_coerce_int_map(loaded.get("upstream_request_total")),
         upstream_request_duration_bucket=_coerce_int_map(
             loaded.get("upstream_request_duration_bucket")
@@ -481,6 +547,15 @@ def _split_composite_key(key: str) -> tuple[str, str]:
 
 def _bucket_key(key: str, bucket: float) -> str:
     return f"{key}|{bucket}"
+
+
+def _triple_key(left: str, middle: str, right: str) -> str:
+    return f"{left}|{middle}|{right}"
+
+
+def _split_triple_key(key: str) -> tuple[str, str, str]:
+    left, middle, right = key.split("|", maxsplit=2)
+    return left, middle, right
 
 
 def _label_value(value: str) -> str:

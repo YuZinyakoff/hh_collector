@@ -1,2 +1,1 @@
 """Hash value objects placeholder."""
-

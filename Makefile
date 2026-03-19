@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(if $(wildcard ./.venv/bin/python),./.venv/bin/python,python3)
 COMPOSE ?= docker compose
 
 .PHONY: up up-observability down migrate migrate-compose test lint format \

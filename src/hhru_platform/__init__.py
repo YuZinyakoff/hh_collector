@@ -1,2 +1,1 @@
 """hhru platform package."""
-

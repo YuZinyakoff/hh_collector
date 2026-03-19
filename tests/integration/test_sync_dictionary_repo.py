@@ -168,40 +168,52 @@ def test_sync_dictionary_persists_runs_logs_raw_payloads_and_reference_rows() ->
         assert roles_result.status == "succeeded"
 
         with engine.connect() as connection:
-            sync_run_rows = connection.execute(
-                text(
-                    """
+            sync_run_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT dictionary_name, status, source_status_code
                     FROM dictionary_sync_run
                     WHERE etag IN (:areas_etag, :roles_etag)
                     ORDER BY dictionary_name
                     """
-                ),
-                {"areas_etag": TEST_AREAS_ETAG, "roles_etag": TEST_ROLES_ETAG},
-            ).mappings().all()
-            child_area_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"areas_etag": TEST_AREAS_ETAG, "roles_etag": TEST_ROLES_ETAG},
+                )
+                .mappings()
+                .all()
+            )
+            child_area_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT child.name, child.level, child.path_text, child.is_active,
                            parent.hh_area_id AS parent_hh_area_id
                     FROM area AS child
                     LEFT JOIN area AS parent ON parent.id = child.parent_area_id
                     WHERE child.hh_area_id = :child_hh_area_id
                     """
-                ),
-                {"child_hh_area_id": TEST_AREA_IDS[1]},
-            ).mappings().one()
-            professional_role_rows = connection.execute(
-                text(
-                    """
+                    ),
+                    {"child_hh_area_id": TEST_AREA_IDS[1]},
+                )
+                .mappings()
+                .one()
+            )
+            professional_role_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT hh_professional_role_id, name, category_name, is_active
                     FROM professional_role
                     WHERE hh_professional_role_id IN (:role_one, :role_two)
                     ORDER BY hh_professional_role_id
                     """
-                ),
-                {"role_one": TEST_ROLE_IDS[0], "role_two": TEST_ROLE_IDS[1]},
-            ).mappings().all()
+                    ),
+                    {"role_one": TEST_ROLE_IDS[0], "role_two": TEST_ROLE_IDS[1]},
+                )
+                .mappings()
+                .all()
+            )
             request_log_count = connection.execute(
                 text(
                     """

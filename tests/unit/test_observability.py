@@ -30,6 +30,15 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         status_code=200,
         duration_seconds=0.17,
     )
+    registry.set_run_tree_coverage(
+        run_id="run-1",
+        run_type="weekly_sweep",
+        coverage_ratio=0.5,
+        covered_terminal_partitions=3,
+        pending_terminal_partitions=3,
+        split_partitions=1,
+        unresolved_partitions=0,
+    )
 
     rendered = registry.render_prometheus()
 
@@ -39,6 +48,14 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         in rendered
     )
     assert 'hhru_upstream_request_total{endpoint="/vacancies",status_class="2xx"} 1' in rendered
+    assert (
+        'hhru_run_tree_coverage_ratio{run_id="run-1",run_type="weekly_sweep"} 0.500000'
+        in rendered
+    )
+    assert (
+        'hhru_run_tree_pending_terminal_partitions{run_id="run-1",run_type="weekly_sweep"} '
+        "3.000000" in rendered
+    )
     assert "hhru_operation_duration_seconds_count" in rendered
     assert "hhru_upstream_request_duration_seconds_count" in rendered
 

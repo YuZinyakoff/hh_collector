@@ -1,2 +1,1 @@
 """State reconciler placeholder."""
-

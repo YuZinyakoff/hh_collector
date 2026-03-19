@@ -294,9 +294,7 @@ def fetch_vacancy_detail(
             started_at=started_at,
             error_type=error.__class__.__name__,
             error_message=str(error),
-            level=logging.WARNING
-            if isinstance(error, VacancyNotFoundError)
-            else logging.ERROR,
+            level=logging.WARNING if isinstance(error, VacancyNotFoundError) else logging.ERROR,
             vacancy_id=command.vacancy_id,
             attempt=command.attempt,
             run_id=command.crawl_run_id,

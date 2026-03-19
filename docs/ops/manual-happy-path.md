@@ -78,6 +78,17 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main plan-run 
 - `partitions_created=1`
 - есть `partition=<partition_id> key=global-default status=pending`
 
+Если нужен именно planner v2 foundation вместо legacy smoke partition, используй отдельную команду:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main plan-run-v2 --run-id <run_id>
+```
+
+Ожидаемо:
+- создаются disjoint root partitions вида `key=area:<hh_area_id>`
+- у root partitions `depth=0`, `parent=-`, `status=pending`
+- это уже tree-based foundation для exhaustive list coverage, а не single global partition
+
 4. Обработать одну list page:
 
 ```bash
@@ -89,6 +100,30 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main process-l
 - `vacancies_processed>0`
 - `seen_events_created>0`
 - есть строки вида `vacancy=<vacancy_id> hh_vacancy_id=<hh_vacancy_id>`
+
+Для planner v2 / exhaustive tree path вместо single-page smoke шага используй:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main process-partition-v2 --partition-id <partition_id>
+```
+
+Ожидаемо для несатурированного leaf:
+- `partition_final_status=done`
+- `coverage_status=covered`
+- `pages_processed>=1`
+- `saturated=no`
+
+Если root scope слишком широкий, используй полный engine по run:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-list-engine-v2 --run-id <run_id>
+```
+
+Ожидаемо:
+- engine проходит по `pending` terminal partitions текущего tree;
+- saturated parent получает `partition_final_status=split_done` и `coverage_status=split`;
+- children создаются автоматически и затем обрабатываются как новые terminal leaves;
+- `remaining_pending_terminal_partitions=0` означает, что на текущем tree нет необработанных leaf scopes.
 
 5. Запросить detail по одной сохранённой вакансии:
 
@@ -122,9 +157,10 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main show-metr
 Ожидаемо:
 - есть `hhru_operation_total`
 - есть `hhru_records_written_total`
-- после live flow появляются метрики по `sync_dictionary`, `process_list_page`, `fetch_vacancy_detail`, `reconcile_run`
+- после live flow появляются метрики по `sync_dictionary`, `process_list_page`, `process_partition_v2`, `run_list_engine_v2`, `fetch_vacancy_detail`, `reconcile_run`
 
 ## Notes
 
 - `process-list-page` и `fetch-vacancy-detail` используют официальный live hh API, поэтому конкретные `hh_vacancy_id`, счётчики и тексты вакансий будут меняться.
-- Для воспроизводимой локальной smoke-проверки достаточно пройти шаги выше по порядку и убедиться, что каждый следующий шаг получает ID из вывода предыдущего.
+- Для воспроизводимой локальной проверки legacy flow достаточно пройти шаги выше по порядку и убедиться, что каждый следующий шаг получает ID из вывода предыдущего.
+- Для planner v2 path типичный операторский сценарий такой: `sync-dictionaries --name areas` -> `create-run` -> `plan-run-v2` -> `run-list-engine-v2` -> `fetch-vacancy-detail` при необходимости -> `reconcile-run`.

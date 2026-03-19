@@ -1,2 +1,1 @@
 """Rate limiter placeholder."""
-

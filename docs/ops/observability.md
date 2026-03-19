@@ -67,12 +67,22 @@ Provisioned dashboards:
 - `hhru_operation_duration_seconds{operation,status}`
 - `hhru_operation_last_success_timestamp_seconds{operation}`
 - `hhru_records_written_total{operation,record_type}`
+- `hhru_run_tree_coverage_ratio{run_id,run_type}`
+- `hhru_run_tree_covered_terminal_partitions{run_id,run_type}`
+- `hhru_run_tree_pending_terminal_partitions{run_id,run_type}`
+- `hhru_run_tree_split_partitions{run_id,run_type}`
+- `hhru_run_tree_unresolved_partitions{run_id,run_type}`
 - `hhru_upstream_request_total{endpoint,status_class}`
 - `hhru_upstream_request_duration_seconds{endpoint,status_class}`
 
 Новый orchestration-lite flow пишет отдельную operation metric:
 
 - `run_collection_once`
+
+Planner-v2 execution path пишет отдельные operation metrics:
+
+- `process_partition_v2`
+- `run_list_engine_v2`
 
 ### Collector Overview
 
@@ -83,6 +93,9 @@ Provisioned dashboards:
 - rows written по `record_type`
 - last success timestamps
 - writes по vacancy, snapshots и reconciliation activity
+- `Failures In Range` теперь считает именно число failed operations за выбранный dashboard interval, а не выглядит как накопительный total
+- `Planner V2 Coverage By Run` показывает последний reporting snapshot coverage ratio по `crawl_run`
+- отдельные stat panels показывают covered terminal, pending terminal, split и unresolved counts
 
 ### HH API / Ingest Health
 
@@ -94,6 +107,18 @@ Provisioned dashboards:
 - error mix по endpoint
 - last success timestamps критичных ingest-операций
 
+## Как интерпретировать панели
+
+- `Failures In Range` и `Upstream Errors In Range` теперь показывают total count событий именно за выбранный time range. Это stat panels на базе `increase(...[$__range])` с instant query, поэтому значение не должно выглядеть как бегущий cumulative график.
+- `Last Success Timestamps` и `Last Success By Critical Operation` теперь показывают две колонки: `Operation` и `Last Success`. Значение `Last Success` рендерится как обычная дата/время из gauge `hhru_operation_last_success_timestamp_seconds`.
+- Если last-success таблица пустая для операции, это означает не "1970", а отсутствие успешного sample для этой операции в текущем metrics state.
+- Для planner v2 path `process_partition_v2` success означает обработанный terminal leaf: либо `done + covered`, либо `split_done + split`. Проверять различие нужно по текстовому выводу CLI и по данным в `crawl_partition`, а не только по одному success counter.
+- `run_list_engine_v2` success означает, что текущий CLI-проход не встретил failed/unresolved partition results. Полноту tree coverage нужно интерпретировать вместе с `remaining_pending_terminal_partitions` и partition statuses.
+- Coverage gauges обновляются командами `show-run-coverage` и `show-run-tree`: они считают tree state для конкретного `crawl_run` и публикуют текущий snapshot в file-backed metrics registry.
+- `coverage_ratio` нужно читать как долю уже покрытых terminal leaves от текущего множества terminal partitions этого run.
+- `split_partitions > 0` само по себе не является ошибкой: это сигнал, что часть coverage делегирована child scopes.
+- `unresolved_partitions > 0` означает, что часть дерева не удалось refine'ить текущей split-policy и этот run нельзя считать полностью покрытым.
+
 ## Alert rules baseline
 
 - `HHRUPlatformMetricsEndpointDown`
@@ -103,6 +128,7 @@ Provisioned dashboards:
 ## Что считать тревожным
 
 - рост `hhru_operation_total{status="failed"}` для `process_list_page`, `fetch_vacancy_detail`, `sync_dictionary`
+- рост `hhru_operation_total{status="failed"}` для `process_partition_v2` и `run_list_engine_v2`
 - sustained `4xx`/`5xx`/`timeout`/`network_error` на dashboard `HH API / Ingest Health`
 - отсутствие свежего `reconcile_run` success timestamp
 - заметное падение `records_written_total` при том, что run-операции продолжают стартовать

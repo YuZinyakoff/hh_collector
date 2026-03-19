@@ -1,2 +1,1 @@
 """Detail policy placeholder."""
-

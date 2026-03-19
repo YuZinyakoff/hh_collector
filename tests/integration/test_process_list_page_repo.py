@@ -207,9 +207,10 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
         assert result.seen_events_created == 2
 
         with engine.connect() as connection:
-            vacancy_rows = connection.execute(
-                text(
-                    """
+            vacancy_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT v.hh_vacancy_id,
                            v.name_current,
                            e.hh_employer_id AS employer_hh_id,
@@ -224,26 +225,34 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                     WHERE v.hh_vacancy_id IN (:vacancy_one, :vacancy_two)
                     ORDER BY v.hh_vacancy_id
                     """
-                ),
-                {
-                    "vacancy_one": TEST_VACANCY_IDS[0],
-                    "vacancy_two": TEST_VACANCY_IDS[1],
-                },
-            ).mappings().all()
-            seen_event_rows = connection.execute(
-                text(
-                    """
+                    ),
+                    {
+                        "vacancy_one": TEST_VACANCY_IDS[0],
+                        "vacancy_two": TEST_VACANCY_IDS[1],
+                    },
+                )
+                .mappings()
+                .all()
+            )
+            seen_event_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT list_position, short_payload_ref_id
                     FROM vacancy_seen_event
                     WHERE crawl_partition_id = :crawl_partition_id
                     ORDER BY list_position
                     """
-                ),
-                {"crawl_partition_id": created_partition_id},
-            ).mappings().all()
-            current_state_rows = connection.execute(
-                text(
-                    """
+                    ),
+                    {"crawl_partition_id": created_partition_id},
+                )
+                .mappings()
+                .all()
+            )
+            current_state_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT seen_count,
                            consecutive_missing_runs,
                            is_probably_inactive,
@@ -255,29 +264,37 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                     )
                     ORDER BY vacancy_id
                     """
-                ),
-                {
-                    "vacancy_one": TEST_VACANCY_IDS[0],
-                    "vacancy_two": TEST_VACANCY_IDS[1],
-                },
-            ).mappings().all()
-            employer_rows = connection.execute(
-                text(
-                    """
+                    ),
+                    {
+                        "vacancy_one": TEST_VACANCY_IDS[0],
+                        "vacancy_two": TEST_VACANCY_IDS[1],
+                    },
+                )
+                .mappings()
+                .all()
+            )
+            employer_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT hh_employer_id, name, alternate_url, is_trusted
                     FROM employer
                     WHERE hh_employer_id IN (:employer_one, :employer_two)
                     ORDER BY hh_employer_id
                     """
-                ),
-                {
-                    "employer_one": TEST_EMPLOYER_IDS[0],
-                    "employer_two": TEST_EMPLOYER_IDS[1],
-                },
-            ).mappings().all()
-            vacancy_role_rows = connection.execute(
-                text(
-                    """
+                    ),
+                    {
+                        "employer_one": TEST_EMPLOYER_IDS[0],
+                        "employer_two": TEST_EMPLOYER_IDS[1],
+                    },
+                )
+                .mappings()
+                .all()
+            )
+            vacancy_role_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT v.hh_vacancy_id, pr.hh_professional_role_id
                     FROM vacancy_professional_role AS vpr
                     JOIN vacancy AS v ON v.id = vpr.vacancy_id
@@ -285,43 +302,58 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                     WHERE v.hh_vacancy_id IN (:vacancy_one, :vacancy_two)
                     ORDER BY v.hh_vacancy_id, pr.hh_professional_role_id
                     """
-                ),
-                {
-                    "vacancy_one": TEST_VACANCY_IDS[0],
-                    "vacancy_two": TEST_VACANCY_IDS[1],
-                },
-            ).mappings().all()
-            request_log_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {
+                        "vacancy_one": TEST_VACANCY_IDS[0],
+                        "vacancy_two": TEST_VACANCY_IDS[1],
+                    },
+                )
+                .mappings()
+                .all()
+            )
+            request_log_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT id, status_code
                     FROM api_request_log
                     WHERE request_type = 'vacancy_search'
                       AND request_headers_json ->> 'User-Agent' = :user_agent
                     """
-                ),
-                {"user_agent": TEST_USER_AGENT},
-            ).mappings().one()
-            raw_payload_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"user_agent": TEST_USER_AGENT},
+                )
+                .mappings()
+                .one()
+            )
+            raw_payload_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT id, endpoint_type
                     FROM raw_api_payload
                     WHERE api_request_log_id = :api_request_log_id
                     """
-                ),
-                {"api_request_log_id": request_log_row["id"]},
-            ).mappings().one()
-            partition_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"api_request_log_id": request_log_row["id"]},
+                )
+                .mappings()
+                .one()
+            )
+            partition_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT status, pages_total_expected, pages_processed, items_seen
                     FROM crawl_partition
                     WHERE id = :crawl_partition_id
                     """
-                ),
-                {"crawl_partition_id": created_partition_id},
-            ).mappings().one()
+                    ),
+                    {"crawl_partition_id": created_partition_id},
+                )
+                .mappings()
+                .one()
+            )
 
         assert [row["hh_vacancy_id"] for row in vacancy_rows] == list(TEST_VACANCY_IDS)
         assert all(row["area_hh_id"] == TEST_AREA_HH_ID for row in vacancy_rows)
@@ -333,7 +365,10 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
         assert vacancy_rows[0]["experience_code"] == "between1And3"
         assert vacancy_rows[1]["employment_type_code"] == "part"
         assert [row["hh_employer_id"] for row in employer_rows] == list(TEST_EMPLOYER_IDS)
-        assert employer_rows[0]["alternate_url"] == "https://hh.ru/employer/pytest-process-list-employer-1"
+        assert (
+            employer_rows[0]["alternate_url"]
+            == "https://hh.ru/employer/pytest-process-list-employer-1"
+        )
         assert employer_rows[0]["is_trusted"] is True
         assert employer_rows[1]["alternate_url"] is None
         assert employer_rows[1]["is_trusted"] is None

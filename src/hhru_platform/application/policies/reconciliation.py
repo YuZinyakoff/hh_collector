@@ -33,8 +33,6 @@ class MissingRunsReconciliationPolicyV1:
         return VacancyCurrentStateReconciliationUpdate(
             vacancy_id=vacancy_state.vacancy_id,
             consecutive_missing_runs=consecutive_missing_runs,
-            is_probably_inactive=(
-                consecutive_missing_runs >= self._inactive_after_missing_runs
-            ),
+            is_probably_inactive=(consecutive_missing_runs >= self._inactive_after_missing_runs),
             last_seen_run_id=vacancy_state.last_seen_run_id,
         )

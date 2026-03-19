@@ -145,9 +145,18 @@ def test_reconcile_run_updates_current_state_and_completes_run() -> None:
                         INSERT INTO crawl_partition (
                             id,
                             crawl_run_id,
+                            parent_partition_id,
                             partition_key,
+                            scope_key,
                             params_json,
                             status,
+                            depth,
+                            split_dimension,
+                            split_value,
+                            planner_policy_version,
+                            is_terminal,
+                            is_saturated,
+                            coverage_status,
                             pages_total_expected,
                             pages_processed,
                             items_seen,
@@ -159,9 +168,18 @@ def test_reconcile_run_updates_current_state_and_completes_run() -> None:
                         VALUES (
                             :crawl_partition_id,
                             :crawl_run_id,
+                            NULL,
+                            'pytest-reconcile',
                             'pytest-reconcile',
                             '{"planner_policy":"single_partition_v1"}'::jsonb,
                             'done',
+                            0,
+                            NULL,
+                            NULL,
+                            'v1',
+                            TRUE,
+                            FALSE,
+                            'unassessed',
                             1,
                             1,
                             1,
@@ -299,9 +317,10 @@ def test_reconcile_run_updates_current_state_and_completes_run() -> None:
                 assert result.run_status == "completed"
                 assert result.observed_in_run_count == 1
 
-                current_state_rows = connection.execute(
-                    text(
-                        """
+                current_state_rows = (
+                    connection.execute(
+                        text(
+                            """
                         SELECT vacancy_id::text AS vacancy_id,
                                consecutive_missing_runs,
                                is_probably_inactive,
@@ -310,34 +329,37 @@ def test_reconcile_run_updates_current_state_and_completes_run() -> None:
                         WHERE vacancy_id IN (:seen_vacancy_id, :missing_vacancy_id)
                         ORDER BY vacancy_id
                         """
-                    ),
-                    {
-                        "seen_vacancy_id": seen_vacancy_id,
-                        "missing_vacancy_id": missing_vacancy_id,
-                    },
-                ).mappings().all()
-                crawl_run_row = connection.execute(
-                    text(
-                        """
+                        ),
+                        {
+                            "seen_vacancy_id": seen_vacancy_id,
+                            "missing_vacancy_id": missing_vacancy_id,
+                        },
+                    )
+                    .mappings()
+                    .all()
+                )
+                crawl_run_row = (
+                    connection.execute(
+                        text(
+                            """
                         SELECT status, finished_at, partitions_done, partitions_failed
                         FROM crawl_run
                         WHERE id = :crawl_run_id
                         """
-                    ),
-                    {"crawl_run_id": crawl_run_id},
-                ).mappings().one()
+                        ),
+                        {"crawl_run_id": crawl_run_id},
+                    )
+                    .mappings()
+                    .one()
+                )
 
                 rows_by_vacancy_id = {row["vacancy_id"]: row for row in current_state_rows}
                 assert rows_by_vacancy_id[str(seen_vacancy_id)]["consecutive_missing_runs"] == 0
                 assert rows_by_vacancy_id[str(seen_vacancy_id)]["is_probably_inactive"] is False
-                assert (
-                    rows_by_vacancy_id[str(seen_vacancy_id)]["last_seen_run_id"]
-                    == str(crawl_run_id)
+                assert rows_by_vacancy_id[str(seen_vacancy_id)]["last_seen_run_id"] == str(
+                    crawl_run_id
                 )
-                assert (
-                    rows_by_vacancy_id[str(missing_vacancy_id)]["consecutive_missing_runs"]
-                    == 2
-                )
+                assert rows_by_vacancy_id[str(missing_vacancy_id)]["consecutive_missing_runs"] == 2
                 assert rows_by_vacancy_id[str(missing_vacancy_id)]["is_probably_inactive"] is True
                 assert crawl_run_row["status"] == "completed"
                 assert crawl_run_row["finished_at"] is not None

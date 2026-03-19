@@ -1,2 +1,1 @@
 """Queue producer placeholder."""
-

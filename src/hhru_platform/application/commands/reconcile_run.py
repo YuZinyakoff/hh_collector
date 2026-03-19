@@ -111,9 +111,7 @@ def reconcile_run(
             raise CrawlRunNotFoundError(command.crawl_run_id)
 
         observed_vacancy_ids = set(
-            vacancy_seen_event_repository.list_distinct_vacancy_ids_by_run(
-                command.crawl_run_id
-            )
+            vacancy_seen_event_repository.list_distinct_vacancy_ids_by_run(command.crawl_run_id)
         )
         current_states = vacancy_current_state_repository.list_all()
         reconciled_at = datetime.now(UTC)
@@ -148,12 +146,17 @@ def reconcile_run(
             partitions_done=sum(
                 1
                 for partition in partitions
-                if partition.status == CrawlPartitionStatus.DONE.value
+                if partition.status
+                in (
+                    CrawlPartitionStatus.DONE.value,
+                    CrawlPartitionStatus.SPLIT_DONE.value,
+                )
             ),
             partitions_failed=sum(
                 1
                 for partition in partitions
                 if partition.status == CrawlPartitionStatus.FAILED.value
+                or partition.status == CrawlPartitionStatus.UNRESOLVED.value
             ),
         )
     except Exception as error:
@@ -163,9 +166,7 @@ def reconcile_run(
             started_at=started_at,
             error_type=error.__class__.__name__,
             error_message=str(error),
-            level=logging.WARNING
-            if isinstance(error, CrawlRunNotFoundError)
-            else logging.ERROR,
+            level=logging.WARNING if isinstance(error, CrawlRunNotFoundError) else logging.ERROR,
             run_id=command.crawl_run_id,
         )
         raise

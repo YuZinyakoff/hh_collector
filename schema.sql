@@ -24,9 +24,18 @@ CREATE INDEX idx_crawl_run_started_at ON crawl_run(started_at DESC);
 CREATE TABLE crawl_partition (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     crawl_run_id UUID NOT NULL REFERENCES crawl_run(id) ON DELETE CASCADE,
+    parent_partition_id UUID NULL REFERENCES crawl_partition(id) ON DELETE SET NULL,
     partition_key TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
     params_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     status TEXT NOT NULL,
+    depth INT NOT NULL DEFAULT 0,
+    split_dimension TEXT NULL,
+    split_value TEXT NULL,
+    planner_policy_version TEXT NOT NULL DEFAULT 'v1',
+    is_terminal BOOLEAN NOT NULL DEFAULT TRUE,
+    is_saturated BOOLEAN NOT NULL DEFAULT FALSE,
+    coverage_status TEXT NOT NULL DEFAULT 'unassessed',
     pages_total_expected INT NULL,
     pages_processed INT NOT NULL DEFAULT 0,
     items_seen INT NOT NULL DEFAULT 0,
@@ -35,7 +44,8 @@ CREATE TABLE crawl_partition (
     finished_at TIMESTAMPTZ NULL,
     last_error_message TEXT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_crawl_partition_run_key UNIQUE (crawl_run_id, partition_key)
+    CONSTRAINT uq_crawl_partition_run_key UNIQUE (crawl_run_id, partition_key),
+    CONSTRAINT uq_crawl_partition_run_scope_key UNIQUE (crawl_run_id, scope_key)
 );
 
 CREATE INDEX idx_crawl_partition_run_id
@@ -43,6 +53,12 @@ CREATE INDEX idx_crawl_partition_run_id
 
 CREATE INDEX idx_crawl_partition_status
     ON crawl_partition(status);
+
+CREATE INDEX idx_crawl_partition_parent_partition_id
+    ON crawl_partition(parent_partition_id);
+
+CREATE INDEX idx_crawl_partition_coverage_status
+    ON crawl_partition(coverage_status);
 
 -- =========================================================
 -- api logging / raw

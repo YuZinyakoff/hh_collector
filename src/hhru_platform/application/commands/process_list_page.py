@@ -373,9 +373,7 @@ def _build_search_params(
     if page is None:
         page_value = search_source.get("page")
         page = (
-            page_value
-            if isinstance(page_value, int) and page_value >= 0
-            else DEFAULT_SEARCH_PAGE
+            page_value if isinstance(page_value, int) and page_value >= 0 else DEFAULT_SEARCH_PAGE
         )
 
     per_page_value = search_source.get("per_page")

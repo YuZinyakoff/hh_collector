@@ -1,2 +1,1 @@
 """Queue job model placeholders."""
-

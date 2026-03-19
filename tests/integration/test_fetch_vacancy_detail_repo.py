@@ -309,15 +309,11 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
                 FetchVacancyDetailCommand(vacancy_id=created_vacancy_id),
                 vacancy_repository=SqlAlchemyVacancyRepository(session),
                 api_client=StaticVacancyDetailApiClient(),
-                detail_fetch_attempt_repository=SqlAlchemyDetailFetchAttemptRepository(
-                    session
-                ),
+                detail_fetch_attempt_repository=SqlAlchemyDetailFetchAttemptRepository(session),
                 api_request_log_repository=SqlAlchemyApiRequestLogRepository(session),
                 raw_api_payload_repository=SqlAlchemyRawApiPayloadRepository(session),
                 vacancy_snapshot_repository=SqlAlchemyVacancySnapshotRepository(session),
-                vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(
-                    session
-                ),
+                vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
             )
 
         assert result.detail_fetch_status == "succeeded"
@@ -326,9 +322,10 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
         assert result.raw_payload_id is not None
 
         with engine.connect() as connection:
-            vacancy_row = connection.execute(
-                text(
-                    """
+            vacancy_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT v.hh_vacancy_id,
                            v.name_current,
                            v.alternate_url,
@@ -343,82 +340,113 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
                     LEFT JOIN employer AS e ON e.id = v.employer_id
                     WHERE v.id = :vacancy_id
                     """
-                ),
-                {"vacancy_id": created_vacancy_id},
-            ).mappings().one()
-            employer_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"vacancy_id": created_vacancy_id},
+                )
+                .mappings()
+                .one()
+            )
+            employer_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT hh_employer_id, name, alternate_url, is_trusted
                     FROM employer
                     WHERE hh_employer_id = :hh_employer_id
                     """
-                ),
-                {"hh_employer_id": TEST_EMPLOYER_HH_ID},
-            ).mappings().one()
-            vacancy_role_rows = connection.execute(
-                text(
-                    """
+                    ),
+                    {"hh_employer_id": TEST_EMPLOYER_HH_ID},
+                )
+                .mappings()
+                .one()
+            )
+            vacancy_role_rows = (
+                connection.execute(
+                    text(
+                        """
                     SELECT pr.hh_professional_role_id
                     FROM vacancy_professional_role AS vpr
                     JOIN professional_role AS pr ON pr.id = vpr.professional_role_id
                     WHERE vpr.vacancy_id = :vacancy_id
                     ORDER BY pr.hh_professional_role_id
                     """
-                ),
-                {"vacancy_id": created_vacancy_id},
-            ).mappings().all()
-            attempt_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"vacancy_id": created_vacancy_id},
+                )
+                .mappings()
+                .all()
+            )
+            attempt_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT reason, attempt, status, error_message
                     FROM detail_fetch_attempt
                     WHERE vacancy_id = :vacancy_id
                     """
-                ),
-                {"vacancy_id": created_vacancy_id},
-            ).mappings().one()
-            request_log_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"vacancy_id": created_vacancy_id},
+                )
+                .mappings()
+                .one()
+            )
+            request_log_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT id, status_code, endpoint
                     FROM api_request_log
                     WHERE request_type = 'vacancy_detail'
                       AND request_headers_json ->> 'User-Agent' = :user_agent
                     """
-                ),
-                {"user_agent": TEST_USER_AGENT},
-            ).mappings().one()
-            raw_payload_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"user_agent": TEST_USER_AGENT},
+                )
+                .mappings()
+                .one()
+            )
+            raw_payload_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT id, endpoint_type, entity_hh_id
                     FROM raw_api_payload
                     WHERE api_request_log_id = :api_request_log_id
                     """
-                ),
-                {"api_request_log_id": request_log_row["id"]},
-            ).mappings().one()
-            snapshot_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"api_request_log_id": request_log_row["id"]},
+                )
+                .mappings()
+                .one()
+            )
+            snapshot_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT snapshot_type, change_reason, detail_hash, detail_payload_ref_id
                     FROM vacancy_snapshot
                     WHERE vacancy_id = :vacancy_id
                     """
-                ),
-                {"vacancy_id": created_vacancy_id},
-            ).mappings().one()
-            current_state_row = connection.execute(
-                text(
-                    """
+                    ),
+                    {"vacancy_id": created_vacancy_id},
+                )
+                .mappings()
+                .one()
+            )
+            current_state_row = (
+                connection.execute(
+                    text(
+                        """
                     SELECT last_detail_hash, last_detail_fetched_at, detail_fetch_status
                     FROM vacancy_current_state
                     WHERE vacancy_id = :vacancy_id
                     """
-                ),
-                {"vacancy_id": created_vacancy_id},
-            ).mappings().one()
+                    ),
+                    {"vacancy_id": created_vacancy_id},
+                )
+                .mappings()
+                .one()
+            )
 
         assert vacancy_row["hh_vacancy_id"] == TEST_VACANCY_HH_ID
         assert vacancy_row["name_current"] == "Lead Python Engineer"

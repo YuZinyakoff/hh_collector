@@ -1,2 +1,1 @@
 """Backup service placeholder."""
-

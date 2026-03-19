@@ -47,9 +47,7 @@ def handle_reconcile_run(args: argparse.Namespace) -> int:
                 crawl_run_repository=SqlAlchemyCrawlRunRepository(session),
                 crawl_partition_repository=SqlAlchemyCrawlPartitionRepository(session),
                 vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
-                vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(
-                    session
-                ),
+                vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
                 reconciliation_policy=MissingRunsReconciliationPolicyV1(),
             )
     except CrawlRunNotFoundError as error:

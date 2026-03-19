@@ -160,9 +160,10 @@
 Формирует пространство обхода.
 
 Функции:
-- создание партиций обхода;
-- параметризация партиций;
-- адаптивное дробление слишком крупных партиций;
+- создание tree-based партиций обхода;
+- параметризация партиций через disjoint search scopes;
+- стартовое exhaustive planning по корневым area partitions;
+- адаптивное дробление saturated partitions в child scopes;
 - подготовка списка jobs для sweep.
 
 #### 7.1.3. List Crawler
@@ -170,10 +171,13 @@
 
 Функции:
 - обход страниц выдачи;
+- recursive execution по terminal partitions planner v2 tree;
+- saturation-aware интерпретация search scope;
 - извлечение коротких объектов вакансий;
 - сохранение результатов в raw и operational storage;
 - генерация seen events;
-- постановка detail-jobs при необходимости.
+- постановка detail-jobs при необходимости;
+- split saturated parent scopes в child partitions вместо ложного "полного покрытия".
 
 #### 7.1.4. Detail Fetcher
 Получает детальные карточки вакансий.
@@ -220,17 +224,39 @@
 - регистрация sweep-run;
 - статусы запусков;
 - время старта/окончания;
-- агрегированная статистика по run.
+- агрегированная статистика по run;
+- coverage reporting поверх planner v2 tree без прямого SQL.
 
 #### 7.2.2. Partition State Store
 Хранит состояние каждой партиции.
 
 Функции:
-- pending / running / done / failed / retry;
+- pending / running / split_required / split_done / done / failed / unresolved;
 - количество страниц;
 - количество найденных вакансий;
 - число ошибок;
-- контроль повторных попыток.
+- контроль повторных попыток;
+- parent/child lineage и coverage semantics для exhaustive crawl.
+
+Для planner v2 partition state должен уметь различать:
+
+- execution lifecycle конкретной партиции;
+- coverage outcome партиции как search scope;
+- факт saturation и последующего split.
+
+С точки зрения покрытия дерева:
+
+- terminal leaf со статусом `done` и `coverage_status=covered` означает, что данный search scope дочитан до конца;
+- saturated parent со статусом `split_done` и `coverage_status=split` означает, что сам scope не считается покрытым напрямую и делегирует покрытие child scopes;
+- `unresolved` означает, что покрытие этого scope не было достигнуто и refinement по текущей split-policy не удался.
+
+Operator-facing reporting для `crawl_run` должен уметь ответить без SQL:
+
+- сколько terminal leaves уже `covered`;
+- сколько leaves всё ещё `pending` или `running`;
+- сколько parent nodes находятся в `split`;
+- есть ли `failed` или `unresolved` узлы;
+- как выглядит текущее partition tree данного run.
 
 #### 7.2.3. Vacancy Seen-State Tracker
 Хранит историю наблюдений вакансий.

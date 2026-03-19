@@ -8,6 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
+from hhru_platform.domain.value_objects.enums import (
+    CrawlPartitionCoverageStatus,
+    CrawlPartitionStatus,
+)
 from hhru_platform.infrastructure.db.models.crawl_partition import (
     CrawlPartition as CrawlPartitionModel,
 )
@@ -24,12 +28,30 @@ class SqlAlchemyCrawlPartitionRepository:
         partition_key: str,
         status: str,
         params_json: dict[str, Any],
+        parent_partition_id: UUID | None = None,
+        depth: int = 0,
+        split_dimension: str | None = None,
+        split_value: str | None = None,
+        scope_key: str | None = None,
+        planner_policy_version: str = "v1",
+        is_terminal: bool = True,
+        is_saturated: bool = False,
+        coverage_status: str = CrawlPartitionCoverageStatus.UNASSESSED.value,
     ) -> CrawlPartition:
         crawl_partition = CrawlPartitionModel(
             crawl_run_id=crawl_run_id,
+            parent_partition_id=parent_partition_id,
             partition_key=partition_key,
+            scope_key=scope_key or partition_key,
             status=status,
             params_json=dict(params_json),
+            depth=depth,
+            split_dimension=split_dimension,
+            split_value=split_value,
+            planner_policy_version=planner_policy_version,
+            is_terminal=is_terminal,
+            is_saturated=is_saturated,
+            coverage_status=coverage_status,
         )
         self._session.add(crawl_partition)
         self._session.flush()
@@ -41,6 +63,33 @@ class SqlAlchemyCrawlPartitionRepository:
             select(CrawlPartitionModel)
             .where(CrawlPartitionModel.crawl_run_id == run_id)
             .order_by(CrawlPartitionModel.partition_key)
+        )
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def list_pending_terminal_by_run_id(
+        self,
+        run_id: UUID,
+        *,
+        limit: int | None = None,
+    ) -> list[CrawlPartition]:
+        statement = (
+            select(CrawlPartitionModel)
+            .where(
+                CrawlPartitionModel.crawl_run_id == run_id,
+                CrawlPartitionModel.is_terminal.is_(True),
+                CrawlPartitionModel.status == CrawlPartitionStatus.PENDING.value,
+            )
+            .order_by(CrawlPartitionModel.depth, CrawlPartitionModel.partition_key)
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def list_children(self, parent_partition_id: UUID) -> list[CrawlPartition]:
+        statement = (
+            select(CrawlPartitionModel)
+            .where(CrawlPartitionModel.parent_partition_id == parent_partition_id)
+            .order_by(CrawlPartitionModel.depth, CrawlPartitionModel.partition_key)
         )
         return [self._to_entity(model) for model in self._session.scalars(statement)]
 
@@ -56,6 +105,17 @@ class SqlAlchemyCrawlPartitionRepository:
         if crawl_partition.started_at is None:
             crawl_partition.started_at = datetime.now(UTC)
         crawl_partition.status = "running"
+        crawl_partition.finished_at = None
+        crawl_partition.last_error_message = None
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
+    def mark_pending(self, partition_id: UUID) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        crawl_partition.status = CrawlPartitionStatus.PENDING.value
+        crawl_partition.finished_at = None
         crawl_partition.last_error_message = None
         self._session.add(crawl_partition)
         self._session.flush()
@@ -79,6 +139,58 @@ class SqlAlchemyCrawlPartitionRepository:
         crawl_partition.status = status
         crawl_partition.finished_at = datetime.now(UTC)
         crawl_partition.last_error_message = None
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
+    def mark_covered(self, partition_id: UUID) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        crawl_partition.status = CrawlPartitionStatus.DONE.value
+        crawl_partition.is_terminal = True
+        crawl_partition.is_saturated = False
+        crawl_partition.coverage_status = CrawlPartitionCoverageStatus.COVERED.value
+        crawl_partition.finished_at = datetime.now(UTC)
+        crawl_partition.last_error_message = None
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
+    def mark_split_required(self, partition_id: UUID) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        crawl_partition.status = CrawlPartitionStatus.SPLIT_REQUIRED.value
+        crawl_partition.is_saturated = True
+        crawl_partition.is_terminal = False
+        crawl_partition.coverage_status = CrawlPartitionCoverageStatus.SATURATED.value
+        crawl_partition.finished_at = None
+        crawl_partition.last_error_message = None
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
+    def mark_split_done(self, partition_id: UUID) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        crawl_partition.status = CrawlPartitionStatus.SPLIT_DONE.value
+        crawl_partition.is_saturated = True
+        crawl_partition.is_terminal = False
+        crawl_partition.coverage_status = CrawlPartitionCoverageStatus.SPLIT.value
+        crawl_partition.finished_at = datetime.now(UTC)
+        crawl_partition.last_error_message = None
+        self._session.add(crawl_partition)
+        self._session.flush()
+        self._session.refresh(crawl_partition)
+        return self._to_entity(crawl_partition)
+
+    def mark_unresolved(self, *, partition_id: UUID, error_message: str) -> CrawlPartition:
+        crawl_partition = self._get_model(partition_id)
+        crawl_partition.status = CrawlPartitionStatus.UNRESOLVED.value
+        crawl_partition.is_saturated = True
+        crawl_partition.is_terminal = True
+        crawl_partition.coverage_status = CrawlPartitionCoverageStatus.UNRESOLVED.value
+        crawl_partition.finished_at = datetime.now(UTC)
+        crawl_partition.last_error_message = error_message
         self._session.add(crawl_partition)
         self._session.flush()
         self._session.refresh(crawl_partition)
@@ -112,6 +224,15 @@ class SqlAlchemyCrawlPartitionRepository:
             finished_at=model.finished_at,
             last_error_message=model.last_error_message,
             created_at=model.created_at,
+            parent_partition_id=model.parent_partition_id,
+            depth=model.depth,
+            split_dimension=model.split_dimension,
+            split_value=model.split_value,
+            scope_key=model.scope_key,
+            planner_policy_version=model.planner_policy_version,
+            is_terminal=model.is_terminal,
+            is_saturated=model.is_saturated,
+            coverage_status=model.coverage_status,
         )
 
     def _get_model(self, partition_id: UUID) -> CrawlPartitionModel:

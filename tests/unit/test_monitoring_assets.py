@@ -3,44 +3,150 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_grafana_dashboards_are_valid_json_assets() -> None:
     dashboard_paths = (
-        REPO_ROOT / 'monitoring' / 'grafana' / 'dashboards' / 'collector-overview.json',
-        REPO_ROOT / 'monitoring' / 'grafana' / 'dashboards' / 'hh-api-ingest-health.json',
+        REPO_ROOT / "monitoring" / "grafana" / "dashboards" / "collector-overview.json",
+        REPO_ROOT / "monitoring" / "grafana" / "dashboards" / "hh-api-ingest-health.json",
     )
 
     for dashboard_path in dashboard_paths:
-        payload = json.loads(dashboard_path.read_text(encoding='utf-8'))
+        payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
 
-        assert isinstance(payload['title'], str)
-        assert payload['title']
-        assert isinstance(payload['panels'], list)
-        assert payload['panels']
-        assert payload['uid']
+        assert isinstance(payload["title"], str)
+        assert payload["title"]
+        assert isinstance(payload["panels"], list)
+        assert payload["panels"]
+        assert payload["uid"]
 
 
 def test_grafana_provisioning_points_to_prometheus_and_repo_dashboards() -> None:
     datasource_config = (
-        REPO_ROOT
-        / 'monitoring'
-        / 'grafana'
-        / 'provisioning'
-        / 'datasources'
-        / 'prometheus.yml'
-    ).read_text(encoding='utf-8')
+        REPO_ROOT / "monitoring" / "grafana" / "provisioning" / "datasources" / "prometheus.yml"
+    ).read_text(encoding="utf-8")
     dashboards_config = (
-        REPO_ROOT
-        / 'monitoring'
-        / 'grafana'
-        / 'provisioning'
-        / 'dashboards'
-        / 'dashboards.yml'
-    ).read_text(encoding='utf-8')
+        REPO_ROOT / "monitoring" / "grafana" / "provisioning" / "dashboards" / "dashboards.yml"
+    ).read_text(encoding="utf-8")
 
-    assert 'url: http://prometheus:9090' in datasource_config
-    assert 'uid: prometheus' in datasource_config
-    assert 'path: /var/lib/grafana/dashboards' in dashboards_config
+    assert "url: http://prometheus:9090" in datasource_config
+    assert "uid: prometheus" in datasource_config
+    assert "path: /var/lib/grafana/dashboards" in dashboards_config
+
+
+def test_grafana_range_stat_panels_query_selected_interval_as_instant_values() -> None:
+    collector_dashboard = _load_dashboard("collector-overview.json")
+    failures_panel = _find_panel(collector_dashboard, "Failures In Range")
+    failures_target = failures_panel["targets"][0]
+
+    assert (
+        failures_target["expr"]
+        == 'sum(increase(hhru_operation_total{status="failed"}[$__range]))'
+    )
+    assert failures_target["instant"] is True
+
+    ingest_dashboard = _load_dashboard("hh-api-ingest-health.json")
+    upstream_errors_panel = _find_panel(ingest_dashboard, "Upstream Errors In Range")
+    upstream_errors_target = upstream_errors_panel["targets"][0]
+
+    assert (
+        upstream_errors_target["expr"]
+        == (
+            'sum(increase(hhru_upstream_request_total'
+            '{status_class=~"4xx|5xx|network_error|timeout|transport_error"}[$__range]))'
+        )
+    )
+    assert upstream_errors_target["instant"] is True
+
+
+def test_grafana_last_success_tables_render_operation_and_wall_clock_timestamp() -> None:
+    collector_dashboard = _load_dashboard("collector-overview.json")
+    collector_panel = _find_panel(collector_dashboard, "Last Success Timestamps")
+
+    assert collector_panel["targets"][0]["expr"] == (
+        "sort_desc(1000 * max by (operation) "
+        "(hhru_operation_last_success_timestamp_seconds))"
+    )
+    assert collector_panel["targets"][0]["format"] == "table"
+    assert collector_panel["targets"][0]["instant"] is True
+    assert collector_panel["transformations"][0]["options"]["excludeByName"]["Time"] is True
+    assert collector_panel["transformations"][0]["options"]["renameByName"] == {
+        "operation": "Operation",
+        "Value": "Last Success",
+    }
+    assert _field_override(collector_panel, "Last Success")["properties"] == [
+        {"id": "unit", "value": "dateTimeAsIso"}
+    ]
+
+    ingest_dashboard = _load_dashboard("hh-api-ingest-health.json")
+    ingest_panel = _find_panel(ingest_dashboard, "Last Success By Critical Operation")
+
+    assert ingest_panel["targets"][0]["expr"] == (
+        "sort_desc(1000 * max by (operation) "
+        '(hhru_operation_last_success_timestamp_seconds{operation=~"sync_dictionary|process_list_page|fetch_vacancy_detail|reconcile_run"}))'
+    )
+    assert ingest_panel["targets"][0]["format"] == "table"
+    assert ingest_panel["targets"][0]["instant"] is True
+    assert ingest_panel["transformations"][0]["options"]["excludeByName"]["Time"] is True
+    assert ingest_panel["transformations"][0]["options"]["renameByName"] == {
+        "operation": "Operation",
+        "Value": "Last Success",
+    }
+    assert _field_override(ingest_panel, "Last Success")["properties"] == [
+        {"id": "unit", "value": "dateTimeAsIso"}
+    ]
+
+
+def test_grafana_run_coverage_panels_use_run_tree_metrics() -> None:
+    collector_dashboard = _load_dashboard("collector-overview.json")
+
+    coverage_table = _find_panel(collector_dashboard, "Planner V2 Coverage By Run")
+    assert coverage_table["targets"][0]["expr"] == "sort_desc(hhru_run_tree_coverage_ratio)"
+    assert coverage_table["targets"][0]["format"] == "table"
+    assert coverage_table["targets"][0]["instant"] is True
+    assert coverage_table["transformations"][0]["options"]["renameByName"] == {
+        "run_id": "Run ID",
+        "run_type": "Run Type",
+        "Value": "Coverage Ratio",
+    }
+    assert _field_override(coverage_table, "Coverage Ratio")["properties"] == [
+        {"id": "unit", "value": "percentunit"}
+    ]
+
+    assert _find_panel(collector_dashboard, "Covered Terminal Partitions")["targets"][0][
+        "expr"
+    ] == "sum(hhru_run_tree_covered_terminal_partitions)"
+    assert _find_panel(collector_dashboard, "Pending Terminal Partitions")["targets"][0][
+        "expr"
+    ] == "sum(hhru_run_tree_pending_terminal_partitions)"
+    assert _find_panel(collector_dashboard, "Split Partitions")["targets"][0][
+        "expr"
+    ] == "sum(hhru_run_tree_split_partitions)"
+    assert _find_panel(collector_dashboard, "Unresolved Partitions")["targets"][0][
+        "expr"
+    ] == "sum(hhru_run_tree_unresolved_partitions)"
+
+
+def _load_dashboard(filename: str) -> dict:
+    return json.loads(
+        (REPO_ROOT / "monitoring" / "grafana" / "dashboards" / filename).read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _find_panel(dashboard: dict, title: str) -> dict:
+    for panel in dashboard["panels"]:
+        if panel["title"] == title:
+            return panel
+
+    raise AssertionError(f"panel not found: {title}")
+
+
+def _field_override(panel: dict, field_name: str) -> dict:
+    for override in panel["fieldConfig"]["overrides"]:
+        if override["matcher"] == {"id": "byName", "options": field_name}:
+            return override
+
+    raise AssertionError(f"override not found for field: {field_name}")

@@ -14,15 +14,11 @@ def configure_logging() -> None:
     root_logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
 
     handler = logging.StreamHandler()
-    handler.addFilter(
-        ServiceContextFilter(service_name="hhru-platform", env=settings.env)
-    )
+    handler.addFilter(ServiceContextFilter(service_name="hhru-platform", env=settings.env))
     if settings.log_format.lower() == "json":
         handler.setFormatter(JsonLogFormatter())
     else:
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
 
     root_logger.addHandler(handler)
     root_logger.propagate = False

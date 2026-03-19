@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
+from hhru_platform.application.commands.reconcile_run import ReconcileRunResult
+from hhru_platform.application.commands.run_collection_once import RunCollectionOnceResult
+from hhru_platform.config.settings import Settings
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.entities.crawl_run import CrawlRun
 from hhru_platform.interfaces.cli.main import main
@@ -18,11 +21,120 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert exit_code == 0
     assert "health-check" in captured.out
     assert "create-run" in captured.out
+    assert "run-once" in captured.out
     assert "plan-run" in captured.out
     assert "sync-dictionaries" in captured.out
     assert "process-list-page" in captured.out
     assert "fetch-vacancy-detail" in captured.out
     assert "reconcile-run" in captured.out
+    assert "show-metrics" in captured.out
+    assert "serve-metrics" in captured.out
+
+
+def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.health.get_settings",
+        lambda: Settings(
+            env="production",
+            db_host="db.internal",
+            db_port=5432,
+            db_name="hhru_platform",
+            db_user="hhru",
+            db_password="secret",
+            redis_host="redis.internal",
+            redis_port=6379,
+            redis_db=1,
+            hh_api_base_url="https://api.hh.ru",
+            hh_api_timeout_seconds=15.0,
+            hh_api_user_agent="hhru-platform/0.1 (contact: ops@example.com)",
+            metrics_host="0.0.0.0",
+            metrics_port=8001,
+            metrics_state_path=".state/metrics/metrics.json",
+            backup_dir=".state/backups",
+            backup_retention_days=14,
+        ),
+    )
+    monkeypatch.setattr("sys.argv", ["hhru-platform", "health-check"])
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "env=production" in captured.out
+    assert (
+        "database_url=postgresql+psycopg://hhru:secret@db.internal:5432/hhru_platform"
+        in captured.out
+    )
+    assert "redis_url=redis://redis.internal:6379/1" in captured.out
+    assert "hh_api_user_agent=hhru-platform/0.1 (contact: ops@example.com)" in captured.out
+    assert "metrics_state_path=.state/metrics/metrics.json" in captured.out
+    assert "backup_retention_days=14" in captured.out
+
+
+def test_run_once_cli_prints_summary(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+
+    def fake_run_collection_once(command, **kwargs) -> RunCollectionOnceResult:
+        assert command.sync_dictionaries is True
+        assert command.pages_per_partition == 2
+        assert command.detail_limit == 3
+        assert command.run_type == "weekly_sweep"
+        assert command.triggered_by == "cli"
+        assert "sync_dictionary_step" in kwargs
+        assert "create_crawl_run_step" in kwargs
+        assert "plan_run_step" in kwargs
+        assert "process_list_page_step" in kwargs
+        assert "fetch_vacancy_detail_step" in kwargs
+        assert "reconcile_run_step" in kwargs
+        return RunCollectionOnceResult(
+            run_id=run_id,
+            run_type="weekly_sweep",
+            triggered_by="cli",
+            dictionary_results=(),
+            planned_partition_ids=(uuid4(),),
+            list_page_results=(),
+            detail_results=(),
+            reconciliation_result=ReconcileRunResult(
+                crawl_run_id=run_id,
+                observed_in_run_count=0,
+                missing_updated_count=0,
+                marked_inactive_count=0,
+                run_status="completed",
+            ),
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.run_once.run_collection_once",
+        fake_run_collection_once,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-once",
+            "--sync-dictionaries",
+            "yes",
+            "--pages-per-partition",
+            "2",
+            "--detail-limit",
+            "3",
+            "--run-type",
+            "weekly_sweep",
+            "--triggered-by",
+            "cli",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed run-once collection" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "partitions_planned=1" in captured.out
+    assert "list_pages_processed=0" in captured.out
+    assert "detail_fetch_attempted=0" in captured.out
+    assert "reconciliation_status=completed" in captured.out
 
 
 def test_create_run_cli_prints_created_run(monkeypatch, capsys) -> None:
@@ -255,7 +367,7 @@ def test_sync_dictionaries_cli_prints_sync_summary(monkeypatch, capsys) -> None:
         FakeDictionaryStore,
     )
     monkeypatch.setattr(
-        "hhru_platform.interfaces.cli.commands.dictionary.HHApiClient",
+        "hhru_platform.interfaces.cli.commands.dictionary.HHApiClient.from_settings",
         FakeHHApiClient,
     )
     monkeypatch.setattr(
@@ -335,10 +447,7 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
         assert api_request_log_repository.__class__.__name__ == "FakeApiRequestLogRepository"
         assert raw_api_payload_repository.__class__.__name__ == "FakeRawApiPayloadRepository"
         assert vacancy_repository.__class__.__name__ == "FakeVacancyRepository"
-        assert (
-            vacancy_seen_event_repository.__class__.__name__
-            == "FakeVacancySeenEventRepository"
-        )
+        assert vacancy_seen_event_repository.__class__.__name__ == "FakeVacancySeenEventRepository"
         assert (
             vacancy_current_state_repository.__class__.__name__
             == "FakeVacancyCurrentStateRepository"
@@ -395,7 +504,7 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
         FakeVacancyCurrentStateRepository,
     )
     monkeypatch.setattr(
-        "hhru_platform.interfaces.cli.commands.list_page.HHApiClient",
+        "hhru_platform.interfaces.cli.commands.list_page.HHApiClient.from_settings",
         FakeHHApiClient,
     )
     monkeypatch.setattr(
@@ -476,8 +585,7 @@ def test_fetch_vacancy_detail_cli_prints_fetch_summary(monkeypatch, capsys) -> N
         assert vacancy_repository.__class__.__name__ == "FakeVacancyRepository"
         assert api_client.__class__.__name__ == "FakeHHApiClient"
         assert (
-            detail_fetch_attempt_repository.__class__.__name__
-            == "FakeDetailFetchAttemptRepository"
+            detail_fetch_attempt_repository.__class__.__name__ == "FakeDetailFetchAttemptRepository"
         )
         assert api_request_log_repository.__class__.__name__ == "FakeApiRequestLogRepository"
         assert raw_api_payload_repository.__class__.__name__ == "FakeRawApiPayloadRepository"
@@ -526,7 +634,7 @@ def test_fetch_vacancy_detail_cli_prints_fetch_summary(monkeypatch, capsys) -> N
         FakeVacancyCurrentStateRepository,
     )
     monkeypatch.setattr(
-        "hhru_platform.interfaces.cli.commands.detail.HHApiClient",
+        "hhru_platform.interfaces.cli.commands.detail.HHApiClient.from_settings",
         FakeHHApiClient,
     )
     monkeypatch.setattr(
@@ -594,10 +702,7 @@ def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) ->
         assert command.crawl_run_id == crawl_run_id
         assert crawl_run_repository.__class__.__name__ == "FakeCrawlRunRepository"
         assert crawl_partition_repository.__class__.__name__ == "FakeCrawlPartitionRepository"
-        assert (
-            vacancy_seen_event_repository.__class__.__name__
-            == "FakeVacancySeenEventRepository"
-        )
+        assert vacancy_seen_event_repository.__class__.__name__ == "FakeVacancySeenEventRepository"
         assert (
             vacancy_current_state_repository.__class__.__name__
             == "FakeVacancyCurrentStateRepository"
@@ -659,3 +764,32 @@ def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) ->
     assert "missing_updated=7" in captured.out
     assert "marked_inactive=3" in captured.out
     assert "status=completed" in captured.out
+
+
+def test_show_metrics_cli_prints_prometheus_snapshot(monkeypatch, capsys) -> None:
+    class FakeMetricsRegistry:
+        def render_prometheus(self) -> str:
+            return (
+                "# HELP hhru_operation_total Total number of application operations.\n"
+                "# TYPE hhru_operation_total counter\n"
+                'hhru_operation_total{operation="create_crawl_run",status="succeeded"} 1\n'
+            )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.observability.get_metrics_registry",
+        lambda: FakeMetricsRegistry(),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "show-metrics",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "hhru_operation_total" in captured.out
+    assert 'operation="create_crawl_run"' in captured.out

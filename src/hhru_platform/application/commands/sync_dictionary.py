@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -15,6 +16,13 @@ from hhru_platform.domain.value_objects.enums import DictionarySyncStatus
 from hhru_platform.infrastructure.normalization.dictionary_normalizers import (
     DictionaryNormalizationError,
 )
+from hhru_platform.infrastructure.observability.operations import (
+    log_operation_started,
+    record_operation_failed,
+    record_operation_succeeded,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,59 +123,93 @@ def sync_dictionary(
     raw_api_payload_repository: RawApiPayloadRepository,
     dictionary_store: DictionaryStore,
 ) -> SyncDictionaryResult:
-    sync_run = sync_run_repository.start(
+    started_at = log_operation_started(
+        LOGGER,
+        operation="sync_dictionary",
         dictionary_name=command.dictionary_name,
-        status=DictionarySyncStatus.RUNNING.value,
     )
-
-    response = api_client.fetch_dictionary(command.dictionary_name)
-    request_log_id = api_request_log_repository.add(
-        crawl_run_id=None,
-        crawl_partition_id=None,
-        requested_at=response.requested_at,
-        request_type="dictionary_sync",
-        endpoint=response.endpoint,
-        method=response.method,
-        params_json=dict(response.params_json),
-        request_headers_json=dict(response.request_headers_json),
-        status_code=response.status_code,
-        latency_ms=response.latency_ms,
-        response_received_at=response.response_received_at,
-        error_type=response.error_type,
-        error_message=response.error_message,
-    )
-
-    raw_payload_id: int | None = None
-    if _payload_is_present(response.payload_json):
-        raw_payload_id = raw_api_payload_repository.add(
-            api_request_log_id=request_log_id,
-            received_at=response.response_received_at or response.requested_at,
-            endpoint_type=f"dictionary.{command.dictionary_name}",
-            entity_hh_id=None,
-            payload_json=response.payload_json,
-        )
-
     try:
-        summary = _persist_dictionary_payload(command.dictionary_name, response, dictionary_store)
-    except DictionaryNormalizationError as error:
-        return _build_failed_result(
-            command=command,
-            sync_run=sync_run,
-            sync_run_repository=sync_run_repository,
-            request_log_id=request_log_id,
-            raw_payload_id=raw_payload_id,
-            response=response,
-            error_message=str(error),
+        sync_run = sync_run_repository.start(
+            dictionary_name=command.dictionary_name,
+            status=DictionarySyncStatus.RUNNING.value,
         )
 
-    finished_sync_run = sync_run_repository.finish(
-        run_id=sync_run.id,
-        status=DictionarySyncStatus.SUCCEEDED.value,
-        etag=response.etag,
-        source_status_code=response.status_code,
-        notes=_build_success_notes(summary),
-    )
-    return SyncDictionaryResult(
+        response = api_client.fetch_dictionary(command.dictionary_name)
+        request_log_id = api_request_log_repository.add(
+            crawl_run_id=None,
+            crawl_partition_id=None,
+            requested_at=response.requested_at,
+            request_type="dictionary_sync",
+            endpoint=response.endpoint,
+            method=response.method,
+            params_json=dict(response.params_json),
+            request_headers_json=dict(response.request_headers_json),
+            status_code=response.status_code,
+            latency_ms=response.latency_ms,
+            response_received_at=response.response_received_at,
+            error_type=response.error_type,
+            error_message=response.error_message,
+        )
+
+        raw_payload_id: int | None = None
+        if _payload_is_present(response.payload_json):
+            raw_payload_id = raw_api_payload_repository.add(
+                api_request_log_id=request_log_id,
+                received_at=response.response_received_at or response.requested_at,
+                endpoint_type=f"dictionary.{command.dictionary_name}",
+                entity_hh_id=None,
+                payload_json=response.payload_json,
+            )
+
+        try:
+            summary = _persist_dictionary_payload(
+                command.dictionary_name,
+                response,
+                dictionary_store,
+            )
+        except DictionaryNormalizationError as error:
+            result = _build_failed_result(
+                command=command,
+                sync_run=sync_run,
+                sync_run_repository=sync_run_repository,
+                request_log_id=request_log_id,
+                raw_payload_id=raw_payload_id,
+                response=response,
+                error_message=str(error),
+            )
+            record_operation_failed(
+                LOGGER,
+                operation="sync_dictionary",
+                started_at=started_at,
+                error_type=error.__class__.__name__,
+                error_message=str(error),
+                level=logging.WARNING,
+                dictionary_name=command.dictionary_name,
+                sync_run_id=result.sync_run_id,
+                request_log_id=result.request_log_id,
+                raw_payload_id=result.raw_payload_id,
+            )
+            return result
+
+        finished_sync_run = sync_run_repository.finish(
+            run_id=sync_run.id,
+            status=DictionarySyncStatus.SUCCEEDED.value,
+            etag=response.etag,
+            source_status_code=response.status_code,
+            notes=_build_success_notes(summary),
+        )
+    except Exception as error:
+        record_operation_failed(
+            LOGGER,
+            operation="sync_dictionary",
+            started_at=started_at,
+            error_type=error.__class__.__name__,
+            error_message=str(error),
+            dictionary_name=command.dictionary_name,
+        )
+        raise
+
+    result = SyncDictionaryResult(
         dictionary_name=command.dictionary_name,
         sync_run_id=finished_sync_run.id,
         status=finished_sync_run.status,
@@ -179,6 +221,26 @@ def sync_dictionary(
         raw_payload_id=raw_payload_id,
         error_message=None,
     )
+    record_operation_succeeded(
+        LOGGER,
+        operation="sync_dictionary",
+        started_at=started_at,
+        records_written={
+            command.dictionary_name: (
+                result.created_count + result.updated_count + result.deactivated_count
+            )
+        },
+        dictionary_name=result.dictionary_name,
+        sync_run_id=result.sync_run_id,
+        request_log_id=result.request_log_id,
+        raw_payload_id=result.raw_payload_id,
+        created_count=result.created_count,
+        updated_count=result.updated_count,
+        deactivated_count=result.deactivated_count,
+        source_status_code=result.source_status_code,
+        sync_status=result.status,
+    )
+    return result
 
 
 def _persist_dictionary_payload(

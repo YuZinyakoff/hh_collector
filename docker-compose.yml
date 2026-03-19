@@ -1,24 +1,66 @@
+x-app-env: &app-env
+  HHRU_ENV: ${HHRU_ENV:-local}
+  HHRU_LOG_LEVEL: ${HHRU_LOG_LEVEL:-INFO}
+  HHRU_LOG_FORMAT: ${HHRU_LOG_FORMAT:-json}
+  HHRU_DB_HOST: postgres
+  HHRU_DB_PORT: 5432
+  HHRU_DB_NAME: ${HHRU_DB_NAME:-hhru_platform}
+  HHRU_DB_USER: ${HHRU_DB_USER:-hhru}
+  HHRU_DB_PASSWORD: ${HHRU_DB_PASSWORD:-hhru}
+  HHRU_REDIS_HOST: redis
+  HHRU_REDIS_PORT: 6379
+  HHRU_REDIS_DB: ${HHRU_REDIS_DB:-0}
+  HHRU_HH_API_BASE_URL: "${HHRU_HH_API_BASE_URL:-https://api.hh.ru}"
+  HHRU_HH_API_TIMEOUT_SECONDS: ${HHRU_HH_API_TIMEOUT_SECONDS:-30.0}
+  HHRU_HH_API_USER_AGENT: "${HHRU_HH_API_USER_AGENT:-hhru-platform/0.1 (contact: change-me@example.com)}"
+  HHRU_METRICS_HOST: 0.0.0.0
+  HHRU_METRICS_PORT: 8001
+  HHRU_METRICS_STATE_PATH: .state/metrics/metrics.json
+  HHRU_BACKUP_DIR: .state/backups
+  HHRU_BACKUP_RETENTION_DAYS: ${HHRU_BACKUP_RETENTION_DAYS:-7}
+  HHRU_BACKUP_PREFIX: ${HHRU_BACKUP_PREFIX:-hhru-platform}
+
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: docker/app.Dockerfile
+  environment: *app-env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  volumes:
+    - ./.state/metrics:/app/.state/metrics
+
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: hhru_platform
-      POSTGRES_USER: hhru
-      POSTGRES_PASSWORD: hhru
+      POSTGRES_DB: ${HHRU_DB_NAME:-hhru_platform}
+      POSTGRES_USER: ${HHRU_DB_USER:-hhru}
+      POSTGRES_PASSWORD: ${HHRU_DB_PASSWORD:-hhru}
     ports:
-      - "5432:5432"
+      - "${HHRU_DB_BIND_HOST:-127.0.0.1}:${HHRU_DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hhru -d hhru_platform"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${HHRU_DB_USER:-hhru} -d ${HHRU_DB_NAME:-hhru_platform}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "${HHRU_REDIS_BIND_HOST:-127.0.0.1}:${HHRU_REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -27,6 +69,71 @@ services:
       timeout: 5s
       retries: 10
 
+  app:
+    <<: *app-image
+    profiles: ["ops"]
+    entrypoint: ["python", "-m", "hhru_platform.interfaces.cli.main"]
+    command: ["health-check"]
+    restart: "no"
+
+  metrics:
+    <<: *app-image
+    entrypoint: ["python", "-m", "hhru_platform.interfaces.cli.main"]
+    command: ["serve-metrics"]
+    restart: unless-stopped
+    ports:
+      - "${HHRU_METRICS_BIND_HOST:-127.0.0.1}:${HHRU_METRICS_PORT:-8001}:8001"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=5).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      metrics:
+        condition: service_healthy
+    ports:
+      - "${HHRU_PROMETHEUS_BIND_HOST:-127.0.0.1}:${HHRU_PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerting/rules.yml:/etc/prometheus/alerts/rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+
+  backup:
+    build:
+      context: .
+      dockerfile: docker/backup.Dockerfile
+    profiles: ["ops"]
+    restart: "no"
+    environment:
+      HHRU_DB_HOST: postgres
+      HHRU_DB_PORT: 5432
+      HHRU_DB_NAME: ${HHRU_DB_NAME:-hhru_platform}
+      HHRU_DB_USER: ${HHRU_DB_USER:-hhru}
+      HHRU_DB_PASSWORD: ${HHRU_DB_PASSWORD:-hhru}
+      HHRU_BACKUP_DIR: /backups
+      HHRU_BACKUP_RETENTION_DAYS: ${HHRU_BACKUP_RETENTION_DAYS:-7}
+      HHRU_BACKUP_PREFIX: ${HHRU_BACKUP_PREFIX:-hhru-platform}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./.state/backups:/backups
+    command: ["/usr/local/bin/backup_postgres.sh"]
+
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:

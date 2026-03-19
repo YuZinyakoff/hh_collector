@@ -18,6 +18,24 @@ PYTHON=./.venv/bin/python make migrate
 
 Альтернатива без удаления volume: использовать отдельную временную БД через `HHRU_DB_NAME=<temp_db>`.
 
+## Orchestration-Lite Shortcut
+
+Если нужен один быстрый сквозной smoke flow без ручного запуска каждого slice, можно использовать `run-once`:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-once --sync-dictionaries yes --pages-per-partition 1 --detail-limit 1 --triggered-by cli-happy-path
+```
+
+Ожидаемо:
+- есть `run_id`
+- `partitions_processed>=1`
+- `list_pages_processed>=1`
+- `vacancies_found>=0`
+- `detail_fetch_attempted=1` или меньше, если найдено меньше вакансий
+- `reconciliation_status=completed`
+
+Эта команда использует те же самые existing slices, что и пошаговый manual flow ниже. Если нужно точечно диагностировать отдельный этап, используй ручные команды из следующего раздела.
+
 ## Happy Path
 
 1. Синхронизировать `areas`:
@@ -87,6 +105,17 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main reconcile
 - `vacancies_observed_in_run>=0`
 - есть `missing_updated`, `marked_inactive`
 - `status=completed`
+
+7. Проверить accumulated metrics:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main show-metrics
+```
+
+Ожидаемо:
+- есть `hhru_operation_total`
+- есть `hhru_records_written_total`
+- после live flow появляются метрики по `sync_dictionary`, `process_list_page`, `fetch_vacancy_detail`, `reconcile_run`
 
 ## Notes
 

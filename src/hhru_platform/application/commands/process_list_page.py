@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -19,6 +20,11 @@ from hhru_platform.infrastructure.normalization.vacancy_short_normalizer import 
     VacancySearchNormalizationError,
     normalize_vacancy_search_page,
 )
+from hhru_platform.infrastructure.observability.operations import (
+    log_operation_started,
+    record_operation_failed,
+    record_operation_succeeded,
+)
 
 DEFAULT_SEARCH_PAGE = 0
 DEFAULT_SEARCH_PER_PAGE = 20
@@ -33,6 +39,8 @@ SUPPORTED_LIST_SEARCH_PARAMS = {
     "search_field",
     "text",
 }
+
+LOGGER = logging.getLogger(__name__)
 
 
 class CrawlPartitionNotFoundError(LookupError):
@@ -168,88 +176,123 @@ def process_list_page(
     vacancy_seen_event_repository: VacancySeenEventRepository,
     vacancy_current_state_repository: VacancyCurrentStateRepository,
 ) -> ProcessListPageResult:
-    partition = crawl_partition_repository.get(command.partition_id)
-    if partition is None:
-        raise CrawlPartitionNotFoundError(command.partition_id)
-
-    crawl_partition_repository.mark_running(command.partition_id)
-
-    search_params = _build_search_params(partition, page_override=command.page)
-    page_number = search_params["page"]
-    if not isinstance(page_number, int):
-        raise TypeError("search parameter page must be an integer")
-
-    response = api_client.search_vacancies(search_params)
-    request_log_id = api_request_log_repository.add(
-        crawl_run_id=partition.crawl_run_id,
-        crawl_partition_id=partition.id,
-        requested_at=response.requested_at,
-        request_type="vacancy_search",
-        endpoint=response.endpoint,
-        method=response.method,
-        params_json=dict(response.params_json),
-        request_headers_json=dict(response.request_headers_json),
-        status_code=response.status_code,
-        latency_ms=response.latency_ms,
-        response_received_at=response.response_received_at,
-        error_type=response.error_type,
-        error_message=response.error_message,
+    started_at = log_operation_started(
+        LOGGER,
+        operation="process_list_page",
+        partition_id=command.partition_id,
+        page=command.page,
     )
-
-    raw_payload_id: int | None = None
-    if _payload_is_present(response.payload_json):
-        raw_payload_id = raw_api_payload_repository.add(
-            api_request_log_id=request_log_id,
-            received_at=response.response_received_at or response.requested_at,
-            endpoint_type="vacancies.search",
-            entity_hh_id=None,
-            payload_json=response.payload_json,
-        )
-
     try:
-        normalized_page = _normalize_response(response)
-    except VacancySearchNormalizationError as error:
-        failed_partition = crawl_partition_repository.mark_failed(
-            partition_id=partition.id,
-            error_message=str(error),
-        )
-        return ProcessListPageResult(
-            partition_id=partition.id,
-            partition_status=failed_partition.status,
-            page=page_number,
-            pages_total_expected=None,
-            vacancies_processed=0,
-            vacancies_created=0,
-            seen_events_created=0,
-            request_log_id=request_log_id,
-            raw_payload_id=raw_payload_id,
-            processed_vacancies=[],
-            error_message=str(error),
+        partition = crawl_partition_repository.get(command.partition_id)
+        if partition is None:
+            raise CrawlPartitionNotFoundError(command.partition_id)
+
+        crawl_partition_repository.mark_running(command.partition_id)
+
+        search_params = _build_search_params(partition, page_override=command.page)
+        page_number = search_params["page"]
+        if not isinstance(page_number, int):
+            raise TypeError("search parameter page must be an integer")
+
+        response = api_client.search_vacancies(search_params)
+        request_log_id = api_request_log_repository.add(
+            crawl_run_id=partition.crawl_run_id,
+            crawl_partition_id=partition.id,
+            requested_at=response.requested_at,
+            request_type="vacancy_search",
+            endpoint=response.endpoint,
+            method=response.method,
+            params_json=dict(response.params_json),
+            request_headers_json=dict(response.request_headers_json),
+            status_code=response.status_code,
+            latency_ms=response.latency_ms,
+            response_received_at=response.response_received_at,
+            error_type=response.error_type,
+            error_message=response.error_message,
         )
 
-    upsert_result = vacancy_repository.upsert_many(normalized_page.items)
-    observed_at = response.response_received_at or datetime.now(UTC)
-    observed_records = _build_observed_records(normalized_page.items, upsert_result)
-    seen_events_created = vacancy_seen_event_repository.add_many(
-        crawl_run_id=partition.crawl_run_id,
-        crawl_partition_id=partition.id,
-        seen_at=observed_at,
-        short_payload_ref_id=raw_payload_id,
-        observations=observed_records,
-    )
-    vacancy_current_state_repository.observe_many(
-        crawl_run_id=partition.crawl_run_id,
-        observed_at=observed_at,
-        observations=observed_records,
-    )
-    updated_partition = crawl_partition_repository.record_page_processed(
-        partition_id=partition.id,
-        pages_total_expected=normalized_page.pages,
-        items_seen_delta=len(observed_records),
-        status=CrawlPartitionStatus.DONE.value,
-    )
+        raw_payload_id: int | None = None
+        if _payload_is_present(response.payload_json):
+            raw_payload_id = raw_api_payload_repository.add(
+                api_request_log_id=request_log_id,
+                received_at=response.response_received_at or response.requested_at,
+                endpoint_type="vacancies.search",
+                entity_hh_id=None,
+                payload_json=response.payload_json,
+            )
 
-    return ProcessListPageResult(
+        try:
+            normalized_page = _normalize_response(response)
+        except VacancySearchNormalizationError as error:
+            failed_partition = crawl_partition_repository.mark_failed(
+                partition_id=partition.id,
+                error_message=str(error),
+            )
+            result = ProcessListPageResult(
+                partition_id=partition.id,
+                partition_status=failed_partition.status,
+                page=page_number,
+                pages_total_expected=None,
+                vacancies_processed=0,
+                vacancies_created=0,
+                seen_events_created=0,
+                request_log_id=request_log_id,
+                raw_payload_id=raw_payload_id,
+                processed_vacancies=[],
+                error_message=str(error),
+            )
+            record_operation_failed(
+                LOGGER,
+                operation="process_list_page",
+                started_at=started_at,
+                error_type=error.__class__.__name__,
+                error_message=str(error),
+                level=logging.WARNING,
+                run_id=partition.crawl_run_id,
+                partition_id=partition.id,
+                request_log_id=request_log_id,
+                raw_payload_id=raw_payload_id,
+                page=page_number,
+            )
+            return result
+
+        upsert_result = vacancy_repository.upsert_many(normalized_page.items)
+        observed_at = response.response_received_at or datetime.now(UTC)
+        observed_records = _build_observed_records(normalized_page.items, upsert_result)
+        seen_events_created = vacancy_seen_event_repository.add_many(
+            crawl_run_id=partition.crawl_run_id,
+            crawl_partition_id=partition.id,
+            seen_at=observed_at,
+            short_payload_ref_id=raw_payload_id,
+            observations=observed_records,
+        )
+        vacancy_current_state_repository.observe_many(
+            crawl_run_id=partition.crawl_run_id,
+            observed_at=observed_at,
+            observations=observed_records,
+        )
+        updated_partition = crawl_partition_repository.record_page_processed(
+            partition_id=partition.id,
+            pages_total_expected=normalized_page.pages,
+            items_seen_delta=len(observed_records),
+            status=CrawlPartitionStatus.DONE.value,
+        )
+    except Exception as error:
+        record_operation_failed(
+            LOGGER,
+            operation="process_list_page",
+            started_at=started_at,
+            error_type=error.__class__.__name__,
+            error_message=str(error),
+            level=logging.WARNING
+            if isinstance(error, CrawlPartitionNotFoundError)
+            else logging.ERROR,
+            partition_id=command.partition_id,
+            page=command.page,
+        )
+        raise
+
+    result = ProcessListPageResult(
         partition_id=updated_partition.id,
         partition_status=updated_partition.status,
         page=normalized_page.page,
@@ -262,6 +305,25 @@ def process_list_page(
         processed_vacancies=upsert_result.vacancies,
         error_message=None,
     )
+    record_operation_succeeded(
+        LOGGER,
+        operation="process_list_page",
+        started_at=started_at,
+        records_written={
+            "vacancy": result.vacancies_processed,
+            "vacancy_seen_event": result.seen_events_created,
+        },
+        run_id=partition.crawl_run_id,
+        partition_id=result.partition_id,
+        page=result.page,
+        partition_status=result.partition_status,
+        vacancies_processed=result.vacancies_processed,
+        vacancies_created=result.vacancies_created,
+        seen_events_created=result.seen_events_created,
+        request_log_id=result.request_log_id,
+        raw_payload_id=result.raw_payload_id,
+    )
+    return result
 
 
 def _build_search_params(

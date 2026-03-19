@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from json import JSONDecodeError
+from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -14,11 +15,13 @@ from hhru_platform.application.dto import (
     VacancyDetailResponse,
     VacancySearchResponse,
 )
+from hhru_platform.config.settings import Settings, get_settings
 from hhru_platform.infrastructure.hh_api.endpoints import (
     VACANCY_SEARCH_ENDPOINT,
     get_dictionary_endpoint,
     get_vacancy_detail_endpoint,
 )
+from hhru_platform.infrastructure.observability.metrics import get_metrics_registry
 
 
 @dataclass(slots=True, frozen=True)
@@ -47,6 +50,15 @@ class HHApiClient:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._user_agent = user_agent
+
+    @classmethod
+    def from_settings(cls, settings: Settings | None = None) -> "HHApiClient":
+        resolved_settings = settings or get_settings()
+        return cls(
+            base_url=resolved_settings.hh_api_base_url,
+            timeout=resolved_settings.hh_api_timeout_seconds,
+            user_agent=resolved_settings.hh_api_user_agent,
+        )
 
     def fetch_dictionary(self, dictionary_name: str) -> DictionaryFetchResponse:
         endpoint = get_dictionary_endpoint(dictionary_name)
@@ -108,6 +120,7 @@ class HHApiClient:
         *,
         params_json: Mapping[str, object],
     ) -> _JSONGetResponse:
+        request_started_at = perf_counter()
         request_headers = {
             "Accept": "application/json",
             "User-Agent": self._user_agent,
@@ -130,7 +143,7 @@ class HHApiClient:
             status_code = int(error.code)
         except URLError as error:
             response_received_at = datetime.now(UTC)
-            return _JSONGetResponse(
+            result = _JSONGetResponse(
                 method="GET",
                 params_json=dict(params_json),
                 request_headers_json=request_headers,
@@ -143,10 +156,17 @@ class HHApiClient:
                 error_type=error.__class__.__name__,
                 error_message=str(error.reason),
             )
+            get_metrics_registry().record_upstream_request(
+                endpoint=endpoint,
+                status_code=result.status_code,
+                duration_seconds=max(perf_counter() - request_started_at, 0.0),
+                error_type=result.error_type,
+            )
+            return result
 
         response_received_at = datetime.now(UTC)
         payload_json, error_type, error_message = _decode_json_body(body)
-        return _JSONGetResponse(
+        result = _JSONGetResponse(
             method="GET",
             params_json=dict(params_json),
             request_headers_json=request_headers,
@@ -159,6 +179,13 @@ class HHApiClient:
             error_type=error_type,
             error_message=error_message,
         )
+        get_metrics_registry().record_upstream_request(
+            endpoint=endpoint,
+            status_code=result.status_code,
+            duration_seconds=max(perf_counter() - request_started_at, 0.0),
+            error_type=result.error_type,
+        )
+        return result
 
 
 def _decode_json_body(body: bytes) -> tuple[object | None, str | None, str | None]:

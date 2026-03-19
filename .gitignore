@@ -9,6 +9,8 @@ __pycache__/
 .coverage
 htmlcov/
 .env
+.state/
+.codex_write_test
 alembic.ini.bak
 dist/
 build/

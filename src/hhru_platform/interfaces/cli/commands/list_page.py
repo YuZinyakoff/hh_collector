@@ -51,7 +51,7 @@ def handle_process_list_page(args: argparse.Namespace) -> int:
             result = process_list_page(
                 command,
                 crawl_partition_repository=SqlAlchemyCrawlPartitionRepository(session),
-                api_client=HHApiClient(),
+                api_client=HHApiClient.from_settings(),
                 api_request_log_repository=SqlAlchemyApiRequestLogRepository(session),
                 raw_api_payload_repository=SqlAlchemyRawApiPayloadRepository(session),
                 vacancy_repository=SqlAlchemyVacancyRepository(session),

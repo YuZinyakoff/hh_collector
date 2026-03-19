@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from hhru_platform.domain.entities.crawl_run import CrawlRun
 from hhru_platform.domain.value_objects.enums import CrawlRunStatus
+from hhru_platform.infrastructure.observability.operations import (
+    log_operation_started,
+    record_operation_failed,
+    record_operation_succeeded,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -32,8 +40,38 @@ class CrawlRunRepository(Protocol):
 
 
 def create_crawl_run(command: CreateCrawlRunCommand, repository: CrawlRunRepository) -> CrawlRun:
-    return repository.add(
+    started_at = log_operation_started(
+        LOGGER,
+        operation="create_crawl_run",
         run_type=command.run_type,
-        status=CrawlRunStatus.CREATED.value,
         triggered_by=command.triggered_by,
     )
+    try:
+        crawl_run = repository.add(
+            run_type=command.run_type,
+            status=CrawlRunStatus.CREATED.value,
+            triggered_by=command.triggered_by,
+        )
+    except Exception as error:
+        record_operation_failed(
+            LOGGER,
+            operation="create_crawl_run",
+            started_at=started_at,
+            error_type=error.__class__.__name__,
+            error_message=str(error),
+            run_type=command.run_type,
+            triggered_by=command.triggered_by,
+        )
+        raise
+
+    record_operation_succeeded(
+        LOGGER,
+        operation="create_crawl_run",
+        started_at=started_at,
+        records_written={"crawl_run": 1},
+        run_id=crawl_run.id,
+        run_type=crawl_run.run_type,
+        triggered_by=crawl_run.triggered_by,
+        run_status=crawl_run.status,
+    )
+    return crawl_run

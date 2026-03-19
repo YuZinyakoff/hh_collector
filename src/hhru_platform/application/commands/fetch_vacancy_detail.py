@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -12,6 +13,13 @@ from hhru_platform.infrastructure.normalization.vacancy_detail_normalizer import
     VacancyDetailNormalizationError,
     normalize_vacancy_detail,
 )
+from hhru_platform.infrastructure.observability.operations import (
+    log_operation_started,
+    record_operation_failed,
+    record_operation_succeeded,
+)
+
+LOGGER = logging.getLogger(__name__)
 
 
 class VacancyNotFoundError(LookupError):
@@ -163,98 +171,140 @@ def fetch_vacancy_detail(
     vacancy_snapshot_repository: VacancySnapshotRepository,
     vacancy_current_state_repository: VacancyCurrentStateRepository,
 ) -> FetchVacancyDetailResult:
-    vacancy = vacancy_repository.get(command.vacancy_id)
-    if vacancy is None:
-        raise VacancyNotFoundError(command.vacancy_id)
-
-    attempt_requested_at = datetime.now(UTC)
-    detail_fetch_attempt_id = detail_fetch_attempt_repository.start(
-        vacancy_id=vacancy.id,
-        crawl_run_id=command.crawl_run_id,
-        reason=command.reason,
+    started_at = log_operation_started(
+        LOGGER,
+        operation="fetch_vacancy_detail",
+        vacancy_id=command.vacancy_id,
         attempt=command.attempt,
-        requested_at=attempt_requested_at,
-        status=DetailFetchStatus.RUNNING.value,
+        run_id=command.crawl_run_id,
+        reason=command.reason,
     )
-    response = api_client.fetch_vacancy_detail(vacancy.hh_vacancy_id)
-    request_log_id = api_request_log_repository.add(
-        crawl_run_id=command.crawl_run_id,
-        crawl_partition_id=None,
-        requested_at=response.requested_at,
-        request_type="vacancy_detail",
-        endpoint=response.endpoint,
-        method=response.method,
-        params_json=dict(response.params_json),
-        request_headers_json=dict(response.request_headers_json),
-        status_code=response.status_code,
-        latency_ms=response.latency_ms,
-        response_received_at=response.response_received_at,
-        error_type=response.error_type,
-        error_message=response.error_message,
-    )
+    try:
+        vacancy = vacancy_repository.get(command.vacancy_id)
+        if vacancy is None:
+            raise VacancyNotFoundError(command.vacancy_id)
 
-    raw_payload_id: int | None = None
-    if _payload_is_present(response.payload_json):
-        raw_payload_id = raw_api_payload_repository.add(
-            api_request_log_id=request_log_id,
-            received_at=response.response_received_at or response.requested_at,
-            endpoint_type="vacancies.detail",
-            entity_hh_id=vacancy.hh_vacancy_id,
-            payload_json=response.payload_json,
+        attempt_requested_at = datetime.now(UTC)
+        detail_fetch_attempt_id = detail_fetch_attempt_repository.start(
+            vacancy_id=vacancy.id,
+            crawl_run_id=command.crawl_run_id,
+            reason=command.reason,
+            attempt=command.attempt,
+            requested_at=attempt_requested_at,
+            status=DetailFetchStatus.RUNNING.value,
+        )
+        response = api_client.fetch_vacancy_detail(vacancy.hh_vacancy_id)
+        request_log_id = api_request_log_repository.add(
+            crawl_run_id=command.crawl_run_id,
+            crawl_partition_id=None,
+            requested_at=response.requested_at,
+            request_type="vacancy_detail",
+            endpoint=response.endpoint,
+            method=response.method,
+            params_json=dict(response.params_json),
+            request_headers_json=dict(response.request_headers_json),
+            status_code=response.status_code,
+            latency_ms=response.latency_ms,
+            response_received_at=response.response_received_at,
+            error_type=response.error_type,
+            error_message=response.error_message,
         )
 
-    try:
-        normalized_detail = _normalize_response(response)
-    except VacancyDetailNormalizationError as error:
-        failed_at = response.response_received_at or datetime.now(UTC)
+        raw_payload_id: int | None = None
+        if _payload_is_present(response.payload_json):
+            raw_payload_id = raw_api_payload_repository.add(
+                api_request_log_id=request_log_id,
+                received_at=response.response_received_at or response.requested_at,
+                endpoint_type="vacancies.detail",
+                entity_hh_id=vacancy.hh_vacancy_id,
+                payload_json=response.payload_json,
+            )
+
+        try:
+            normalized_detail = _normalize_response(response)
+        except VacancyDetailNormalizationError as error:
+            failed_at = response.response_received_at or datetime.now(UTC)
+            vacancy_current_state_repository.record_detail_fetch(
+                vacancy_id=vacancy.id,
+                recorded_at=failed_at,
+                detail_hash=None,
+                detail_fetch_status=DetailFetchStatus.FAILED.value,
+            )
+            detail_fetch_attempt_repository.finish(
+                detail_fetch_attempt_id=detail_fetch_attempt_id,
+                status=DetailFetchStatus.FAILED.value,
+                finished_at=failed_at,
+                error_message=str(error),
+            )
+            result = FetchVacancyDetailResult(
+                vacancy_id=vacancy.id,
+                hh_vacancy_id=vacancy.hh_vacancy_id,
+                detail_fetch_status=DetailFetchStatus.FAILED.value,
+                snapshot_id=None,
+                request_log_id=request_log_id,
+                raw_payload_id=raw_payload_id,
+                detail_fetch_attempt_id=detail_fetch_attempt_id,
+                error_message=str(error),
+            )
+            record_operation_failed(
+                LOGGER,
+                operation="fetch_vacancy_detail",
+                started_at=started_at,
+                error_type=error.__class__.__name__,
+                error_message=str(error),
+                level=logging.WARNING,
+                vacancy_id=result.vacancy_id,
+                hh_vacancy_id=result.hh_vacancy_id,
+                attempt=command.attempt,
+                run_id=command.crawl_run_id,
+                request_log_id=result.request_log_id,
+                raw_payload_id=result.raw_payload_id,
+                detail_fetch_attempt_id=result.detail_fetch_attempt_id,
+            )
+            return result
+
+        vacancy_repository.apply_detail_update(vacancy_id=vacancy.id, detail=normalized_detail)
+        captured_at = response.response_received_at or datetime.now(UTC)
+        snapshot_id = vacancy_snapshot_repository.add(
+            vacancy_id=vacancy.id,
+            crawl_run_id=command.crawl_run_id,
+            snapshot_type=VacancySnapshotType.DETAIL.value,
+            captured_at=captured_at,
+            detail_hash=normalized_detail.detail_hash,
+            detail_payload_ref_id=raw_payload_id,
+            normalized_json=normalized_detail.normalized_json,
+            change_reason=command.reason,
+        )
         vacancy_current_state_repository.record_detail_fetch(
             vacancy_id=vacancy.id,
-            recorded_at=failed_at,
-            detail_hash=None,
-            detail_fetch_status=DetailFetchStatus.FAILED.value,
+            recorded_at=captured_at,
+            detail_hash=normalized_detail.detail_hash,
+            detail_fetch_status=DetailFetchStatus.SUCCEEDED.value,
         )
         detail_fetch_attempt_repository.finish(
             detail_fetch_attempt_id=detail_fetch_attempt_id,
-            status=DetailFetchStatus.FAILED.value,
-            finished_at=failed_at,
-            error_message=str(error),
+            status=DetailFetchStatus.SUCCEEDED.value,
+            finished_at=captured_at,
+            error_message=None,
         )
-        return FetchVacancyDetailResult(
-            vacancy_id=vacancy.id,
-            hh_vacancy_id=vacancy.hh_vacancy_id,
-            detail_fetch_status=DetailFetchStatus.FAILED.value,
-            snapshot_id=None,
-            request_log_id=request_log_id,
-            raw_payload_id=raw_payload_id,
-            detail_fetch_attempt_id=detail_fetch_attempt_id,
+    except Exception as error:
+        record_operation_failed(
+            LOGGER,
+            operation="fetch_vacancy_detail",
+            started_at=started_at,
+            error_type=error.__class__.__name__,
             error_message=str(error),
+            level=logging.WARNING
+            if isinstance(error, VacancyNotFoundError)
+            else logging.ERROR,
+            vacancy_id=command.vacancy_id,
+            attempt=command.attempt,
+            run_id=command.crawl_run_id,
+            reason=command.reason,
         )
+        raise
 
-    vacancy_repository.apply_detail_update(vacancy_id=vacancy.id, detail=normalized_detail)
-    captured_at = response.response_received_at or datetime.now(UTC)
-    snapshot_id = vacancy_snapshot_repository.add(
-        vacancy_id=vacancy.id,
-        crawl_run_id=command.crawl_run_id,
-        snapshot_type=VacancySnapshotType.DETAIL.value,
-        captured_at=captured_at,
-        detail_hash=normalized_detail.detail_hash,
-        detail_payload_ref_id=raw_payload_id,
-        normalized_json=normalized_detail.normalized_json,
-        change_reason=command.reason,
-    )
-    vacancy_current_state_repository.record_detail_fetch(
-        vacancy_id=vacancy.id,
-        recorded_at=captured_at,
-        detail_hash=normalized_detail.detail_hash,
-        detail_fetch_status=DetailFetchStatus.SUCCEEDED.value,
-    )
-    detail_fetch_attempt_repository.finish(
-        detail_fetch_attempt_id=detail_fetch_attempt_id,
-        status=DetailFetchStatus.SUCCEEDED.value,
-        finished_at=captured_at,
-        error_message=None,
-    )
-    return FetchVacancyDetailResult(
+    result = FetchVacancyDetailResult(
         vacancy_id=vacancy.id,
         hh_vacancy_id=vacancy.hh_vacancy_id,
         detail_fetch_status=DetailFetchStatus.SUCCEEDED.value,
@@ -264,6 +314,22 @@ def fetch_vacancy_detail(
         detail_fetch_attempt_id=detail_fetch_attempt_id,
         error_message=None,
     )
+    record_operation_succeeded(
+        LOGGER,
+        operation="fetch_vacancy_detail",
+        started_at=started_at,
+        records_written={"vacancy_snapshot": 1},
+        vacancy_id=result.vacancy_id,
+        hh_vacancy_id=result.hh_vacancy_id,
+        attempt=command.attempt,
+        run_id=command.crawl_run_id,
+        request_log_id=result.request_log_id,
+        raw_payload_id=result.raw_payload_id,
+        detail_fetch_attempt_id=result.detail_fetch_attempt_id,
+        snapshot_id=result.snapshot_id,
+        detail_status=result.detail_fetch_status,
+    )
+    return result
 
 
 def _normalize_response(response: VacancyDetailResponse) -> NormalizedVacancyDetail:

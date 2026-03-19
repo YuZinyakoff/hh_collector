@@ -37,9 +37,7 @@ def register_dictionary_commands(
 
 
 def handle_sync_dictionaries(args: argparse.Namespace) -> int:
-    dictionary_names = (
-        SUPPORTED_DICTIONARY_NAMES if args.name == "all" else (str(args.name),)
-    )
+    dictionary_names = SUPPORTED_DICTIONARY_NAMES if args.name == "all" else (str(args.name),)
     results = []
 
     with session_scope() as session:
@@ -50,7 +48,7 @@ def handle_sync_dictionaries(args: argparse.Namespace) -> int:
             area_repository=SqlAlchemyAreaRepository(session),
             professional_role_repository=SqlAlchemyProfessionalRoleRepository(session),
         )
-        api_client = HHApiClient()
+        api_client = HHApiClient.from_settings()
 
         for dictionary_name in dictionary_names:
             results.append(

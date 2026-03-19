@@ -53,14 +53,12 @@ def handle_fetch_vacancy_detail(args: argparse.Namespace) -> int:
             result = fetch_vacancy_detail(
                 command,
                 vacancy_repository=SqlAlchemyVacancyRepository(session),
-                api_client=HHApiClient(),
+                api_client=HHApiClient.from_settings(),
                 detail_fetch_attempt_repository=SqlAlchemyDetailFetchAttemptRepository(session),
                 api_request_log_repository=SqlAlchemyApiRequestLogRepository(session),
                 raw_api_payload_repository=SqlAlchemyRawApiPayloadRepository(session),
                 vacancy_snapshot_repository=SqlAlchemyVacancySnapshotRepository(session),
-                vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(
-                    session
-                ),
+                vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
             )
     except VacancyNotFoundError as error:
         print(str(error), file=sys.stderr)

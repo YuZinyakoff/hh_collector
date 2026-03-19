@@ -1,1 +1,27 @@
-groups: []
+groups:
+  - name: hhru-platform
+    rules:
+      - alert: HHRUPlatformMetricsEndpointDown
+        expr: up{job="hhru_platform"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: hhru-platform metrics endpoint is down
+          description: Prometheus cannot scrape the hhru-platform metrics endpoint for 5 minutes.
+      - alert: HHRUPlatformOperationFailures
+        expr: increase(hhru_operation_total{status="failed"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: hhru-platform records failed operations
+          description: One or more application operations failed during the last 15 minutes.
+      - alert: HHRUPlatformNoRecentReconciliation
+        expr: time() - max(hhru_operation_last_success_timestamp_seconds{operation="reconcile_run"}) > 604800
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: reconcile-run has not succeeded recently
+          description: No successful reconciliation has been recorded for more than 7 days.

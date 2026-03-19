@@ -117,6 +117,14 @@ class SqlAlchemyVacancyCurrentStateRepository:
         statement = select(VacancyCurrentStateModel).order_by(VacancyCurrentStateModel.vacancy_id)
         return [self._to_entity(model) for model in self._session.scalars(statement)]
 
+    def list_by_last_seen_run_id(self, crawl_run_id: UUID) -> list[VacancyCurrentStateEntity]:
+        statement = (
+            select(VacancyCurrentStateModel)
+            .where(VacancyCurrentStateModel.last_seen_run_id == crawl_run_id)
+            .order_by(VacancyCurrentStateModel.vacancy_id)
+        )
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
+
     def apply_reconciliation_updates(
         self,
         *,

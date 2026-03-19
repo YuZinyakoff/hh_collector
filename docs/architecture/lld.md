@@ -134,6 +134,20 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 - completion ratio интерпретируется как `covered_terminal_partitions / terminal_partitions`;
 - run coverage не хранится отдельной таблицей, а вычисляется из tree semantics на чтении.
 
+Поверх planner v2, list engine v2 и coverage reporting добавлен orchestration use case `run_collection_once_v2`:
+
+- создает новый `crawl_run`;
+- вызывает `plan_sweep_v2`;
+- повторяет `run_list_engine_v2` до честного terminal outcome, сверяясь через `report_run_coverage`;
+- запускает selective detail stage только после полного list coverage;
+- завершает run через `reconcile_run`.
+
+Stop condition у `run_collection_once_v2` основан именно на tree semantics:
+
+- `succeeded`: все terminal leaves покрыты, pending/running/unresolved/failed leaves отсутствуют;
+- `completed_with_unresolved`: failed leaves нет, но есть unresolved scopes, поэтому list stage остановлен без полного coverage;
+- `failed`: есть failed partitions, orchestration step error или detail stage вернул failed fetches.
+
 ### Вход
 - `crawl_run_id`
 - конфигурация sweep policy
@@ -266,7 +280,9 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 Текущий operator path для planner/list execution:
 
 - `plan-run` для legacy single-partition smoke flow;
+- `run-once` для legacy orchestration-lite smoke flow;
 - `plan-run-v2` для создания area-root tree;
+- `run-once-v2` для tree-aware full run path: planner v2 -> list engine v2 -> selective detail -> reconcile;
 - `process-list-page` для legacy page-by-page flow;
 - `process-partition-v2` для одного terminal leaf с pagination/saturation handling;
 - `run-list-engine-v2` для прохода по всем pending terminal leaves внутри `crawl_run`.

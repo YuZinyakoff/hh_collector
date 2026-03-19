@@ -43,6 +43,24 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-once 
 - `run-once` завершится с `status=failed`, `failed_step=process_list_page` и кодом выхода `1`;
 - detail fetch и reconciliation будут пропущены и отражены в `skipped_steps`.
 
+## Tree-Aware Shortcut
+
+Если нужен уже не legacy smoke flow, а цельный planner-v2/list-engine-v2 проход по tree semantics, используй `run-once-v2`:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-once-v2 --sync-dictionaries yes --detail-limit 25 --detail-refresh-ttl-days 30 --triggered-by cli-happy-path-v2
+```
+
+Ожидаемо:
+- `status=succeeded`, если `coverage_ratio=1.0000`, `pending_terminal_partitions=0`, `unresolved_partitions=0`, `failed_partitions=0`
+- `status=completed_with_unresolved`, если tree дошёл до terminal unresolved scopes и полный coverage не достигнут
+- `status=failed`, если list stage дал failed partitions, detail stage завершился с ошибками или не удалось выполнить один из шагов orchestration
+- `list_stage_status=completed` только после полного tree coverage
+- `detail_stage_status` становится `completed` или `completed_with_failures` только после успешного list coverage stage
+- `reconciliation_status=completed` выполняется только после успешного list coverage stage
+
+`run-once-v2` отличается от legacy `run-once` тем, что не ограничивается одной smoke partition и не считает run успешным просто по факту нескольких обработанных страниц. Итоговый статус здесь честно привязан к tree coverage outcome.
+
 ## Happy Path
 
 1. Синхронизировать `areas`:
@@ -158,9 +176,11 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main show-metr
 - есть `hhru_operation_total`
 - есть `hhru_records_written_total`
 - после live flow появляются метрики по `sync_dictionary`, `process_list_page`, `process_partition_v2`, `run_list_engine_v2`, `fetch_vacancy_detail`, `reconcile_run`
+- `run-once-v2` дополнительно пишет operation metric `run_collection_once_v2`
 
 ## Notes
 
 - `process-list-page` и `fetch-vacancy-detail` используют официальный live hh API, поэтому конкретные `hh_vacancy_id`, счётчики и тексты вакансий будут меняться.
 - Для воспроизводимой локальной проверки legacy flow достаточно пройти шаги выше по порядку и убедиться, что каждый следующий шаг получает ID из вывода предыдущего.
 - Для planner v2 path типичный операторский сценарий такой: `sync-dictionaries --name areas` -> `create-run` -> `plan-run-v2` -> `run-list-engine-v2` -> `fetch-vacancy-detail` при необходимости -> `reconcile-run`.
+- `run-once-v2` упаковывает этот planner-v2 path в один операторский entrypoint: `create-run` -> `plan-run-v2` -> tree-aware `run-list-engine-v2` loop -> selective detail -> `reconcile-run`.

@@ -119,6 +119,12 @@ Reporting semantics на уровне `crawl_run` выводятся из эти
 - `split_partitions` показывают, сколько parent scopes делегировали coverage детям;
 - `failed` и `unresolved` не должны интерпретироваться как покрытые части дерева.
 
+Tree-aware orchestration v2 читает итог run именно из этих агрегатов:
+
+- `succeeded` возможно только когда `coverage_ratio = 1.0`, `pending_terminal_partitions = 0`, `unresolved_partitions = 0`, `failed_partitions = 0`;
+- `completed_with_unresolved` означает, что дерево не покрыто полностью, но terminal failure в execution path нет;
+- `failed` означает failed partitions или ошибку последующих orchestration stages.
+
 ---
 
 ## 5. API Logging / Raw

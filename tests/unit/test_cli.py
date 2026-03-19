@@ -7,6 +7,9 @@ from uuid import uuid4
 
 from hhru_platform.application.commands.reconcile_run import ReconcileRunResult
 from hhru_platform.application.commands.run_collection_once import RunCollectionOnceResult
+from hhru_platform.application.commands.run_collection_once_v2 import (
+    RunCollectionOnceV2Result,
+)
 from hhru_platform.config.settings import Settings
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.entities.crawl_run import CrawlRun
@@ -22,6 +25,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "health-check" in captured.out
     assert "create-run" in captured.out
     assert "run-once" in captured.out
+    assert "run-once-v2" in captured.out
     assert "plan-run" in captured.out
     assert "plan-run-v2" in captured.out
     assert "split-partition" in captured.out
@@ -203,6 +207,85 @@ def test_run_once_cli_returns_non_zero_and_prints_failure_summary(monkeypatch, c
     assert "skipped_steps=fetch_vacancy_detail,reconcile_run" in captured.out
     assert "failed_step=process_list_page" in captured.out
     assert "error=Invalid HH API User-Agent for live vacancy search" in captured.out
+
+
+def test_run_once_v2_cli_prints_tree_aware_summary(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+
+    def fake_run_collection_once_v2(command, **kwargs) -> RunCollectionOnceV2Result:
+        assert command.sync_dictionaries is True
+        assert command.detail_limit == 4
+        assert command.detail_refresh_ttl_days == 21
+        assert command.run_type == "weekly_sweep"
+        assert command.triggered_by == "cli-v2"
+        assert "sync_dictionary_step" in kwargs
+        assert "create_crawl_run_step" in kwargs
+        assert "plan_run_v2_step" in kwargs
+        assert "run_list_engine_v2_step" in kwargs
+        assert "report_run_coverage_step" in kwargs
+        assert "select_detail_candidates_step" in kwargs
+        assert "fetch_vacancy_detail_step" in kwargs
+        assert "reconcile_run_step" in kwargs
+        return RunCollectionOnceV2Result(
+            status="succeeded",
+            run_id=run_id,
+            run_type="weekly_sweep",
+            triggered_by="cli-v2",
+            dictionary_results=(),
+            planned_partition_ids=(uuid4(), uuid4()),
+            list_engine_results=(),
+            final_coverage_report=None,
+            list_stage_status="completed",
+            detail_selection_result=None,
+            detail_results=(),
+            detail_stage_status="skipped",
+            reconciliation_result=ReconcileRunResult(
+                crawl_run_id=run_id,
+                observed_in_run_count=0,
+                missing_updated_count=0,
+                marked_inactive_count=0,
+                run_status="completed",
+            ),
+            completed_steps=("create_crawl_run", "plan_sweep_v2", "reconcile_run"),
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.run_once.run_collection_once_v2",
+        fake_run_collection_once_v2,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-once-v2",
+            "--sync-dictionaries",
+            "yes",
+            "--detail-limit",
+            "4",
+            "--detail-refresh-ttl-days",
+            "21",
+            "--run-type",
+            "weekly_sweep",
+            "--triggered-by",
+            "cli-v2",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed run-once-v2 collection" in captured.out
+    assert "status=succeeded" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "partitions_planned=2" in captured.out
+    assert "total_partitions=0" in captured.out
+    assert "coverage_ratio=0.0000" in captured.out
+    assert "list_stage_status=completed" in captured.out
+    assert "detail_stage_status=skipped" in captured.out
+    assert "reconciliation_status=completed" in captured.out
+    assert "completed_steps=create_crawl_run,plan_sweep_v2,reconcile_run" in captured.out
+    assert "failed_step=-" in captured.out
 
 
 def test_study_detail_payloads_cli_prints_report_summary(monkeypatch, capsys, tmp_path) -> None:

@@ -79,6 +79,10 @@ Provisioned dashboards:
 
 - `run_collection_once`
 
+Tree-aware orchestration v2 пишет отдельную operation metric:
+
+- `run_collection_once_v2`
+
 Planner-v2 execution path пишет отдельные operation metrics:
 
 - `process_partition_v2`
@@ -115,9 +119,14 @@ Planner-v2 execution path пишет отдельные operation metrics:
 - Для planner v2 path `process_partition_v2` success означает обработанный terminal leaf: либо `done + covered`, либо `split_done + split`. Проверять различие нужно по текстовому выводу CLI и по данным в `crawl_partition`, а не только по одному success counter.
 - `run_list_engine_v2` success означает, что текущий CLI-проход не встретил failed/unresolved partition results. Полноту tree coverage нужно интерпретировать вместе с `remaining_pending_terminal_partitions` и partition statuses.
 - Coverage gauges обновляются командами `show-run-coverage` и `show-run-tree`: они считают tree state для конкретного `crawl_run` и публикуют текущий snapshot в file-backed metrics registry.
+- `run-once-v2` использует тот же coverage reporting внутри orchestration loop, поэтому после каждого операционного прохода summary и gauges можно читать без дополнительного SQL.
 - `coverage_ratio` нужно читать как долю уже покрытых terminal leaves от текущего множества terminal partitions этого run.
 - `split_partitions > 0` само по себе не является ошибкой: это сигнал, что часть coverage делегирована child scopes.
 - `unresolved_partitions > 0` означает, что часть дерева не удалось refine'ить текущей split-policy и этот run нельзя считать полностью покрытым.
+- Для `run_collection_once_v2` операторская интерпретация такая:
+  `status=succeeded` означает полный list coverage плюс завершённые selective detail и reconcile stages.
+  `status=completed_with_unresolved` означает, что list tree остановился на unresolved scopes и detail/reconcile не запускались.
+  `status=failed` означает либо failed partitions в tree, либо ошибку orchestration step, либо detail stage с неуспешными fetches.
 
 ## Alert rules baseline
 

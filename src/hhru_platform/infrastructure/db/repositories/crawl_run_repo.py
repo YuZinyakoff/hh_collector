@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hhru_platform.domain.entities.crawl_run import CrawlRun
-from hhru_platform.domain.value_objects.enums import CrawlRunStatus
 from hhru_platform.infrastructure.db.models.crawl_run import CrawlRun as CrawlRunModel
 
 
@@ -32,6 +33,22 @@ class SqlAlchemyCrawlRunRepository:
 
         return self._to_entity(crawl_run)
 
+    def get_latest_by_statuses(self, statuses: Sequence[str]) -> CrawlRun | None:
+        if not statuses:
+            return None
+
+        statement = (
+            select(CrawlRunModel)
+            .where(CrawlRunModel.status.in_(tuple(statuses)))
+            .order_by(CrawlRunModel.started_at.desc(), CrawlRunModel.id.desc())
+            .limit(1)
+        )
+        crawl_run = self._session.scalar(statement)
+        if crawl_run is None:
+            return None
+
+        return self._to_entity(crawl_run)
+
     def set_partitions_total(self, run_id: UUID, partitions_total: int) -> CrawlRun:
         crawl_run = self._session.get(CrawlRunModel, run_id)
         if crawl_run is None:
@@ -47,6 +64,7 @@ class SqlAlchemyCrawlRunRepository:
         self,
         *,
         run_id: UUID,
+        status: str,
         finished_at: datetime,
         partitions_done: int,
         partitions_failed: int,
@@ -56,12 +74,23 @@ class SqlAlchemyCrawlRunRepository:
         if crawl_run is None:
             raise LookupError(f"crawl_run not found: {run_id}")
 
-        crawl_run.status = CrawlRunStatus.COMPLETED.value
+        crawl_run.status = status
         crawl_run.finished_at = finished_at
         crawl_run.partitions_done = partitions_done
         crawl_run.partitions_failed = partitions_failed
-        if notes is not None:
-            crawl_run.notes = notes
+        crawl_run.notes = notes
+        self._session.add(crawl_run)
+        self._session.flush()
+        self._session.refresh(crawl_run)
+        return self._to_entity(crawl_run)
+
+    def reopen(self, *, run_id: UUID, status: str = "created") -> CrawlRun:
+        crawl_run = self._session.get(CrawlRunModel, run_id)
+        if crawl_run is None:
+            raise LookupError(f"crawl_run not found: {run_id}")
+
+        crawl_run.status = status
+        crawl_run.finished_at = None
         self._session.add(crawl_run)
         self._session.flush()
         self._session.refresh(crawl_run)

@@ -34,6 +34,7 @@ class InMemoryCrawlRunRepository:
         self,
         *,
         run_id: UUID,
+        status: str,
         finished_at: datetime,
         partitions_done: int,
         partitions_failed: int,
@@ -41,7 +42,7 @@ class InMemoryCrawlRunRepository:
     ) -> CrawlRun:
         assert self._crawl_run is not None
         assert self._crawl_run.id == run_id
-        self._crawl_run.status = "completed"
+        self._crawl_run.status = status
         self._crawl_run.finished_at = finished_at
         self._crawl_run.partitions_done = partitions_done
         self._crawl_run.partitions_failed = partitions_failed
@@ -87,6 +88,14 @@ class InMemoryVacancyCurrentStateRepository:
             state.last_seen_run_id = update.last_seen_run_id
             state.updated_at = updated_at
         return len(updates)
+
+
+class RecordingRunTerminalStatusMetricsRecorder:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def record_run_terminal_status(self, **kwargs) -> None:
+        self.calls.append(kwargs)
 
 
 def _build_crawl_run() -> CrawlRun:
@@ -176,6 +185,7 @@ def test_reconcile_run_updates_seen_and_missing_vacancy_state_and_completes_run(
             ),
         ]
     )
+    metrics_recorder = RecordingRunTerminalStatusMetricsRecorder()
 
     result = reconcile_run(
         ReconcileRunCommand(crawl_run_id=crawl_run.id),
@@ -189,6 +199,7 @@ def test_reconcile_run_updates_seen_and_missing_vacancy_state_and_completes_run(
         vacancy_seen_event_repository=InMemoryVacancySeenEventRepository([seen_vacancy_id]),
         vacancy_current_state_repository=current_state_repository,
         reconciliation_policy=MissingRunsReconciliationPolicyV1(),
+        metrics_recorder=metrics_recorder,
     )
 
     seen_state = current_state_repository._current_states[seen_vacancy_id]
@@ -213,6 +224,13 @@ def test_reconcile_run_updates_seen_and_missing_vacancy_state_and_completes_run(
     assert newly_inactive_state.is_probably_inactive is True
     assert still_active_missing_state.consecutive_missing_runs == 1
     assert still_active_missing_state.is_probably_inactive is False
+    assert metrics_recorder.calls == [
+        {
+            "run_type": "weekly_sweep",
+            "status": "completed",
+            "recorded_at": crawl_run.finished_at,
+        }
+    ]
 
 
 def test_reconcile_run_raises_for_missing_crawl_run() -> None:

@@ -3,6 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import select
+
+from hhru_platform.domain.entities.detail_fetch_attempt import (
+    DetailFetchAttempt as DetailFetchAttemptEntity,
+)
 from sqlalchemy.orm import Session
 
 from hhru_platform.infrastructure.db.models.detail_fetch_attempt import DetailFetchAttempt
@@ -51,3 +56,34 @@ class SqlAlchemyDetailFetchAttemptRepository:
         fetch_attempt.error_message = error_message
         self._session.flush()
         return fetch_attempt.id
+
+    def list_repair_backlog_by_run_id(self, crawl_run_id: UUID) -> list[DetailFetchAttemptEntity]:
+        latest_attempts = (
+            select(DetailFetchAttempt)
+            .where(DetailFetchAttempt.crawl_run_id == crawl_run_id)
+            .distinct(DetailFetchAttempt.vacancy_id)
+            .order_by(
+                DetailFetchAttempt.vacancy_id,
+                DetailFetchAttempt.requested_at.desc(),
+                DetailFetchAttempt.id.desc(),
+            )
+        )
+        return [
+            self._to_entity(model)
+            for model in self._session.scalars(latest_attempts)
+            if model.status == "failed"
+        ]
+
+    @staticmethod
+    def _to_entity(model: DetailFetchAttempt) -> DetailFetchAttemptEntity:
+        return DetailFetchAttemptEntity(
+            id=model.id,
+            vacancy_id=model.vacancy_id,
+            crawl_run_id=model.crawl_run_id,
+            reason=model.reason,
+            attempt=model.attempt,
+            status=model.status,
+            requested_at=model.requested_at,
+            finished_at=model.finished_at,
+            error_message=model.error_message,
+        )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from io import StringIO
 from uuid import uuid4
 
@@ -34,10 +35,41 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         run_id="run-1",
         run_type="weekly_sweep",
         coverage_ratio=0.5,
+        total_partitions=6,
         covered_terminal_partitions=3,
         pending_terminal_partitions=3,
         split_partitions=1,
         unresolved_partitions=0,
+        failed_partitions=1,
+    )
+    registry.record_run_terminal_status(
+        run_type="weekly_sweep",
+        status="completed_with_detail_errors",
+        recorded_at=datetime(2026, 3, 20, 10, 6, tzinfo=UTC),
+    )
+    registry.record_scheduler_tick(
+        outcome="completed_with_detail_errors",
+        ticked_at=datetime(2026, 3, 20, 10, 0, tzinfo=UTC),
+        run_started_at=datetime(2026, 3, 20, 10, 1, tzinfo=UTC),
+        run_finished_at=datetime(2026, 3, 20, 10, 5, tzinfo=UTC),
+        triggered_run_at=datetime(2026, 3, 20, 10, 1, tzinfo=UTC),
+        observed_run_status="completed_with_detail_errors",
+    )
+    registry.record_resume_attempt(
+        run_type="weekly_sweep",
+        outcome="completed_with_unresolved",
+    )
+    registry.set_detail_repair_backlog(
+        run_id="run-1",
+        run_type="weekly_sweep",
+        backlog_size=2,
+    )
+    registry.record_detail_repair_attempt(
+        run_type="weekly_sweep",
+        outcome="completed_with_detail_errors",
+        retried_count=2,
+        repaired_count=1,
+        still_failing_count=1,
     )
 
     rendered = registry.render_prometheus()
@@ -49,6 +81,10 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
     )
     assert 'hhru_upstream_request_total{endpoint="/vacancies",status_class="2xx"} 1' in rendered
     assert (
+        'hhru_run_tree_total_partitions{run_id="run-1",run_type="weekly_sweep"} 6.000000'
+        in rendered
+    )
+    assert (
         'hhru_run_tree_coverage_ratio{run_id="run-1",run_type="weekly_sweep"} 0.500000'
         in rendered
     )
@@ -56,6 +92,38 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         'hhru_run_tree_pending_terminal_partitions{run_id="run-1",run_type="weekly_sweep"} '
         "3.000000" in rendered
     )
+    assert (
+        'hhru_run_tree_failed_partitions{run_id="run-1",run_type="weekly_sweep"} 1.000000'
+        in rendered
+    )
+    assert (
+        'hhru_run_terminal_status_total{run_type="weekly_sweep",status="completed_with_detail_errors"} 1'
+        in rendered
+    )
+    assert 'hhru_scheduler_tick_total{outcome="completed_with_detail_errors"} 1' in rendered
+    assert "hhru_scheduler_last_tick_timestamp_seconds" in rendered
+    assert "hhru_scheduler_last_run_started_timestamp_seconds" in rendered
+    assert "hhru_scheduler_last_run_finished_timestamp_seconds" in rendered
+    assert "hhru_scheduler_last_triggered_run_timestamp_seconds" in rendered
+    assert (
+        'hhru_scheduler_last_observed_run_status{status="completed_with_detail_errors"} 1.0'
+        in rendered
+    )
+    assert (
+        'hhru_resume_run_v2_attempt_total{run_type="weekly_sweep",outcome="completed_with_unresolved"} 1'
+        in rendered
+    )
+    assert (
+        'hhru_detail_repair_backlog_size{run_id="run-1",run_type="weekly_sweep"} 2.000000'
+        in rendered
+    )
+    assert (
+        'hhru_detail_repair_attempt_total{run_type="weekly_sweep",outcome="completed_with_detail_errors"} 1'
+        in rendered
+    )
+    assert 'hhru_detail_repair_retried_total{run_type="weekly_sweep"} 2' in rendered
+    assert 'hhru_detail_repair_repaired_total{run_type="weekly_sweep"} 1' in rendered
+    assert 'hhru_detail_repair_still_failing_total{run_type="weekly_sweep"} 1' in rendered
     assert "hhru_operation_duration_seconds_count" in rendered
     assert "hhru_upstream_request_duration_seconds_count" in rendered
 

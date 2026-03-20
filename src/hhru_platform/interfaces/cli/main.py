@@ -15,6 +15,7 @@ from hhru_platform.interfaces.cli.commands.reporting import register_reporting_c
 from hhru_platform.interfaces.cli.commands.research import register_research_commands
 from hhru_platform.interfaces.cli.commands.run import register_run_commands
 from hhru_platform.interfaces.cli.commands.run_once import register_run_once_commands
+from hhru_platform.interfaces.cli.commands.scheduler import register_scheduler_commands
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_health_commands(subparsers)
     register_run_commands(subparsers)
     register_run_once_commands(subparsers)
+    register_scheduler_commands(subparsers)
     register_partition_commands(subparsers)
     register_reporting_commands(subparsers)
     register_dictionary_commands(subparsers)

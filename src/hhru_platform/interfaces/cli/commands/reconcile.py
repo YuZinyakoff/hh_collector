@@ -19,6 +19,7 @@ from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyVacancySeenEventRepository,
 )
 from hhru_platform.infrastructure.db.session import session_scope
+from hhru_platform.infrastructure.observability.metrics import get_metrics_registry
 
 
 def register_reconcile_commands(
@@ -49,6 +50,7 @@ def handle_reconcile_run(args: argparse.Namespace) -> int:
                 vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
                 vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
                 reconciliation_policy=MissingRunsReconciliationPolicyV1(),
+                metrics_recorder=get_metrics_registry(),
             )
     except CrawlRunNotFoundError as error:
         print(str(error), file=sys.stderr)

@@ -184,10 +184,12 @@ def test_report_run_coverage_aggregates_tree_semantics_and_records_metrics() -> 
             "run_id": str(crawl_run.id),
             "run_type": "weekly_sweep",
             "coverage_ratio": 0.2,
+            "total_partitions": 6,
             "covered_terminal_partitions": 1,
             "pending_terminal_partitions": 1,
             "split_partitions": 1,
             "unresolved_partitions": 1,
+            "failed_partitions": 1,
         }
     ]
 

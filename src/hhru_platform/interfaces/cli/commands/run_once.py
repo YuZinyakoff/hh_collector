@@ -13,6 +13,11 @@ from hhru_platform.application.commands.fetch_vacancy_detail import (
     FetchVacancyDetailResult,
     fetch_vacancy_detail,
 )
+from hhru_platform.application.commands.finalize_crawl_run import (
+    FinalizeCrawlRunCommand,
+    FinalizeCrawlRunResult,
+    finalize_crawl_run,
+)
 from hhru_platform.application.commands.plan_sweep import (
     PlanRunCommand,
     PlanRunResult,
@@ -36,6 +41,11 @@ from hhru_platform.application.commands.reconcile_run import (
     ReconcileRunCommand,
     ReconcileRunResult,
     reconcile_run,
+)
+from hhru_platform.application.commands.resume_run_v2 import (
+    ResumeRunV2Command,
+    ResumeRunV2Result,
+    resume_run_v2,
 )
 from hhru_platform.application.commands.report_run_coverage import (
     ReportRunCoverageCommand,
@@ -171,6 +181,41 @@ def register_run_once_commands(
     )
     v2_parser.set_defaults(handler=handle_run_once_v2)
 
+    resume_parser = subparsers.add_parser(
+        "resume-run-v2",
+        help=(
+            "Resume an existing planner-v2 crawl_run in place, continuing unresolved "
+            "or pending branches and then finishing detail/reconcile stages."
+        ),
+    )
+    resume_parser.add_argument(
+        "--run-id",
+        type=UUID,
+        required=True,
+        help="Existing crawl_run identifier to resume.",
+    )
+    resume_parser.add_argument(
+        "--detail-limit",
+        type=int,
+        default=100,
+        help=(
+            "Maximum number of selective detail fetches after list coverage completes. "
+            "Defaults to 100."
+        ),
+    )
+    resume_parser.add_argument(
+        "--detail-refresh-ttl-days",
+        type=int,
+        default=30,
+        help="TTL in days for selective detail refreshes. Defaults to 30.",
+    )
+    resume_parser.add_argument(
+        "--triggered-by",
+        default="resume-run-v2",
+        help="Actor or subsystem that initiated the resume flow. Defaults to resume-run-v2.",
+    )
+    resume_parser.set_defaults(handler=handle_resume_run_v2)
+
 
 def handle_run_once(args: argparse.Namespace) -> int:
     command = RunCollectionOnceCommand(
@@ -230,36 +275,52 @@ def handle_run_once_v2(args: argparse.Namespace) -> int:
     reconciliation_policy = MissingRunsReconciliationPolicyV1()
 
     try:
-        result = run_collection_once_v2(
+        result = _execute_run_collection_once_v2_step(
             command,
-            sync_dictionary_step=lambda step_command: _execute_sync_dictionary_step(
-                step_command,
-                api_client=api_client,
-            ),
-            create_crawl_run_step=_execute_create_crawl_run_step,
-            plan_run_v2_step=_execute_plan_run_v2_step,
-            run_list_engine_v2_step=lambda step_command: _execute_run_list_engine_v2_step(
-                step_command,
-                api_client=api_client,
-                saturation_policy=saturation_policy,
-            ),
-            report_run_coverage_step=_execute_report_run_coverage_step,
-            select_detail_candidates_step=_execute_select_detail_candidates_step,
-            fetch_vacancy_detail_step=lambda step_command: _execute_fetch_detail_step(
-                step_command,
-                api_client=api_client,
-            ),
-            reconcile_run_step=lambda step_command: _execute_reconcile_run_step(
-                step_command,
-                reconciliation_policy=reconciliation_policy,
-            ),
+            api_client=api_client,
+            saturation_policy=saturation_policy,
+            reconciliation_policy=reconciliation_policy,
         )
     except Exception as error:
         print(str(error), file=sys.stderr)
         return 1
 
     _print_run_once_v2_summary(result)
-    return 0 if result.status == "succeeded" else 1
+    return (
+        0
+        if result.status in {"succeeded", "completed_with_detail_errors"}
+        else 1
+    )
+
+
+def handle_resume_run_v2(args: argparse.Namespace) -> int:
+    command = ResumeRunV2Command(
+        crawl_run_id=args.run_id,
+        detail_limit=int(args.detail_limit),
+        detail_refresh_ttl_days=int(args.detail_refresh_ttl_days),
+        triggered_by=str(args.triggered_by),
+    )
+    api_client = HHApiClient.from_settings()
+    saturation_policy = PartitionSaturationPolicyV1()
+    reconciliation_policy = MissingRunsReconciliationPolicyV1()
+
+    try:
+        result = _execute_resume_run_v2_step(
+            command,
+            api_client=api_client,
+            saturation_policy=saturation_policy,
+            reconciliation_policy=reconciliation_policy,
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_resume_run_v2_summary(result)
+    return (
+        0
+        if result.status in {"succeeded", "completed_with_detail_errors"}
+        else 1
+    )
 
 
 def _parse_yes_no(value: str) -> bool:
@@ -355,6 +416,72 @@ def _execute_fetch_detail_step(
         )
 
 
+def _execute_run_collection_once_v2_step(
+    command: RunCollectionOnceV2Command,
+    *,
+    api_client: HHApiClient,
+    saturation_policy: PartitionSaturationPolicyV1,
+    reconciliation_policy: MissingRunsReconciliationPolicyV1,
+) -> RunCollectionOnceV2Result:
+    return run_collection_once_v2(
+        command,
+        sync_dictionary_step=lambda step_command: _execute_sync_dictionary_step(
+            step_command,
+            api_client=api_client,
+        ),
+        create_crawl_run_step=_execute_create_crawl_run_step,
+        plan_run_v2_step=_execute_plan_run_v2_step,
+        run_list_engine_v2_step=lambda step_command: _execute_run_list_engine_v2_step(
+            step_command,
+            api_client=api_client,
+            saturation_policy=saturation_policy,
+        ),
+        report_run_coverage_step=_execute_report_run_coverage_step,
+        select_detail_candidates_step=_execute_select_detail_candidates_step,
+        fetch_vacancy_detail_step=lambda step_command: _execute_fetch_detail_step(
+            step_command,
+            api_client=api_client,
+        ),
+        reconcile_run_step=lambda step_command: _execute_reconcile_run_step(
+            step_command,
+            reconciliation_policy=reconciliation_policy,
+        ),
+        finalize_crawl_run_step=_execute_finalize_crawl_run_step,
+        metrics_recorder=get_metrics_registry(),
+    )
+
+
+def _execute_resume_run_v2_step(
+    command: ResumeRunV2Command,
+    *,
+    api_client: HHApiClient,
+    saturation_policy: PartitionSaturationPolicyV1,
+    reconciliation_policy: MissingRunsReconciliationPolicyV1,
+) -> ResumeRunV2Result:
+    return resume_run_v2(
+        command,
+        crawl_run_repository=_SessionlessCrawlRunRepository(),
+        crawl_partition_repository=_SessionlessCrawlPartitionRepository(),
+        run_list_engine_v2_step=lambda step_command: _execute_run_list_engine_v2_step(
+            step_command,
+            api_client=api_client,
+            saturation_policy=saturation_policy,
+        ),
+        report_run_coverage_step=_execute_report_run_coverage_step,
+        select_detail_candidates_step=_execute_select_detail_candidates_step,
+        fetch_vacancy_detail_step=lambda step_command: _execute_fetch_detail_step(
+            step_command,
+            api_client=api_client,
+        ),
+        reconcile_run_step=lambda step_command: _execute_reconcile_run_step(
+            step_command,
+            reconciliation_policy=reconciliation_policy,
+        ),
+        finalize_crawl_run_step=_execute_finalize_crawl_run_step,
+        metrics_recorder=get_metrics_registry(),
+    )
+
+
 def _execute_run_list_engine_v2_step(
     command: RunListEngineV2Command,
     *,
@@ -438,6 +565,19 @@ def _execute_reconcile_run_step(
             vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
             vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
             reconciliation_policy=reconciliation_policy,
+            metrics_recorder=get_metrics_registry(),
+        )
+
+
+def _execute_finalize_crawl_run_step(
+    command: FinalizeCrawlRunCommand,
+) -> FinalizeCrawlRunResult:
+    with session_scope() as session:
+        return finalize_crawl_run(
+            command,
+            crawl_run_repository=SqlAlchemyCrawlRunRepository(session),
+            crawl_partition_repository=SqlAlchemyCrawlPartitionRepository(session),
+            metrics_recorder=get_metrics_registry(),
         )
 
 
@@ -472,6 +612,8 @@ def _print_run_once_summary(result: RunCollectionOnceResult) -> None:
 def _print_run_once_v2_summary(result: RunCollectionOnceV2Result) -> None:
     if result.status == "succeeded":
         print("completed run-once-v2 collection")
+    elif result.status == "completed_with_detail_errors":
+        print("completed run-once-v2 collection with detail errors")
     elif result.status == "completed_with_unresolved":
         print("completed run-once-v2 collection with unresolved coverage")
     else:
@@ -504,10 +646,58 @@ def _print_run_once_v2_summary(result: RunCollectionOnceV2Result) -> None:
     print(f"error={result.error_message or '-'}")
 
 
+def _print_resume_run_v2_summary(result: ResumeRunV2Result) -> None:
+    if result.status == "succeeded":
+        print("completed resume-run-v2")
+    elif result.status == "completed_with_detail_errors":
+        print("completed resume-run-v2 with detail errors")
+    elif result.status == "completed_with_unresolved":
+        print("completed resume-run-v2 with unresolved coverage")
+    else:
+        print("failed resume-run-v2")
+
+    print(f"status={result.status}")
+    print(f"run_id={result.run_id}")
+    print(f"run_type={result.run_type}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"initial_run_status={result.initial_run_status}")
+    print(f"unresolved_before_resume={result.unresolved_before_resume}")
+    print(f"pending_before_resume={result.pending_before_resume}")
+    print(f"covered_before_resume={result.covered_before_resume}")
+    print(f"coverage_ratio_before_resume={result.coverage_ratio_before_resume:.4f}")
+    print(f"resumed_unresolved_partitions={result.resumed_unresolved_partitions}")
+    print(f"list_engine_iterations={result.list_engine_iterations}")
+    print(f"total_partitions={result.total_partitions}")
+    print(f"covered_terminal_partitions={result.covered_terminal_partitions}")
+    print(f"pending_terminal_partitions={result.pending_terminal_partitions}")
+    print(f"split_partitions={result.split_partitions}")
+    print(f"unresolved_partitions={result.unresolved_partitions}")
+    print(f"failed_partitions={result.failed_partitions}")
+    print(f"coverage_ratio={result.coverage_ratio:.4f}")
+    print(f"list_stage_status={result.list_stage_status}")
+    print(f"detail_stage_status={result.detail_stage_status}")
+    print(f"detail_candidates_selected={result.detail_candidates_selected}")
+    print(f"detail_fetch_attempted={result.detail_fetch_attempted}")
+    print(f"detail_fetch_succeeded={result.detail_fetch_succeeded}")
+    print(f"detail_fetch_failed={result.detail_fetch_failed}")
+    print(f"reconciliation_status={result.reconciliation_status}")
+    print(f"completed_steps={','.join(result.completed_steps) or '-'}")
+    print(f"skipped_steps={','.join(result.skipped_steps) or '-'}")
+    print(f"failed_step={result.failed_step or '-'}")
+    print(f"error={result.error_message or '-'}")
+
+
 class _SessionlessCrawlRunRepository:
     def get(self, run_id: UUID) -> CrawlRun | None:
         with session_scope() as session:
             return SqlAlchemyCrawlRunRepository(session).get(run_id)
+
+    def reopen(self, *, run_id: UUID, status: str = "created") -> CrawlRun:
+        with session_scope() as session:
+            return SqlAlchemyCrawlRunRepository(session).reopen(
+                run_id=run_id,
+                status=status,
+            )
 
 
 class _SessionlessCrawlPartitionRepository:
@@ -521,4 +711,10 @@ class _SessionlessCrawlPartitionRepository:
             return SqlAlchemyCrawlPartitionRepository(session).list_pending_terminal_by_run_id(
                 run_id,
                 limit=limit,
+            )
+
+    def requeue_unresolved_by_run_id(self, run_id: UUID) -> list:
+        with session_scope() as session:
+            return SqlAlchemyCrawlPartitionRepository(session).requeue_unresolved_by_run_id(
+                run_id
             )

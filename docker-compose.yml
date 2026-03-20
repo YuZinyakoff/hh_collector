@@ -76,6 +76,26 @@ services:
     command: ["health-check"]
     restart: "no"
 
+  scheduler:
+    <<: *app-image
+    profiles: ["ops"]
+    entrypoint: ["python", "-m", "hhru_platform.interfaces.cli.main"]
+    command:
+      - "scheduler-loop"
+      - "--interval-seconds"
+      - "${HHRU_SCHEDULER_INTERVAL_SECONDS:-3600}"
+      - "--sync-dictionaries"
+      - "${HHRU_SCHEDULER_SYNC_DICTIONARIES:-yes}"
+      - "--detail-limit"
+      - "${HHRU_SCHEDULER_DETAIL_LIMIT:-100}"
+      - "--detail-refresh-ttl-days"
+      - "${HHRU_SCHEDULER_DETAIL_REFRESH_TTL_DAYS:-30}"
+      - "--run-type"
+      - "${HHRU_SCHEDULER_RUN_TYPE:-weekly_sweep}"
+      - "--triggered-by"
+      - "${HHRU_SCHEDULER_TRIGGERED_BY:-scheduler-loop}"
+    restart: unless-stopped
+
   metrics:
     <<: *app-image
     entrypoint: ["python", "-m", "hhru_platform.interfaces.cli.main"]

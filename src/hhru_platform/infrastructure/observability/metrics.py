@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +37,15 @@ class MetricsState(TypedDict):
     operation_last_success_timestamp: dict[str, float]
     records_written_total: dict[str, int]
     run_tree_coverage_gauge: dict[str, float]
+    run_terminal_status_total: dict[str, int]
+    run_terminal_status_timestamp: dict[str, float]
+    scheduler_tick_total: dict[str, int]
+    scheduler_gauge: dict[str, float]
+    scheduler_status_gauge: dict[str, float]
+    resume_attempt_total: dict[str, int]
+    detail_repair_attempt_total: dict[str, int]
+    detail_repair_gauge: dict[str, float]
+    detail_repair_total: dict[str, int]
     upstream_request_total: dict[str, int]
     upstream_request_duration_bucket: dict[str, int]
     upstream_request_duration_count: dict[str, int]
@@ -45,6 +55,9 @@ class MetricsState(TypedDict):
 RUN_TREE_COVERAGE_METRIC_HELP: Final[dict[str, str]] = {
     "hhru_run_tree_coverage_ratio": (
         "Coverage ratio for a crawl_run based on covered terminal partitions."
+    ),
+    "hhru_run_tree_total_partitions": (
+        "Total number of partitions currently present in a crawl_run tree."
     ),
     "hhru_run_tree_covered_terminal_partitions": (
         "Number of covered terminal partitions in a crawl_run tree."
@@ -58,7 +71,48 @@ RUN_TREE_COVERAGE_METRIC_HELP: Final[dict[str, str]] = {
     "hhru_run_tree_unresolved_partitions": (
         "Number of unresolved partitions in a crawl_run tree."
     ),
+    "hhru_run_tree_failed_partitions": (
+        "Number of failed partitions in a crawl_run tree."
+    ),
 }
+
+SCHEDULER_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
+    "hhru_scheduler_last_tick_timestamp_seconds": "Timestamp of the latest scheduler tick.",
+    "hhru_scheduler_last_run_started_timestamp_seconds": (
+        "Timestamp when the latest scheduler-admitted run started."
+    ),
+    "hhru_scheduler_last_run_finished_timestamp_seconds": (
+        "Timestamp when the latest scheduler-admitted run finished."
+    ),
+    "hhru_scheduler_last_triggered_run_timestamp_seconds": (
+        "Timestamp when the latest scheduler-admitted run was triggered."
+    ),
+}
+
+RUN_TERMINAL_STATUS_TIMESTAMP_METRIC: Final[str] = (
+    "hhru_run_terminal_status_last_timestamp_seconds"
+)
+SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC: Final[str] = (
+    "hhru_scheduler_last_observed_run_status"
+)
+DETAIL_REPAIR_BACKLOG_METRIC: Final[str] = "hhru_detail_repair_backlog_size"
+DETAIL_REPAIR_TOTAL_METRIC_HELP: Final[dict[str, str]] = {
+    "hhru_detail_repair_retried_total": (
+        "Total number of backlog detail fetch retries attempted."
+    ),
+    "hhru_detail_repair_repaired_total": (
+        "Total number of backlog detail fetches repaired successfully."
+    ),
+    "hhru_detail_repair_still_failing_total": (
+        "Total number of backlog detail fetches still failing after retry."
+    ),
+}
+SCHEDULER_OBSERVED_RUN_STATUSES: Final[tuple[str, ...]] = (
+    "succeeded",
+    "completed_with_detail_errors",
+    "completed_with_unresolved",
+    "failed",
+)
 
 
 class FileBackedMetricsRegistry:
@@ -117,13 +171,16 @@ class FileBackedMetricsRegistry:
         run_id: str,
         run_type: str,
         coverage_ratio: float,
+        total_partitions: int,
         covered_terminal_partitions: int,
         pending_terminal_partitions: int,
         split_partitions: int,
         unresolved_partitions: int,
+        failed_partitions: int,
     ) -> None:
         metric_values = {
             "hhru_run_tree_coverage_ratio": max(coverage_ratio, 0.0),
+            "hhru_run_tree_total_partitions": float(max(total_partitions, 0)),
             "hhru_run_tree_covered_terminal_partitions": float(
                 max(covered_terminal_partitions, 0)
             ),
@@ -132,6 +189,7 @@ class FileBackedMetricsRegistry:
             ),
             "hhru_run_tree_split_partitions": float(max(split_partitions, 0)),
             "hhru_run_tree_unresolved_partitions": float(max(unresolved_partitions, 0)),
+            "hhru_run_tree_failed_partitions": float(max(failed_partitions, 0)),
         }
         try:
             with self._mutating_state() as state:
@@ -140,6 +198,120 @@ class FileBackedMetricsRegistry:
                     state["run_tree_coverage_gauge"][key] = value
         except Exception as error:
             LOGGER.warning("metrics run coverage gauge update failed: %s", error)
+
+    def record_run_terminal_status(
+        self,
+        *,
+        run_type: str,
+        status: str,
+        recorded_at: datetime | None = None,
+    ) -> None:
+        timestamp = (recorded_at or datetime.now(UTC)).timestamp()
+        try:
+            with self._mutating_state() as state:
+                key = _composite_key(run_type, status)
+                state["run_terminal_status_total"][key] = (
+                    state["run_terminal_status_total"].get(key, 0) + 1
+                )
+                state["run_terminal_status_timestamp"][key] = timestamp
+        except Exception as error:
+            LOGGER.warning("metrics run terminal status update failed: %s", error)
+
+    def record_scheduler_tick(
+        self,
+        *,
+        outcome: str,
+        ticked_at: datetime,
+        run_started_at: datetime | None = None,
+        run_finished_at: datetime | None = None,
+        triggered_run_at: datetime | None = None,
+        observed_run_status: str | None = None,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                state["scheduler_tick_total"][outcome] = (
+                    state["scheduler_tick_total"].get(outcome, 0) + 1
+                )
+                state["scheduler_gauge"][
+                    "hhru_scheduler_last_tick_timestamp_seconds"
+                ] = ticked_at.timestamp()
+                if run_started_at is not None:
+                    state["scheduler_gauge"][
+                        "hhru_scheduler_last_run_started_timestamp_seconds"
+                    ] = run_started_at.timestamp()
+                if run_finished_at is not None:
+                    state["scheduler_gauge"][
+                        "hhru_scheduler_last_run_finished_timestamp_seconds"
+                    ] = run_finished_at.timestamp()
+                if triggered_run_at is not None:
+                    state["scheduler_gauge"][
+                        "hhru_scheduler_last_triggered_run_timestamp_seconds"
+                    ] = triggered_run_at.timestamp()
+                if observed_run_status is not None:
+                    for status in SCHEDULER_OBSERVED_RUN_STATUSES:
+                        state["scheduler_status_gauge"][status] = (
+                            1.0 if status == observed_run_status else 0.0
+                        )
+        except Exception as error:
+            LOGGER.warning("metrics scheduler tick update failed: %s", error)
+
+    def record_resume_attempt(
+        self,
+        *,
+        run_type: str,
+        outcome: str,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                key = _composite_key(run_type, outcome)
+                state["resume_attempt_total"][key] = (
+                    state["resume_attempt_total"].get(key, 0) + 1
+                )
+        except Exception as error:
+            LOGGER.warning("metrics resume attempt update failed: %s", error)
+
+    def set_detail_repair_backlog(
+        self,
+        *,
+        run_id: str,
+        run_type: str,
+        backlog_size: int,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                key = _triple_key(DETAIL_REPAIR_BACKLOG_METRIC, run_id, run_type)
+                state["detail_repair_gauge"][key] = float(max(backlog_size, 0))
+        except Exception as error:
+            LOGGER.warning("metrics detail repair backlog update failed: %s", error)
+
+    def record_detail_repair_attempt(
+        self,
+        *,
+        run_type: str,
+        outcome: str,
+        retried_count: int,
+        repaired_count: int,
+        still_failing_count: int,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                attempt_key = _composite_key(run_type, outcome)
+                state["detail_repair_attempt_total"][attempt_key] = (
+                    state["detail_repair_attempt_total"].get(attempt_key, 0) + 1
+                )
+                for metric_name, count in (
+                    ("hhru_detail_repair_retried_total", retried_count),
+                    ("hhru_detail_repair_repaired_total", repaired_count),
+                    ("hhru_detail_repair_still_failing_total", still_failing_count),
+                ):
+                    if count <= 0:
+                        continue
+                    total_key = _composite_key(metric_name, run_type)
+                    state["detail_repair_total"][total_key] = (
+                        state["detail_repair_total"].get(total_key, 0) + count
+                    )
+        except Exception as error:
+            LOGGER.warning("metrics detail repair attempt update failed: %s", error)
 
     def record_upstream_request(
         self,
@@ -261,6 +433,138 @@ class FileBackedMetricsRegistry:
                 lines.append(
                     f'{metric_name}{{run_id="{_label_value(run_id)}",'
                     f'run_type="{_label_value(run_type)}"}} {value:.6f}'
+                )
+
+        lines.extend(
+            [
+                "# HELP hhru_run_terminal_status_total Total number of crawl_run terminal status publications.",
+                "# TYPE hhru_run_terminal_status_total counter",
+            ]
+        )
+        for key, value in sorted(state["run_terminal_status_total"].items()):
+            run_type, status = _split_composite_key(key)
+            lines.append(
+                "hhru_run_terminal_status_total"
+                f'{{run_type="{_label_value(run_type)}",status="{_label_value(status)}"}} '
+                f"{value}"
+            )
+
+        lines.extend(
+            [
+                (
+                    f"# HELP {RUN_TERMINAL_STATUS_TIMESTAMP_METRIC} "
+                    "Last crawl_run terminal status publication timestamp."
+                ),
+                f"# TYPE {RUN_TERMINAL_STATUS_TIMESTAMP_METRIC} gauge",
+            ]
+        )
+        for key, value in sorted(state["run_terminal_status_timestamp"].items()):
+            run_type, status = _split_composite_key(key)
+            lines.append(
+                f"{RUN_TERMINAL_STATUS_TIMESTAMP_METRIC}"
+                f'{{run_type="{_label_value(run_type)}",status="{_label_value(status)}"}} '
+                f"{value:.3f}"
+            )
+
+        lines.extend(
+            [
+                "# HELP hhru_scheduler_tick_total Total number of scheduler admission ticks.",
+                "# TYPE hhru_scheduler_tick_total counter",
+            ]
+        )
+        for outcome, value in sorted(state["scheduler_tick_total"].items()):
+            lines.append(
+                "hhru_scheduler_tick_total"
+                f'{{outcome="{_label_value(outcome)}"}} {value}'
+            )
+
+        for metric_name, help_text in SCHEDULER_GAUGE_METRIC_HELP.items():
+            lines.extend(
+                [
+                    f"# HELP {metric_name} {help_text}",
+                    f"# TYPE {metric_name} gauge",
+                ]
+            )
+            if metric_name in state["scheduler_gauge"]:
+                lines.append(f"{metric_name} {state['scheduler_gauge'][metric_name]:.3f}")
+
+        lines.extend(
+            [
+                (
+                    f"# HELP {SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC} "
+                    "One-hot gauge for the latest scheduler-observed run terminal status."
+                ),
+                f"# TYPE {SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC} gauge",
+            ]
+        )
+        for status, value in sorted(state["scheduler_status_gauge"].items()):
+            lines.append(
+                f"{SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC}"
+                f'{{status="{_label_value(status)}"}} {value:.1f}'
+            )
+
+        lines.extend(
+            [
+                "# HELP hhru_resume_run_v2_attempt_total Total number of resume-run-v2 attempts by outcome.",
+                "# TYPE hhru_resume_run_v2_attempt_total counter",
+            ]
+        )
+        for key, value in sorted(state["resume_attempt_total"].items()):
+            run_type, outcome = _split_composite_key(key)
+            lines.append(
+                "hhru_resume_run_v2_attempt_total"
+                f'{{run_type="{_label_value(run_type)}",outcome="{_label_value(outcome)}"}} '
+                f"{value}"
+            )
+
+        lines.extend(
+            [
+                "# HELP hhru_detail_repair_attempt_total Total number of detail repair attempts by outcome.",
+                "# TYPE hhru_detail_repair_attempt_total counter",
+            ]
+        )
+        for key, value in sorted(state["detail_repair_attempt_total"].items()):
+            run_type, outcome = _split_composite_key(key)
+            lines.append(
+                "hhru_detail_repair_attempt_total"
+                f'{{run_type="{_label_value(run_type)}",outcome="{_label_value(outcome)}"}} '
+                f"{value}"
+            )
+
+        lines.extend(
+            [
+                (
+                    f"# HELP {DETAIL_REPAIR_BACKLOG_METRIC} "
+                    "Current size of the derived detail repair backlog for a crawl_run."
+                ),
+                f"# TYPE {DETAIL_REPAIR_BACKLOG_METRIC} gauge",
+            ]
+        )
+        for key, value in sorted(state["detail_repair_gauge"].items()):
+            metric_name, run_id, run_type = _split_triple_key(key)
+            if metric_name != DETAIL_REPAIR_BACKLOG_METRIC:
+                continue
+            lines.append(
+                f"{DETAIL_REPAIR_BACKLOG_METRIC}"
+                f'{{run_id="{_label_value(run_id)}",run_type="{_label_value(run_type)}"}} '
+                f"{value:.6f}"
+            )
+
+        for metric_name, help_text in DETAIL_REPAIR_TOTAL_METRIC_HELP.items():
+            lines.extend(
+                [
+                    f"# HELP {metric_name} {help_text}",
+                    f"# TYPE {metric_name} counter",
+                ]
+            )
+            for key, value in sorted(state["detail_repair_total"].items()):
+                recorded_metric_name, run_type = _split_composite_key(key)
+                if recorded_metric_name != metric_name:
+                    continue
+                lines.append(
+                    f"{metric_name}"
+                    f'{{run_type="{_label_value(run_type)}"}} '
+                    f"{value}"
                 )
 
         lines.extend(
@@ -448,6 +752,15 @@ def _empty_state() -> MetricsState:
         operation_last_success_timestamp={},
         records_written_total={},
         run_tree_coverage_gauge={},
+        run_terminal_status_total={},
+        run_terminal_status_timestamp={},
+        scheduler_tick_total={},
+        scheduler_gauge={},
+        scheduler_status_gauge={},
+        resume_attempt_total={},
+        detail_repair_attempt_total={},
+        detail_repair_gauge={},
+        detail_repair_total={},
         upstream_request_total={},
         upstream_request_duration_bucket={},
         upstream_request_duration_count={},
@@ -473,6 +786,19 @@ def _deserialize_state(raw_state: str) -> MetricsState:
         ),
         records_written_total=_coerce_int_map(loaded.get("records_written_total")),
         run_tree_coverage_gauge=_coerce_float_map(loaded.get("run_tree_coverage_gauge")),
+        run_terminal_status_total=_coerce_int_map(loaded.get("run_terminal_status_total")),
+        run_terminal_status_timestamp=_coerce_float_map(
+            loaded.get("run_terminal_status_timestamp")
+        ),
+        scheduler_tick_total=_coerce_int_map(loaded.get("scheduler_tick_total")),
+        scheduler_gauge=_coerce_float_map(loaded.get("scheduler_gauge")),
+        scheduler_status_gauge=_coerce_float_map(loaded.get("scheduler_status_gauge")),
+        resume_attempt_total=_coerce_int_map(loaded.get("resume_attempt_total")),
+        detail_repair_attempt_total=_coerce_int_map(
+            loaded.get("detail_repair_attempt_total")
+        ),
+        detail_repair_gauge=_coerce_float_map(loaded.get("detail_repair_gauge")),
+        detail_repair_total=_coerce_int_map(loaded.get("detail_repair_total")),
         upstream_request_total=_coerce_int_map(loaded.get("upstream_request_total")),
         upstream_request_duration_bucket=_coerce_int_map(
             loaded.get("upstream_request_duration_bucket")

@@ -6,6 +6,9 @@ from uuid import UUID, uuid4
 from hhru_platform.application.commands.fetch_vacancy_detail import (
     FetchVacancyDetailResult,
 )
+from hhru_platform.application.commands.finalize_crawl_run import (
+    FinalizeCrawlRunResult,
+)
 from hhru_platform.application.commands.plan_sweep import PlanRunResult
 from hhru_platform.application.commands.process_partition_v2 import (
     ProcessPartitionV2Result,
@@ -73,6 +76,16 @@ def test_run_collection_once_v2_sequences_tree_aware_flow_and_succeeds() -> None
                 pending_terminal_partitions=0,
                 coverage_ratio=1.0,
             ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=1,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                coverage_ratio=1.0,
+                run_status="succeeded",
+            ),
         )
     )
 
@@ -125,12 +138,13 @@ def test_run_collection_once_v2_sequences_tree_aware_flow_and_succeeds() -> None
 
     def reconcile_run_step(command) -> ReconcileRunResult:
         events.append(("reconcile", command.crawl_run_id))
+        assert command.final_run_status == "succeeded"
         return ReconcileRunResult(
             crawl_run_id=command.crawl_run_id,
             observed_in_run_count=4,
             missing_updated_count=1,
             marked_inactive_count=0,
-            run_status="completed",
+            run_status="succeeded",
         )
 
     result = run_collection_once_v2(
@@ -151,6 +165,9 @@ def test_run_collection_once_v2_sequences_tree_aware_flow_and_succeeds() -> None
         select_detail_candidates_step=select_detail_candidates_step,
         fetch_vacancy_detail_step=fetch_vacancy_detail_step,
         reconcile_run_step=reconcile_run_step,
+        finalize_crawl_run_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected finalize {command.crawl_run_id}")
+        ),
     )
 
     assert events == [
@@ -163,12 +180,13 @@ def test_run_collection_once_v2_sequences_tree_aware_flow_and_succeeds() -> None
         ("detail", vacancy_one, "first_seen"),
         ("detail", vacancy_two, "short_changed"),
         ("reconcile", run_id),
+        ("coverage", run_id),
     ]
     assert result.status == "succeeded"
     assert result.run_id == run_id
     assert result.list_stage_status == "completed"
     assert result.detail_stage_status == "completed"
-    assert result.reconciliation_status == "completed"
+    assert result.reconciliation_status == "succeeded"
     assert result.total_partitions == 1
     assert result.covered_terminal_partitions == 1
     assert result.pending_terminal_partitions == 0
@@ -232,6 +250,17 @@ def test_run_collection_once_v2_returns_completed_with_unresolved() -> None:
                 unresolved_partitions=1,
                 coverage_ratio=0.0,
             ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                unresolved_partitions=1,
+                coverage_ratio=0.0,
+                run_status="completed_with_unresolved",
+            ),
         )
     )
 
@@ -257,6 +286,16 @@ def test_run_collection_once_v2_returns_completed_with_unresolved() -> None:
             remaining_pending_terminal_partitions=(),
         )
 
+    def finalize_crawl_run_step(command) -> FinalizeCrawlRunResult:
+        events.append(("finalize", command.crawl_run_id, command.final_status))
+        assert command.final_status == "completed_with_unresolved"
+        return FinalizeCrawlRunResult(
+            crawl_run_id=command.crawl_run_id,
+            run_status=command.final_status,
+            partitions_done=0,
+            partitions_failed=1,
+        )
+
     result = run_collection_once_v2(
         RunCollectionOnceV2Command(
             detail_limit=5,
@@ -279,6 +318,7 @@ def test_run_collection_once_v2_returns_completed_with_unresolved() -> None:
         reconcile_run_step=lambda command: (_ for _ in ()).throw(
             AssertionError(f"unexpected reconcile {command.crawl_run_id}")
         ),
+        finalize_crawl_run_step=finalize_crawl_run_step,
     )
 
     assert events == [
@@ -286,6 +326,8 @@ def test_run_collection_once_v2_returns_completed_with_unresolved() -> None:
         ("plan_v2", run_id),
         ("coverage", run_id),
         ("list_engine", run_id),
+        ("coverage", run_id),
+        ("finalize", run_id, "completed_with_unresolved"),
         ("coverage", run_id),
     ]
     assert result.status == "completed_with_unresolved"
@@ -301,6 +343,7 @@ def test_run_collection_once_v2_returns_completed_with_unresolved() -> None:
         "create_crawl_run",
         "plan_sweep_v2",
         "run_list_engine_v2",
+        "finalize_crawl_run",
     )
     assert result.skipped_steps == ("fetch_vacancy_detail", "reconcile_run")
 
@@ -349,6 +392,17 @@ def test_run_collection_once_v2_fails_when_tree_coverage_has_failed_partitions()
                 failed_partitions=1,
                 coverage_ratio=0.0,
             ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                failed_partitions=1,
+                coverage_ratio=0.0,
+                run_status="failed",
+            ),
         )
     )
 
@@ -373,6 +427,16 @@ def test_run_collection_once_v2_fails_when_tree_coverage_has_failed_partitions()
             remaining_pending_terminal_partitions=(),
         )
 
+    def finalize_crawl_run_step(command) -> FinalizeCrawlRunResult:
+        events.append(("finalize", command.crawl_run_id, command.final_status))
+        assert command.final_status == "failed"
+        return FinalizeCrawlRunResult(
+            crawl_run_id=command.crawl_run_id,
+            run_status=command.final_status,
+            partitions_done=0,
+            partitions_failed=1,
+        )
+
     result = run_collection_once_v2(
         RunCollectionOnceV2Command(
             detail_limit=5,
@@ -395,6 +459,7 @@ def test_run_collection_once_v2_fails_when_tree_coverage_has_failed_partitions()
         reconcile_run_step=lambda command: (_ for _ in ()).throw(
             AssertionError(f"unexpected reconcile {command.crawl_run_id}")
         ),
+        finalize_crawl_run_step=finalize_crawl_run_step,
     )
 
     assert events == [
@@ -402,6 +467,8 @@ def test_run_collection_once_v2_fails_when_tree_coverage_has_failed_partitions()
         ("plan_v2", run_id),
         ("coverage", run_id),
         ("list_engine", run_id),
+        ("coverage", run_id),
+        ("finalize", run_id, "failed"),
         ("coverage", run_id),
     ]
     assert result.status == "failed"
@@ -411,6 +478,12 @@ def test_run_collection_once_v2_fails_when_tree_coverage_has_failed_partitions()
     assert result.failed_step == "run_list_engine_v2"
     assert "failed partition" in (result.error_message or "")
     assert result.failed_partitions == 1
+    assert result.completed_steps == (
+        "create_crawl_run",
+        "plan_sweep_v2",
+        "run_list_engine_v2",
+        "finalize_crawl_run",
+    )
     assert result.skipped_steps == ("fetch_vacancy_detail", "reconcile_run")
 
 
@@ -459,6 +532,16 @@ def test_run_collection_once_v2_marks_final_status_failed_when_detail_stage_has_
                 pending_terminal_partitions=0,
                 coverage_ratio=1.0,
             ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=1,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                coverage_ratio=1.0,
+                run_status="completed_with_detail_errors",
+            ),
         )
     )
 
@@ -506,12 +589,14 @@ def test_run_collection_once_v2_marks_final_status_failed_when_detail_stage_has_
 
     def reconcile_run_step(command) -> ReconcileRunResult:
         events.append(("reconcile", command.crawl_run_id))
+        assert command.final_run_status == "completed_with_detail_errors"
+        assert command.notes == "1 detail fetch(es) failed"
         return ReconcileRunResult(
             crawl_run_id=command.crawl_run_id,
             observed_in_run_count=2,
             missing_updated_count=0,
             marked_inactive_count=0,
-            run_status="completed",
+            run_status="completed_with_detail_errors",
         )
 
     result = run_collection_once_v2(
@@ -530,6 +615,9 @@ def test_run_collection_once_v2_marks_final_status_failed_when_detail_stage_has_
         select_detail_candidates_step=select_detail_candidates_step,
         fetch_vacancy_detail_step=fetch_vacancy_detail_step,
         reconcile_run_step=reconcile_run_step,
+        finalize_crawl_run_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected finalize {command.crawl_run_id}")
+        ),
     )
 
     assert events == [
@@ -542,12 +630,13 @@ def test_run_collection_once_v2_marks_final_status_failed_when_detail_stage_has_
         ("detail", vacancy_one, "first_seen"),
         ("detail", vacancy_two, "ttl_refresh"),
         ("reconcile", run_id),
+        ("coverage", run_id),
     ]
-    assert result.status == "failed"
+    assert result.status == "completed_with_detail_errors"
     assert result.list_stage_status == "completed"
     assert result.detail_stage_status == "completed_with_failures"
-    assert result.reconciliation_status == "completed"
-    assert result.failed_step == "fetch_vacancy_detail"
+    assert result.reconciliation_status == "completed_with_detail_errors"
+    assert result.failed_step is None
     assert result.error_message == "1 detail fetch(es) failed"
     assert result.detail_fetch_attempted == 2
     assert result.detail_fetch_failed == 1
@@ -646,6 +735,7 @@ def _build_coverage_report(
     unresolved_partitions: int = 0,
     failed_partitions: int = 0,
     coverage_ratio: float | None = None,
+    run_status: str = "created",
 ) -> RunCoverageReport:
     resolved_coverage_ratio = coverage_ratio
     if resolved_coverage_ratio is None:
@@ -656,6 +746,7 @@ def _build_coverage_report(
         )
 
     crawl_run = _build_crawl_run(run_id=run_id, run_type="weekly_sweep")
+    crawl_run.status = run_status
     return RunCoverageReport(
         crawl_run=crawl_run,
         summary=RunCoverageSummary(

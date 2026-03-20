@@ -12,7 +12,11 @@ from hhru_platform.domain.entities.vacancy_current_state import (
     VacancyCurrentState,
     VacancyCurrentStateReconciliationUpdate,
 )
-from hhru_platform.domain.value_objects.enums import CrawlPartitionStatus
+from hhru_platform.domain.value_objects.enums import CrawlPartitionStatus, CrawlRunStatus
+from hhru_platform.infrastructure.observability.lifecycle import (
+    RunTerminalStatusMetricsRecorder,
+    publish_run_terminal_status,
+)
 from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
     record_operation_failed,
@@ -31,6 +35,15 @@ class CrawlRunNotFoundError(LookupError):
 @dataclass(slots=True, frozen=True)
 class ReconcileRunCommand:
     crawl_run_id: UUID
+    final_run_status: str = CrawlRunStatus.COMPLETED.value
+    notes: str | None = None
+
+    def __post_init__(self) -> None:
+        normalized_final_run_status = self.final_run_status.strip()
+        if not normalized_final_run_status:
+            raise ValueError("final_run_status must not be empty")
+
+        object.__setattr__(self, "final_run_status", normalized_final_run_status)
 
 
 @dataclass(slots=True, frozen=True)
@@ -50,6 +63,7 @@ class CrawlRunRepository(Protocol):
         self,
         *,
         run_id: UUID,
+        status: str,
         finished_at: datetime,
         partitions_done: int,
         partitions_failed: int,
@@ -99,6 +113,7 @@ def reconcile_run(
     vacancy_seen_event_repository: VacancySeenEventRepository,
     vacancy_current_state_repository: VacancyCurrentStateRepository,
     reconciliation_policy: ReconciliationPolicy,
+    metrics_recorder: RunTerminalStatusMetricsRecorder | None = None,
 ) -> ReconcileRunResult:
     started_at = log_operation_started(
         LOGGER,
@@ -115,6 +130,8 @@ def reconcile_run(
         )
         current_states = vacancy_current_state_repository.list_all()
         reconciled_at = datetime.now(UTC)
+        previous_run_status = crawl_run.status
+        previous_finished_at = crawl_run.finished_at
 
         updates: list[VacancyCurrentStateReconciliationUpdate] = []
         missing_updated_count = 0
@@ -142,6 +159,7 @@ def reconcile_run(
         partitions = crawl_partition_repository.list_by_run_id(command.crawl_run_id)
         completed_run = crawl_run_repository.complete(
             run_id=command.crawl_run_id,
+            status=command.final_run_status,
             finished_at=reconciled_at,
             partitions_done=sum(
                 1
@@ -158,6 +176,7 @@ def reconcile_run(
                 if partition.status == CrawlPartitionStatus.FAILED.value
                 or partition.status == CrawlPartitionStatus.UNRESOLVED.value
             ),
+            notes=command.notes,
         )
     except Exception as error:
         record_operation_failed(
@@ -177,6 +196,14 @@ def reconcile_run(
         missing_updated_count=missing_updated_count,
         marked_inactive_count=marked_inactive_count,
         run_status=completed_run.status,
+    )
+    publish_run_terminal_status(
+        metrics_recorder,
+        run_type=completed_run.run_type,
+        previous_status=previous_run_status,
+        previous_finished_at=previous_finished_at,
+        current_status=completed_run.status,
+        recorded_at=completed_run.finished_at,
     )
     record_operation_succeeded(
         LOGGER,

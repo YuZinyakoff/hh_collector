@@ -26,6 +26,9 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "run-once-v2" in captured.out
+    assert "resume-run-v2" in captured.out
+    assert "trigger-run-now" in captured.out
+    assert "scheduler-loop" in captured.out
     assert "plan-run" in captured.out
     assert "plan-run-v2" in captured.out
     assert "split-partition" in captured.out
@@ -36,6 +39,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "process-partition-v2" in captured.out
     assert "run-list-engine-v2" in captured.out
     assert "fetch-vacancy-detail" in captured.out
+    assert "retry-failed-details" in captured.out
     assert "reconcile-run" in captured.out
     assert "study-detail-payloads" in captured.out
     assert "show-metrics" in captured.out
@@ -226,6 +230,7 @@ def test_run_once_v2_cli_prints_tree_aware_summary(monkeypatch, capsys) -> None:
         assert "select_detail_candidates_step" in kwargs
         assert "fetch_vacancy_detail_step" in kwargs
         assert "reconcile_run_step" in kwargs
+        assert "finalize_crawl_run_step" in kwargs
         return RunCollectionOnceV2Result(
             status="succeeded",
             run_id=run_id,
@@ -244,7 +249,7 @@ def test_run_once_v2_cli_prints_tree_aware_summary(monkeypatch, capsys) -> None:
                 observed_in_run_count=0,
                 missing_updated_count=0,
                 marked_inactive_count=0,
-                run_status="completed",
+                run_status="succeeded",
             ),
             completed_steps=("create_crawl_run", "plan_sweep_v2", "reconcile_run"),
         )
@@ -283,9 +288,211 @@ def test_run_once_v2_cli_prints_tree_aware_summary(monkeypatch, capsys) -> None:
     assert "coverage_ratio=0.0000" in captured.out
     assert "list_stage_status=completed" in captured.out
     assert "detail_stage_status=skipped" in captured.out
-    assert "reconciliation_status=completed" in captured.out
+    assert "reconciliation_status=succeeded" in captured.out
     assert "completed_steps=create_crawl_run,plan_sweep_v2,reconcile_run" in captured.out
     assert "failed_step=-" in captured.out
+
+
+def test_run_once_v2_cli_returns_zero_for_completed_with_detail_errors(
+    monkeypatch,
+    capsys,
+) -> None:
+    run_id = uuid4()
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.run_once.run_collection_once_v2",
+        lambda command, **kwargs: RunCollectionOnceV2Result(
+            status="completed_with_detail_errors",
+            run_id=run_id,
+            run_type=command.run_type,
+            triggered_by=command.triggered_by,
+            dictionary_results=(),
+            planned_partition_ids=(uuid4(),),
+            list_engine_results=(),
+            final_coverage_report=None,
+            list_stage_status="completed",
+            detail_selection_result=None,
+            detail_results=(),
+            detail_stage_status="completed_with_failures",
+            reconciliation_result=ReconcileRunResult(
+                crawl_run_id=run_id,
+                observed_in_run_count=0,
+                missing_updated_count=0,
+                marked_inactive_count=0,
+                run_status="completed_with_detail_errors",
+            ),
+            error_message="1 detail fetch(es) failed",
+            completed_steps=("create_crawl_run", "plan_sweep_v2", "reconcile_run"),
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-once-v2",
+            "--run-type",
+            "weekly_sweep",
+            "--triggered-by",
+            "cli-v2",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed run-once-v2 collection with detail errors" in captured.out
+    assert "status=completed_with_detail_errors" in captured.out
+    assert "reconciliation_status=completed_with_detail_errors" in captured.out
+    assert "error=1 detail fetch(es) failed" in captured.out
+
+
+def test_resume_run_v2_cli_prints_resume_summary(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.run_once.HHApiClient.from_settings",
+        lambda: SimpleNamespace(name="fake-api-client"),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.run_once._execute_resume_run_v2_step",
+        lambda command, **kwargs: SimpleNamespace(
+            status="succeeded",
+            run_id=run_id,
+            run_type="weekly_sweep",
+            triggered_by=command.triggered_by,
+            initial_run_status="completed_with_unresolved",
+            unresolved_before_resume=2,
+            pending_before_resume=0,
+            covered_before_resume=3,
+            coverage_ratio_before_resume=0.6,
+            resumed_unresolved_partitions=2,
+            list_engine_iterations=1,
+            total_partitions=5,
+            covered_terminal_partitions=5,
+            pending_terminal_partitions=0,
+            split_partitions=1,
+            unresolved_partitions=0,
+            failed_partitions=0,
+            coverage_ratio=1.0,
+            list_stage_status="completed",
+            detail_stage_status="skipped",
+            detail_candidates_selected=0,
+            detail_fetch_attempted=0,
+            detail_fetch_succeeded=0,
+            detail_fetch_failed=0,
+            reconciliation_status="succeeded",
+            completed_steps=(
+                "requeue_unresolved_partitions",
+                "reopen_crawl_run",
+                "run_list_engine_v2",
+                "reconcile_run",
+            ),
+            skipped_steps=(),
+            failed_step=None,
+            error_message=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "resume-run-v2",
+            "--run-id",
+            str(run_id),
+            "--detail-limit",
+            "0",
+            "--triggered-by",
+            "cli-resume",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed resume-run-v2" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "initial_run_status=completed_with_unresolved" in captured.out
+    assert "unresolved_before_resume=2" in captured.out
+    assert "resumed_unresolved_partitions=2" in captured.out
+    assert "coverage_ratio_before_resume=0.6000" in captured.out
+    assert "coverage_ratio=1.0000" in captured.out
+    assert "reconciliation_status=succeeded" in captured.out
+
+
+def test_trigger_run_now_cli_prints_skip_summary(monkeypatch, capsys) -> None:
+    active_run_id = uuid4()
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.scheduler.trigger_run_now",
+        lambda command, **kwargs: SimpleNamespace(
+            status="skipped_active_run",
+            run_id=None,
+            active_run_id=active_run_id,
+            active_run_status="created",
+            error_message=f"active crawl_run already exists: {active_run_id}",
+            run_result=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "trigger-run-now",
+            "--run-type",
+            "weekly_sweep",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "skipped trigger-run-now because an active crawl run already exists" in captured.out
+    assert "status=skipped_active_run" in captured.out
+    assert f"active_run_id={active_run_id}" in captured.out
+
+
+def test_scheduler_loop_cli_prints_aggregated_summary(monkeypatch, capsys) -> None:
+    run_id = uuid4()
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.scheduler.scheduler_loop",
+        lambda command, **kwargs: SimpleNamespace(
+            ticks_executed=2,
+            runs_started=1,
+            skipped_overlap_ticks=1,
+            skipped_active_run_ticks=0,
+            succeeded_runs=0,
+            completed_with_detail_errors_runs=1,
+            completed_with_unresolved_runs=0,
+            failed_runs=0,
+            last_tick_status="completed_with_detail_errors",
+            last_run_id=run_id,
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "scheduler-loop",
+            "--interval-seconds",
+            "30",
+            "--max-ticks",
+            "2",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed scheduler loop" in captured.out
+    assert "ticks_executed=2" in captured.out
+    assert "skipped_overlap_ticks=1" in captured.out
+    assert "completed_with_detail_errors_runs=1" in captured.out
+    assert f"last_run_id={run_id}" in captured.out
 
 
 def test_study_detail_payloads_cli_prints_report_summary(monkeypatch, capsys, tmp_path) -> None:
@@ -1397,6 +1604,89 @@ def test_fetch_vacancy_detail_cli_prints_fetch_summary(monkeypatch, capsys) -> N
     assert "detail_fetch_attempt_id=54" in captured.out
 
 
+def test_retry_failed_details_cli_prints_summary_and_returns_non_zero_when_backlog_remains(
+    monkeypatch,
+    capsys,
+) -> None:
+    run_id = uuid4()
+    vacancy_id = uuid4()
+
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    class FakeCrawlRunRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeDetailFetchAttemptRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyCrawlRunRepository",
+        FakeCrawlRunRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.SqlAlchemyDetailFetchAttemptRepository",
+        FakeDetailFetchAttemptRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.HHApiClient.from_settings",
+        lambda: SimpleNamespace(name="fake-api-client"),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.detail.retry_failed_details",
+        lambda command, **kwargs: SimpleNamespace(
+            status="completed_with_detail_errors",
+            run_id=run_id,
+            run_type="weekly_sweep",
+            triggered_by=command.triggered_by,
+            run_status_before="completed_with_detail_errors",
+            run_status_after="completed_with_detail_errors",
+            backlog_size=2,
+            retried_count=2,
+            repaired_count=1,
+            still_failing_count=1,
+            remaining_backlog_count=1,
+            error_message="1 detail repair backlog item(s) still failing",
+            detail_results=(
+                SimpleNamespace(
+                    vacancy_id=vacancy_id,
+                    detail_fetch_status="failed",
+                    detail_fetch_attempt_id=41,
+                    error_message="still failing",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "retry-failed-details",
+            "--run-id",
+            str(run_id),
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "completed retry-failed-details with remaining backlog" in captured.out
+    assert f"run_id={run_id}" in captured.out
+    assert "backlog_size=2" in captured.out
+    assert "repaired_count=1" in captured.out
+    assert "still_failing_count=1" in captured.out
+    assert "remaining_backlog_count=1" in captured.out
+    assert f"vacancy={vacancy_id}" in captured.out
+
+
 def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) -> None:
     crawl_run_id = uuid4()
 
@@ -1430,6 +1720,7 @@ def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) ->
         vacancy_seen_event_repository,
         vacancy_current_state_repository,
         reconciliation_policy,
+        metrics_recorder=None,
     ):
         assert command.crawl_run_id == crawl_run_id
         assert crawl_run_repository.__class__.__name__ == "FakeCrawlRunRepository"
@@ -1440,6 +1731,7 @@ def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) ->
             == "FakeVacancyCurrentStateRepository"
         )
         assert reconciliation_policy.__class__.__name__ == "FakeReconciliationPolicy"
+        assert metrics_recorder is not None
         return SimpleNamespace(
             crawl_run_id=crawl_run_id,
             observed_in_run_count=12,

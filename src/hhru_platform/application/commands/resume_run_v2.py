@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from hhru_platform.application.commands.create_crawl_run import CreateCrawlRunCommand
 from hhru_platform.application.commands.fetch_vacancy_detail import (
     FetchVacancyDetailCommand,
     FetchVacancyDetailResult,
@@ -15,8 +14,6 @@ from hhru_platform.application.commands.finalize_crawl_run import (
     FinalizeCrawlRunCommand,
     FinalizeCrawlRunResult,
 )
-from hhru_platform.application.commands.plan_sweep import PlanRunResult
-from hhru_platform.application.commands.plan_sweep_v2 import PlanRunV2Command
 from hhru_platform.application.commands.reconcile_run import (
     ReconcileRunCommand,
     ReconcileRunResult,
@@ -24,6 +21,14 @@ from hhru_platform.application.commands.reconcile_run import (
 from hhru_platform.application.commands.report_run_coverage import (
     ReportRunCoverageCommand,
     RunCoverageReport,
+)
+from hhru_platform.application.commands.run_collection_once_v2 import (
+    DETAIL_STAGE_STATUS_COMPLETED,
+    DETAIL_STAGE_STATUS_COMPLETED_WITH_FAILURES,
+    DETAIL_STAGE_STATUS_SKIPPED,
+    LIST_STAGE_STATUS_COMPLETED,
+    LIST_STAGE_STATUS_COMPLETED_WITH_UNRESOLVED,
+    LIST_STAGE_STATUS_FAILED,
 )
 from hhru_platform.application.commands.run_list_engine_v2 import (
     RunListEngineV2Command,
@@ -33,13 +38,9 @@ from hhru_platform.application.commands.select_detail_candidates import (
     SelectDetailCandidatesCommand,
     SelectDetailCandidatesResult,
 )
-from hhru_platform.application.commands.sync_dictionary import (
-    SyncDictionaryCommand,
-    SyncDictionaryResult,
-)
-from hhru_platform.application.dto import SUPPORTED_DICTIONARY_NAMES
+from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.entities.crawl_run import CrawlRun
-from hhru_platform.domain.value_objects.enums import DictionarySyncStatus
+from hhru_platform.domain.value_objects.enums import CrawlRunStatus
 from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
     record_operation_failed,
@@ -48,25 +49,33 @@ from hhru_platform.infrastructure.observability.operations import (
 
 LOGGER = logging.getLogger(__name__)
 
-LIST_STAGE_STATUS_COMPLETED = "completed"
-LIST_STAGE_STATUS_COMPLETED_WITH_UNRESOLVED = "completed_with_unresolved"
-LIST_STAGE_STATUS_FAILED = "failed"
-DETAIL_STAGE_STATUS_SKIPPED = "skipped"
-DETAIL_STAGE_STATUS_COMPLETED = "completed"
-DETAIL_STAGE_STATUS_COMPLETED_WITH_FAILURES = "completed_with_failures"
-RUN_COLLECTION_ONCE_V2_STATUS_SUCCEEDED = "succeeded"
-RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS = "completed_with_detail_errors"
-RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_UNRESOLVED = "completed_with_unresolved"
-RUN_COLLECTION_ONCE_V2_STATUS_FAILED = "failed"
+RESUME_RUN_V2_STATUS_SUCCEEDED = CrawlRunStatus.SUCCEEDED.value
+RESUME_RUN_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS = (
+    CrawlRunStatus.COMPLETED_WITH_DETAIL_ERRORS.value
+)
+RESUME_RUN_V2_STATUS_COMPLETED_WITH_UNRESOLVED = (
+    CrawlRunStatus.COMPLETED_WITH_UNRESOLVED.value
+)
+RESUME_RUN_V2_STATUS_FAILED = CrawlRunStatus.FAILED.value
+RESUMABLE_RUN_STATUSES = {
+    CrawlRunStatus.CREATED.value,
+    CrawlRunStatus.COMPLETED_WITH_UNRESOLVED.value,
+}
 
 
-class RunCollectionOnceV2StepError(RuntimeError):
+class ResumeRunV2NotAllowedError(ValueError):
+    def __init__(self, crawl_run_id: UUID, message: str) -> None:
+        super().__init__(f"crawl_run {crawl_run_id} cannot be resumed: {message}")
+        self.crawl_run_id = crawl_run_id
+
+
+class ResumeRunV2StepError(RuntimeError):
     def __init__(
         self,
         *,
         step: str,
         message: str,
-        run_id: UUID | None = None,
+        run_id: UUID,
         final_coverage_report: RunCoverageReport | None = None,
         list_engine_results: tuple[RunListEngineV2Result, ...] = (),
         detail_selection_result: SelectDetailCandidatesResult | None = None,
@@ -86,46 +95,35 @@ class RunCollectionOnceV2StepError(RuntimeError):
 
 
 @dataclass(slots=True, frozen=True)
-class RunCollectionOnceV2Command:
-    sync_dictionaries: bool = False
+class ResumeRunV2Command:
+    crawl_run_id: UUID
     detail_limit: int = 100
     detail_refresh_ttl_days: int = 30
-    run_type: str = "weekly_sweep"
-    triggered_by: str = "run-once-v2"
-    dictionary_names: tuple[str, ...] = SUPPORTED_DICTIONARY_NAMES
+    triggered_by: str = "resume-run-v2"
 
     def __post_init__(self) -> None:
-        normalized_run_type = self.run_type.strip()
         normalized_triggered_by = self.triggered_by.strip()
-        normalized_dictionary_names = tuple(name.strip() for name in self.dictionary_names)
-
-        if not normalized_run_type:
-            raise ValueError("run_type must not be empty")
         if not normalized_triggered_by:
             raise ValueError("triggered_by must not be empty")
         if self.detail_limit < 0:
             raise ValueError("detail_limit must be greater than or equal to zero")
         if self.detail_refresh_ttl_days < 1:
             raise ValueError("detail_refresh_ttl_days must be greater than or equal to one")
-        if any(name not in SUPPORTED_DICTIONARY_NAMES for name in normalized_dictionary_names):
-            supported = ", ".join(SUPPORTED_DICTIONARY_NAMES)
-            raise ValueError(f"dictionary_names must be drawn from: {supported}")
 
-        object.__setattr__(self, "run_type", normalized_run_type)
         object.__setattr__(self, "triggered_by", normalized_triggered_by)
-        object.__setattr__(self, "dictionary_names", normalized_dictionary_names)
 
 
 @dataclass(slots=True, frozen=True)
-class RunCollectionOnceV2Result:
+class ResumeRunV2Result:
     status: str
-    run_id: UUID | None
+    run_id: UUID
     run_type: str
     triggered_by: str
-    dictionary_results: tuple[SyncDictionaryResult, ...]
-    planned_partition_ids: tuple[UUID, ...]
-    list_engine_results: tuple[RunListEngineV2Result, ...]
+    initial_run_status: str
+    initial_coverage_report: RunCoverageReport
     final_coverage_report: RunCoverageReport | None
+    resumed_partitions: tuple[CrawlPartition, ...]
+    list_engine_results: tuple[RunListEngineV2Result, ...]
     list_stage_status: str
     detail_selection_result: SelectDetailCandidatesResult | None
     detail_results: tuple[FetchVacancyDetailResult, ...]
@@ -137,8 +135,24 @@ class RunCollectionOnceV2Result:
     skipped_steps: tuple[str, ...] = ()
 
     @property
-    def partitions_planned(self) -> int:
-        return len(self.planned_partition_ids)
+    def unresolved_before_resume(self) -> int:
+        return self.initial_coverage_report.summary.unresolved_partitions
+
+    @property
+    def pending_before_resume(self) -> int:
+        return self.initial_coverage_report.summary.pending_terminal_partitions
+
+    @property
+    def covered_before_resume(self) -> int:
+        return self.initial_coverage_report.summary.covered_terminal_partitions
+
+    @property
+    def coverage_ratio_before_resume(self) -> float:
+        return self.initial_coverage_report.summary.coverage_ratio
+
+    @property
+    def resumed_unresolved_partitions(self) -> int:
+        return len(self.resumed_partitions)
 
     @property
     def list_engine_iterations(self) -> int:
@@ -211,11 +225,21 @@ class RunCollectionOnceV2Result:
         return self.reconciliation_result.run_status
 
 
-SyncDictionaryStep = Callable[[SyncDictionaryCommand], SyncDictionaryResult]
-CreateCrawlRunStep = Callable[[CreateCrawlRunCommand], CrawlRun]
-PlanRunV2Step = Callable[[PlanRunV2Command], PlanRunResult]
-RunListEngineV2Step = Callable[[RunListEngineV2Command], RunListEngineV2Result]
+class CrawlRunRepository(Protocol):
+    def get(self, run_id: UUID) -> CrawlRun | None:
+        """Return a crawl run by id."""
+
+    def reopen(self, *, run_id: UUID, status: str = CrawlRunStatus.CREATED.value) -> CrawlRun:
+        """Reopen a crawl run for continued execution."""
+
+
+class CrawlPartitionRepository(Protocol):
+    def requeue_unresolved_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
+        """Reset unresolved terminal partitions back to pending."""
+
+
 ReportRunCoverageStep = Callable[[ReportRunCoverageCommand], RunCoverageReport]
+RunListEngineV2Step = Callable[[RunListEngineV2Command], RunListEngineV2Result]
 SelectDetailCandidatesStep = Callable[
     [SelectDetailCandidatesCommand],
     SelectDetailCandidatesResult,
@@ -225,7 +249,15 @@ ReconcileRunStep = Callable[[ReconcileRunCommand], ReconcileRunResult]
 FinalizeCrawlRunStep = Callable[[FinalizeCrawlRunCommand], FinalizeCrawlRunResult]
 
 
-class DetailRepairBacklogMetricsRecorder(Protocol):
+class ResumeRunV2MetricsRecorder(Protocol):
+    def record_resume_attempt(
+        self,
+        *,
+        run_type: str,
+        outcome: str,
+    ) -> None:
+        """Persist one resume-run-v2 outcome."""
+
     def set_detail_repair_backlog(
         self,
         *,
@@ -236,80 +268,131 @@ class DetailRepairBacklogMetricsRecorder(Protocol):
         """Persist the current detail repair backlog size for a crawl_run."""
 
 
-def run_collection_once_v2(
-    command: RunCollectionOnceV2Command,
+def resume_run_v2(
+    command: ResumeRunV2Command,
     *,
-    sync_dictionary_step: SyncDictionaryStep,
-    create_crawl_run_step: CreateCrawlRunStep,
-    plan_run_v2_step: PlanRunV2Step,
+    crawl_run_repository: CrawlRunRepository,
+    crawl_partition_repository: CrawlPartitionRepository,
     run_list_engine_v2_step: RunListEngineV2Step,
     report_run_coverage_step: ReportRunCoverageStep,
     select_detail_candidates_step: SelectDetailCandidatesStep,
     fetch_vacancy_detail_step: FetchVacancyDetailStep,
     reconcile_run_step: ReconcileRunStep,
     finalize_crawl_run_step: FinalizeCrawlRunStep,
-    metrics_recorder: DetailRepairBacklogMetricsRecorder | None = None,
-) -> RunCollectionOnceV2Result:
+    metrics_recorder: ResumeRunV2MetricsRecorder | None = None,
+) -> ResumeRunV2Result:
     started_at = log_operation_started(
         LOGGER,
-        operation="run_collection_once_v2",
-        sync_dictionaries=command.sync_dictionaries,
+        operation="resume_run_v2",
+        run_id=command.crawl_run_id,
         detail_limit=command.detail_limit,
         detail_refresh_ttl_days=command.detail_refresh_ttl_days,
-        run_type=command.run_type,
         triggered_by=command.triggered_by,
     )
-    current_run_id: UUID | None = None
-    dictionary_results: tuple[SyncDictionaryResult, ...] = ()
-    planned_partition_ids: tuple[UUID, ...] = ()
+    crawl_run = crawl_run_repository.get(command.crawl_run_id)
+    if crawl_run is None:
+        if metrics_recorder is not None:
+            metrics_recorder.record_resume_attempt(
+                run_type="unknown",
+                outcome="not_found",
+            )
+        record_operation_failed(
+            LOGGER,
+            operation="resume_run_v2",
+            started_at=started_at,
+            error_type="LookupError",
+            error_message=f"crawl_run not found: {command.crawl_run_id}",
+            run_id=command.crawl_run_id,
+        )
+        raise LookupError(f"crawl_run not found: {command.crawl_run_id}")
+    initial_run_status = crawl_run.status
+    try:
+        initial_coverage_report = _report_resume_coverage(
+            crawl_run.id,
+            report_run_coverage_step,
+        )
+    except ResumeRunV2StepError as error:
+        if metrics_recorder is not None:
+            metrics_recorder.record_resume_attempt(
+                run_type=crawl_run.run_type,
+                outcome=RESUME_RUN_V2_STATUS_FAILED,
+            )
+        record_operation_failed(
+            LOGGER,
+            operation="resume_run_v2",
+            started_at=started_at,
+            error_type="ResumeRunV2StepError",
+            error_message=str(error),
+            run_id=crawl_run.id,
+        )
+        raise
+    if crawl_run.status not in RESUMABLE_RUN_STATUSES:
+        message = f"status={crawl_run.status}"
+        if metrics_recorder is not None:
+            metrics_recorder.record_resume_attempt(
+                run_type=crawl_run.run_type,
+                outcome="not_allowed",
+            )
+        record_operation_failed(
+            LOGGER,
+            operation="resume_run_v2",
+            started_at=started_at,
+            error_type="ResumeRunV2NotAllowedError",
+            error_message=message,
+            run_id=crawl_run.id,
+        )
+        raise ResumeRunV2NotAllowedError(crawl_run.id, message)
+    if initial_coverage_report.summary.failed_partitions > 0:
+        message = (
+            f"failed_partitions={initial_coverage_report.summary.failed_partitions}; "
+            "resume-run-v2 only supports pending or unresolved branches"
+        )
+        if metrics_recorder is not None:
+            metrics_recorder.record_resume_attempt(
+                run_type=crawl_run.run_type,
+                outcome="not_allowed",
+            )
+        record_operation_failed(
+            LOGGER,
+            operation="resume_run_v2",
+            started_at=started_at,
+            error_type="ResumeRunV2NotAllowedError",
+            error_message=message,
+            run_id=crawl_run.id,
+        )
+        raise ResumeRunV2NotAllowedError(crawl_run.id, message)
+
+    resumed_partitions: tuple[CrawlPartition, ...] = ()
     list_engine_results: tuple[RunListEngineV2Result, ...] = ()
-    final_coverage_report: RunCoverageReport | None = None
+    final_coverage_report: RunCoverageReport | None = initial_coverage_report
     detail_selection_result: SelectDetailCandidatesResult | None = None
     detail_results: tuple[FetchVacancyDetailResult, ...] = ()
     list_stage_status = LIST_STAGE_STATUS_FAILED
     detail_stage_status = DETAIL_STAGE_STATUS_SKIPPED
     reconciliation_result: ReconcileRunResult | None = None
-    run_finalized = False
     completed_steps: list[str] = []
+    run_finalized = False
 
     try:
-        dictionary_results = tuple(_sync_requested_dictionaries(command, sync_dictionary_step))
-        if command.sync_dictionaries:
-            completed_steps.append("sync_dictionaries")
-
-        try:
-            crawl_run = create_crawl_run_step(
-                CreateCrawlRunCommand(
-                    run_type=command.run_type,
-                    triggered_by=command.triggered_by,
-                )
+        if initial_coverage_report.summary.unresolved_partitions > 0:
+            resumed_partitions = tuple(
+                crawl_partition_repository.requeue_unresolved_by_run_id(crawl_run.id)
             )
-        except Exception as error:
-            raise RunCollectionOnceV2StepError(
-                step="create_crawl_run",
-                message=str(error),
-                run_id=current_run_id,
-            ) from error
-        current_run_id = crawl_run.id
-        completed_steps.append("create_crawl_run")
+            completed_steps.append("requeue_unresolved_partitions")
 
-        try:
-            plan_result = plan_run_v2_step(PlanRunV2Command(crawl_run_id=crawl_run.id))
-        except Exception as error:
-            raise RunCollectionOnceV2StepError(
-                step="plan_sweep_v2",
-                message=str(error),
-                run_id=current_run_id,
-            ) from error
-        planned_partition_ids = tuple(partition.id for partition in plan_result.partitions)
-        completed_steps.append("plan_sweep_v2")
+        if (
+            crawl_run.status != CrawlRunStatus.CREATED.value
+            or crawl_run.finished_at is not None
+        ):
+            crawl_run = crawl_run_repository.reopen(run_id=crawl_run.id)
+            completed_steps.append("reopen_crawl_run")
 
         (
             list_engine_results,
             final_coverage_report,
             list_stage_status,
             list_stage_error_message,
-        ) = _run_list_stage(
+        ) = _run_resume_list_stage(
             crawl_run_id=crawl_run.id,
             run_list_engine_v2_step=run_list_engine_v2_step,
             report_run_coverage_step=report_run_coverage_step,
@@ -317,7 +400,7 @@ def run_collection_once_v2(
         completed_steps.append("run_list_engine_v2")
 
         if list_stage_status == LIST_STAGE_STATUS_FAILED:
-            raise RunCollectionOnceV2StepError(
+            raise ResumeRunV2StepError(
                 step="run_list_engine_v2",
                 message=list_stage_error_message or "list stage failed",
                 run_id=crawl_run.id,
@@ -325,27 +408,30 @@ def run_collection_once_v2(
                 list_engine_results=list_engine_results,
                 list_stage_status=list_stage_status,
             )
+
         if list_stage_status == LIST_STAGE_STATUS_COMPLETED_WITH_UNRESOLVED:
-            _finalize_run(
-                crawl_run_id=crawl_run.id,
-                final_status=RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_UNRESOLVED,
-                notes=list_stage_error_message,
-                finalize_crawl_run_step=finalize_crawl_run_step,
+            finalize_crawl_run_step(
+                FinalizeCrawlRunCommand(
+                    crawl_run_id=crawl_run.id,
+                    final_status=RESUME_RUN_V2_STATUS_COMPLETED_WITH_UNRESOLVED,
+                    notes=list_stage_error_message,
+                )
             )
             run_finalized = True
             completed_steps.append("finalize_crawl_run")
-            final_coverage_report = _report_run_coverage(
+            final_coverage_report = _report_resume_coverage(
                 crawl_run.id,
                 report_run_coverage_step,
             )
-            result = _build_terminal_result(
-                status=RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_UNRESOLVED,
+            result = _build_resume_result(
+                status=RESUME_RUN_V2_STATUS_COMPLETED_WITH_UNRESOLVED,
                 command=command,
-                run_id=crawl_run.id,
-                dictionary_results=dictionary_results,
-                planned_partition_ids=planned_partition_ids,
-                list_engine_results=list_engine_results,
+                crawl_run=crawl_run,
+                initial_run_status=initial_run_status,
+                initial_coverage_report=initial_coverage_report,
                 final_coverage_report=final_coverage_report,
+                resumed_partitions=resumed_partitions,
+                list_engine_results=list_engine_results,
                 list_stage_status=list_stage_status,
                 detail_selection_result=None,
                 detail_results=(),
@@ -355,25 +441,31 @@ def run_collection_once_v2(
                 error_message=list_stage_error_message,
                 completed_steps=tuple(completed_steps),
             )
+            if metrics_recorder is not None:
+                metrics_recorder.record_resume_attempt(
+                    run_type=result.run_type,
+                    outcome=result.status,
+                )
             record_operation_failed(
                 LOGGER,
-                operation="run_collection_once_v2",
+                operation="resume_run_v2",
                 started_at=started_at,
-                error_type="RunCollectionOnceV2CoverageUnresolved",
+                error_type="ResumeRunV2CoverageUnresolved",
                 error_message=result.error_message or "run coverage is unresolved",
                 run_id=result.run_id,
                 run_type=result.run_type,
                 triggered_by=result.triggered_by,
-                list_stage_status=result.list_stage_status,
-                detail_stage_status=result.detail_stage_status,
-                coverage_ratio=result.coverage_ratio,
-                total_partitions=result.total_partitions,
+                initial_run_status=result.initial_run_status,
+                unresolved_before_resume=result.unresolved_before_resume,
+                resumed_unresolved_partitions=result.resumed_unresolved_partitions,
+                covered_before_resume=result.covered_before_resume,
                 covered_terminal_partitions=result.covered_terminal_partitions,
                 pending_terminal_partitions=result.pending_terminal_partitions,
                 split_partitions=result.split_partitions,
                 unresolved_partitions=result.unresolved_partitions,
                 failed_partitions=result.failed_partitions,
-                reconciliation_status=result.reconciliation_status,
+                coverage_ratio_before_resume=result.coverage_ratio_before_resume,
+                coverage_ratio=result.coverage_ratio,
             )
             return result
 
@@ -387,7 +479,7 @@ def run_collection_once_v2(
                     )
                 )
             except Exception as error:
-                raise RunCollectionOnceV2StepError(
+                raise ResumeRunV2StepError(
                     step="select_detail_candidates",
                     message=str(error),
                     run_id=crawl_run.id,
@@ -409,7 +501,7 @@ def run_collection_once_v2(
                     for candidate in detail_selection_result.selected_candidates
                 )
             except Exception as error:
-                raise RunCollectionOnceV2StepError(
+                raise ResumeRunV2StepError(
                     step="fetch_vacancy_detail",
                     message=str(error),
                     run_id=crawl_run.id,
@@ -434,20 +526,19 @@ def run_collection_once_v2(
                 ReconcileRunCommand(
                     crawl_run_id=crawl_run.id,
                     final_run_status=(
-                        RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS
+                        RESUME_RUN_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS
                         if detail_stage_status == DETAIL_STAGE_STATUS_COMPLETED_WITH_FAILURES
-                        else RUN_COLLECTION_ONCE_V2_STATUS_SUCCEEDED
+                        else RESUME_RUN_V2_STATUS_SUCCEEDED
                     ),
                     notes=(
-                        f"{failed_detail_fetch_count} "
-                        "detail fetch(es) failed"
+                        f"{failed_detail_fetch_count} detail fetch(es) failed after resume"
                         if detail_stage_status == DETAIL_STAGE_STATUS_COMPLETED_WITH_FAILURES
                         else None
                     ),
                 )
             )
         except Exception as error:
-            raise RunCollectionOnceV2StepError(
+            raise ResumeRunV2StepError(
                 step="reconcile_run",
                 message=str(error),
                 run_id=crawl_run.id,
@@ -460,34 +551,38 @@ def run_collection_once_v2(
             ) from error
         completed_steps.append("reconcile_run")
         run_finalized = True
-        final_coverage_report = _report_run_coverage(
+        final_coverage_report = _report_resume_coverage(
             crawl_run.id,
             report_run_coverage_step,
         )
-    except RunCollectionOnceV2StepError as error:
-        finalized_run_id = error.run_id or current_run_id
-        if finalized_run_id is not None and not run_finalized:
-            finalize_result = _finalize_run_safely(
-                crawl_run_id=finalized_run_id,
-                error_message=str(error),
-                finalize_crawl_run_step=finalize_crawl_run_step,
-            )
-            if finalize_result is not None:
+    except ResumeRunV2StepError as error:
+        if not run_finalized:
+            try:
+                finalize_crawl_run_step(
+                    FinalizeCrawlRunCommand(
+                        crawl_run_id=error.run_id,
+                        final_status=RESUME_RUN_V2_STATUS_FAILED,
+                        notes=str(error),
+                    )
+                )
                 run_finalized = True
                 completed_steps.append("finalize_crawl_run")
-                final_coverage_report = _report_run_coverage_safely(
-                    finalized_run_id,
+                final_coverage_report = _report_resume_coverage_safely(
+                    error.run_id,
                     report_run_coverage_step,
                     fallback_report=error.final_coverage_report or final_coverage_report,
                 )
-        result = _build_terminal_result(
-            status=RUN_COLLECTION_ONCE_V2_STATUS_FAILED,
+            except Exception:
+                final_coverage_report = error.final_coverage_report or final_coverage_report
+        result = _build_resume_result(
+            status=RESUME_RUN_V2_STATUS_FAILED,
             command=command,
-            run_id=finalized_run_id,
-            dictionary_results=dictionary_results,
-            planned_partition_ids=planned_partition_ids,
-            list_engine_results=error.list_engine_results or list_engine_results,
+            crawl_run=crawl_run,
+            initial_run_status=initial_run_status,
+            initial_coverage_report=initial_coverage_report,
             final_coverage_report=error.final_coverage_report or final_coverage_report,
+            resumed_partitions=resumed_partitions,
+            list_engine_results=error.list_engine_results or list_engine_results,
             list_stage_status=error.list_stage_status,
             detail_selection_result=error.detail_selection_result or detail_selection_result,
             detail_results=error.detail_results or detail_results,
@@ -497,20 +592,25 @@ def run_collection_once_v2(
             error_message=str(error),
             completed_steps=tuple(completed_steps),
         )
+        if metrics_recorder is not None:
+            metrics_recorder.record_resume_attempt(
+                run_type=result.run_type,
+                outcome=result.status,
+            )
         record_operation_failed(
             LOGGER,
-            operation="run_collection_once_v2",
+            operation="resume_run_v2",
             started_at=started_at,
-            error_type="RunCollectionOnceV2StepError",
-            error_message=result.error_message or str(error),
+            error_type="ResumeRunV2StepError",
+            error_message=result.error_message or "resume failed",
             run_id=result.run_id,
             run_type=result.run_type,
             triggered_by=result.triggered_by,
+            initial_run_status=result.initial_run_status,
             failed_step=result.failed_step,
-            list_stage_status=result.list_stage_status,
-            detail_stage_status=result.detail_stage_status,
-            coverage_ratio=result.coverage_ratio,
-            total_partitions=result.total_partitions,
+            unresolved_before_resume=result.unresolved_before_resume,
+            resumed_unresolved_partitions=result.resumed_unresolved_partitions,
+            covered_before_resume=result.covered_before_resume,
             covered_terminal_partitions=result.covered_terminal_partitions,
             pending_terminal_partitions=result.pending_terminal_partitions,
             split_partitions=result.split_partitions,
@@ -526,37 +626,113 @@ def run_collection_once_v2(
     except Exception as error:
         record_operation_failed(
             LOGGER,
-            operation="run_collection_once_v2",
+            operation="resume_run_v2",
             started_at=started_at,
             error_type=error.__class__.__name__,
             error_message=str(error),
-            run_id=current_run_id,
-            run_type=command.run_type,
+            run_id=crawl_run.id,
             triggered_by=command.triggered_by,
         )
         raise
 
     final_status = (
-        RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS
+        RESUME_RUN_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS
         if detail_stage_status == DETAIL_STAGE_STATUS_COMPLETED_WITH_FAILURES
-        else RUN_COLLECTION_ONCE_V2_STATUS_SUCCEEDED
+        else RESUME_RUN_V2_STATUS_SUCCEEDED
     )
     error_message = None
-    failed_step = None
-    if final_status == RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS:
-        failed_detail_fetches = sum(
-            1 for result in detail_results if result.error_message is not None
-        )
-        error_message = f"{failed_detail_fetches} detail fetch(es) failed"
+    if final_status == RESUME_RUN_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS:
+        error_message = f"{sum(1 for result in detail_results if result.error_message is not None)} detail fetch(es) failed after resume"
 
-    result = _build_terminal_result(
+    result = _build_resume_result(
         status=final_status,
         command=command,
-        run_id=crawl_run.id,
-        dictionary_results=dictionary_results,
-        planned_partition_ids=planned_partition_ids,
-        list_engine_results=list_engine_results,
+        crawl_run=crawl_run,
+        initial_run_status=initial_run_status,
+        initial_coverage_report=initial_coverage_report,
         final_coverage_report=final_coverage_report,
+        resumed_partitions=resumed_partitions,
+        list_engine_results=list_engine_results,
+        list_stage_status=list_stage_status,
+        detail_selection_result=detail_selection_result,
+        detail_results=detail_results,
+        detail_stage_status=detail_stage_status,
+        reconciliation_result=reconciliation_result,
+        failed_step=None,
+        error_message=error_message,
+        completed_steps=tuple(completed_steps),
+    )
+    if metrics_recorder is not None:
+        metrics_recorder.record_resume_attempt(
+            run_type=result.run_type,
+            outcome=result.status,
+        )
+        metrics_recorder.set_detail_repair_backlog(
+            run_id=str(result.run_id),
+            run_type=result.run_type,
+            backlog_size=result.detail_fetch_failed,
+        )
+    record_operation_succeeded(
+        LOGGER,
+        operation="resume_run_v2",
+        started_at=started_at,
+        run_id=result.run_id,
+        run_type=result.run_type,
+        triggered_by=result.triggered_by,
+        initial_run_status=result.initial_run_status,
+        unresolved_before_resume=result.unresolved_before_resume,
+        pending_before_resume=result.pending_before_resume,
+        covered_before_resume=result.covered_before_resume,
+        resumed_unresolved_partitions=result.resumed_unresolved_partitions,
+        list_engine_iterations=result.list_engine_iterations,
+        total_partitions=result.total_partitions,
+        covered_terminal_partitions=result.covered_terminal_partitions,
+        pending_terminal_partitions=result.pending_terminal_partitions,
+        split_partitions=result.split_partitions,
+        unresolved_partitions=result.unresolved_partitions,
+        failed_partitions=result.failed_partitions,
+        coverage_ratio_before_resume=result.coverage_ratio_before_resume,
+        coverage_ratio=result.coverage_ratio,
+        list_stage_status=result.list_stage_status,
+        final_status=result.status,
+        detail_stage_status=result.detail_stage_status,
+        detail_fetch_attempted=result.detail_fetch_attempted,
+        detail_fetch_failed=result.detail_fetch_failed,
+        reconciliation_status=result.reconciliation_status,
+        error_message=result.error_message,
+    )
+    return result
+
+
+def _build_resume_result(
+    *,
+    status: str,
+    command: ResumeRunV2Command,
+    crawl_run: CrawlRun,
+    initial_run_status: str,
+    initial_coverage_report: RunCoverageReport,
+    final_coverage_report: RunCoverageReport | None,
+    resumed_partitions: tuple[CrawlPartition, ...],
+    list_engine_results: tuple[RunListEngineV2Result, ...],
+    list_stage_status: str,
+    detail_selection_result: SelectDetailCandidatesResult | None,
+    detail_results: tuple[FetchVacancyDetailResult, ...],
+    detail_stage_status: str,
+    reconciliation_result: ReconcileRunResult | None,
+    failed_step: str | None,
+    error_message: str | None,
+    completed_steps: tuple[str, ...],
+) -> ResumeRunV2Result:
+    return ResumeRunV2Result(
+        status=status,
+        run_id=crawl_run.id,
+        run_type=crawl_run.run_type,
+        triggered_by=command.triggered_by,
+        initial_run_status=initial_run_status,
+        initial_coverage_report=initial_coverage_report,
+        final_coverage_report=final_coverage_report,
+        resumed_partitions=resumed_partitions,
+        list_engine_results=list_engine_results,
         list_stage_status=list_stage_status,
         detail_selection_result=detail_selection_result,
         detail_results=detail_results,
@@ -564,95 +740,54 @@ def run_collection_once_v2(
         reconciliation_result=reconciliation_result,
         failed_step=failed_step,
         error_message=error_message,
-        completed_steps=tuple(completed_steps),
+        completed_steps=completed_steps,
+        skipped_steps=tuple(
+            step
+            for step in _expected_steps(command)
+            if step not in completed_steps and step != failed_step
+        ),
     )
-    if metrics_recorder is not None:
-        metrics_recorder.set_detail_repair_backlog(
-            run_id=str(result.run_id),
-            run_type=result.run_type,
-            backlog_size=result.detail_fetch_failed,
-        )
-    if result.status in (
-        RUN_COLLECTION_ONCE_V2_STATUS_SUCCEEDED,
-        RUN_COLLECTION_ONCE_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS,
-    ):
-        record_operation_succeeded(
-            LOGGER,
-            operation="run_collection_once_v2",
-            started_at=started_at,
-            run_id=result.run_id,
-            run_type=result.run_type,
-            triggered_by=result.triggered_by,
-            dictionaries_synced=len(result.dictionary_results),
-            partitions_planned=result.partitions_planned,
-            list_engine_iterations=result.list_engine_iterations,
-            total_partitions=result.total_partitions,
-            covered_terminal_partitions=result.covered_terminal_partitions,
-            pending_terminal_partitions=result.pending_terminal_partitions,
-            split_partitions=result.split_partitions,
-            unresolved_partitions=result.unresolved_partitions,
-            coverage_ratio=result.coverage_ratio,
-            list_stage_status=result.list_stage_status,
-            final_status=result.status,
-            detail_stage_status=result.detail_stage_status,
-            detail_fetch_attempted=result.detail_fetch_attempted,
-            detail_fetch_failed=result.detail_fetch_failed,
-            reconciliation_status=result.reconciliation_status,
-            error_message=result.error_message,
-        )
-    else:
-        record_operation_failed(
-            LOGGER,
-            operation="run_collection_once_v2",
-            started_at=started_at,
-            error_type="RunCollectionOnceV2DetailFailures",
-            error_message=result.error_message or "detail stage completed with failures",
-            run_id=result.run_id,
-            run_type=result.run_type,
-            triggered_by=result.triggered_by,
-            failed_step=result.failed_step,
-            list_stage_status=result.list_stage_status,
-            detail_stage_status=result.detail_stage_status,
-            coverage_ratio=result.coverage_ratio,
-            total_partitions=result.total_partitions,
-            covered_terminal_partitions=result.covered_terminal_partitions,
-            pending_terminal_partitions=result.pending_terminal_partitions,
-            split_partitions=result.split_partitions,
-            unresolved_partitions=result.unresolved_partitions,
-            failed_partitions=result.failed_partitions,
-            detail_fetch_attempted=result.detail_fetch_attempted,
-            detail_fetch_failed=result.detail_fetch_failed,
-            reconciliation_status=result.reconciliation_status,
-        )
-    return result
 
 
-def _sync_requested_dictionaries(
-    command: RunCollectionOnceV2Command,
-    sync_dictionary_step: SyncDictionaryStep,
-) -> list[SyncDictionaryResult]:
-    if not command.sync_dictionaries:
-        return []
-
-    results: list[SyncDictionaryResult] = []
-    for dictionary_name in command.dictionary_names:
-        result = sync_dictionary_step(SyncDictionaryCommand(dictionary_name=dictionary_name))
-        results.append(result)
-        if (
-            result.status != DictionarySyncStatus.SUCCEEDED.value
-            or result.error_message is not None
-        ):
-            raise RunCollectionOnceV2StepError(
-                step="sync_dictionaries",
-                message=(
-                    f"dictionary sync failed for {dictionary_name}: "
-                    f"{result.error_message or result.status}"
-                ),
-            )
-    return results
+def _expected_steps(command: ResumeRunV2Command) -> tuple[str, ...]:
+    steps: list[str] = [
+        "requeue_unresolved_partitions",
+        "reopen_crawl_run",
+        "run_list_engine_v2",
+    ]
+    if command.detail_limit > 0:
+        steps.append("fetch_vacancy_detail")
+    steps.append("reconcile_run")
+    return tuple(steps)
 
 
-def _run_list_stage(
+def _report_resume_coverage(
+    crawl_run_id: UUID,
+    report_run_coverage_step: ReportRunCoverageStep,
+) -> RunCoverageReport:
+    try:
+        return report_run_coverage_step(ReportRunCoverageCommand(crawl_run_id=crawl_run_id))
+    except Exception as error:
+        raise ResumeRunV2StepError(
+            step="report_run_coverage",
+            message=str(error),
+            run_id=crawl_run_id,
+        ) from error
+
+
+def _report_resume_coverage_safely(
+    crawl_run_id: UUID,
+    report_run_coverage_step: ReportRunCoverageStep,
+    *,
+    fallback_report: RunCoverageReport | None,
+) -> RunCoverageReport | None:
+    try:
+        return _report_resume_coverage(crawl_run_id, report_run_coverage_step)
+    except ResumeRunV2StepError:
+        return fallback_report
+
+
+def _run_resume_list_stage(
     *,
     crawl_run_id: UUID,
     run_list_engine_v2_step: RunListEngineV2Step,
@@ -663,7 +798,7 @@ def _run_list_stage(
     str,
     str | None,
 ]:
-    coverage_report = _report_run_coverage(crawl_run_id, report_run_coverage_step)
+    coverage_report = _report_resume_coverage(crawl_run_id, report_run_coverage_step)
     list_engine_results: list[RunListEngineV2Result] = []
 
     while True:
@@ -711,7 +846,7 @@ def _run_list_stage(
         try:
             run_result = run_list_engine_v2_step(RunListEngineV2Command(crawl_run_id=crawl_run_id))
         except Exception as error:
-            raise RunCollectionOnceV2StepError(
+            raise ResumeRunV2StepError(
                 step="run_list_engine_v2",
                 message=str(error),
                 run_id=crawl_run_id,
@@ -719,7 +854,7 @@ def _run_list_stage(
                 list_engine_results=tuple(list_engine_results),
             ) from error
         list_engine_results.append(run_result)
-        coverage_report = _report_run_coverage(crawl_run_id, report_run_coverage_step)
+        coverage_report = _report_resume_coverage(crawl_run_id, report_run_coverage_step)
 
         if (
             run_result.partitions_attempted == 0
@@ -731,116 +866,3 @@ def _run_list_stage(
                 LIST_STAGE_STATUS_FAILED,
                 "run_list_engine_v2 made no progress while pending terminal partitions remained",
             )
-
-
-def _report_run_coverage(
-    crawl_run_id: UUID,
-    report_run_coverage_step: ReportRunCoverageStep,
-) -> RunCoverageReport:
-    try:
-        return report_run_coverage_step(ReportRunCoverageCommand(crawl_run_id=crawl_run_id))
-    except Exception as error:
-        raise RunCollectionOnceV2StepError(
-            step="report_run_coverage",
-            message=str(error),
-            run_id=crawl_run_id,
-        ) from error
-
-
-def _report_run_coverage_safely(
-    crawl_run_id: UUID,
-    report_run_coverage_step: ReportRunCoverageStep,
-    *,
-    fallback_report: RunCoverageReport | None,
-) -> RunCoverageReport | None:
-    try:
-        return _report_run_coverage(crawl_run_id, report_run_coverage_step)
-    except RunCollectionOnceV2StepError:
-        return fallback_report
-
-
-def _finalize_run(
-    *,
-    crawl_run_id: UUID,
-    final_status: str,
-    notes: str | None,
-    finalize_crawl_run_step: FinalizeCrawlRunStep,
-) -> FinalizeCrawlRunResult:
-    return finalize_crawl_run_step(
-        FinalizeCrawlRunCommand(
-            crawl_run_id=crawl_run_id,
-            final_status=final_status,
-            notes=notes,
-        )
-    )
-
-
-def _finalize_run_safely(
-    *,
-    crawl_run_id: UUID,
-    error_message: str,
-    finalize_crawl_run_step: FinalizeCrawlRunStep,
-) -> FinalizeCrawlRunResult | None:
-    try:
-        return _finalize_run(
-            crawl_run_id=crawl_run_id,
-            final_status=RUN_COLLECTION_ONCE_V2_STATUS_FAILED,
-            notes=error_message,
-            finalize_crawl_run_step=finalize_crawl_run_step,
-        )
-    except Exception:
-        return None
-
-
-def _build_terminal_result(
-    *,
-    status: str,
-    command: RunCollectionOnceV2Command,
-    run_id: UUID | None,
-    dictionary_results: tuple[SyncDictionaryResult, ...],
-    planned_partition_ids: tuple[UUID, ...],
-    list_engine_results: tuple[RunListEngineV2Result, ...],
-    final_coverage_report: RunCoverageReport | None,
-    list_stage_status: str,
-    detail_selection_result: SelectDetailCandidatesResult | None,
-    detail_results: tuple[FetchVacancyDetailResult, ...],
-    detail_stage_status: str,
-    reconciliation_result: ReconcileRunResult | None,
-    failed_step: str | None,
-    error_message: str | None,
-    completed_steps: tuple[str, ...],
-) -> RunCollectionOnceV2Result:
-    return RunCollectionOnceV2Result(
-        status=status,
-        run_id=run_id,
-        run_type=command.run_type,
-        triggered_by=command.triggered_by,
-        dictionary_results=dictionary_results,
-        planned_partition_ids=planned_partition_ids,
-        list_engine_results=list_engine_results,
-        final_coverage_report=final_coverage_report,
-        list_stage_status=list_stage_status,
-        detail_selection_result=detail_selection_result,
-        detail_results=detail_results,
-        detail_stage_status=detail_stage_status,
-        reconciliation_result=reconciliation_result,
-        failed_step=failed_step,
-        error_message=error_message,
-        completed_steps=completed_steps,
-        skipped_steps=tuple(
-            step
-            for step in _expected_steps(command)
-            if step not in completed_steps and step != failed_step
-        ),
-    )
-
-
-def _expected_steps(command: RunCollectionOnceV2Command) -> tuple[str, ...]:
-    steps: list[str] = []
-    if command.sync_dictionaries:
-        steps.append("sync_dictionaries")
-    steps.extend(("create_crawl_run", "plan_sweep_v2", "run_list_engine_v2"))
-    if command.detail_limit > 0:
-        steps.append("fetch_vacancy_detail")
-    steps.append("reconcile_run")
-    return tuple(steps)

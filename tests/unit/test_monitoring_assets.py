@@ -114,18 +114,104 @@ def test_grafana_run_coverage_panels_use_run_tree_metrics() -> None:
         {"id": "unit", "value": "percentunit"}
     ]
 
+    assert _find_panel(collector_dashboard, "Total Partitions")["targets"][0]["expr"] == (
+        "sum(hhru_run_tree_total_partitions)"
+    )
     assert _find_panel(collector_dashboard, "Covered Terminal Partitions")["targets"][0][
         "expr"
     ] == "sum(hhru_run_tree_covered_terminal_partitions)"
     assert _find_panel(collector_dashboard, "Pending Terminal Partitions")["targets"][0][
         "expr"
     ] == "sum(hhru_run_tree_pending_terminal_partitions)"
+    assert _find_panel(collector_dashboard, "Failed Partitions")["targets"][0]["expr"] == (
+        "sum(hhru_run_tree_failed_partitions)"
+    )
     assert _find_panel(collector_dashboard, "Split Partitions")["targets"][0][
         "expr"
     ] == "sum(hhru_run_tree_split_partitions)"
     assert _find_panel(collector_dashboard, "Unresolved Partitions")["targets"][0][
         "expr"
     ] == "sum(hhru_run_tree_unresolved_partitions)"
+
+
+def test_grafana_scheduler_panels_use_scheduler_metrics() -> None:
+    collector_dashboard = _load_dashboard("collector-overview.json")
+
+    overlap_panel = _find_panel(collector_dashboard, "Scheduler Overlap Skips In Range")
+    assert overlap_panel["targets"][0]["expr"] == (
+        'sum(increase(hhru_scheduler_tick_total{outcome="skipped_overlap"}[$__range]))'
+    )
+    assert overlap_panel["targets"][0]["instant"] is True
+
+    active_run_panel = _find_panel(collector_dashboard, "Scheduler Active-Run Skips In Range")
+    assert active_run_panel["targets"][0]["expr"] == (
+        'sum(increase(hhru_scheduler_tick_total{outcome="skipped_active_run"}[$__range]))'
+    )
+    assert active_run_panel["targets"][0]["instant"] is True
+
+    last_tick_panel = _find_panel(collector_dashboard, "Scheduler Last Tick")
+    assert last_tick_panel["targets"][0]["expr"] == (
+        "1000 * hhru_scheduler_last_tick_timestamp_seconds"
+    )
+    assert last_tick_panel["fieldConfig"]["defaults"]["unit"] == "dateTimeAsIso"
+
+    last_triggered_panel = _find_panel(collector_dashboard, "Scheduler Last Triggered Run")
+    assert last_triggered_panel["targets"][0]["expr"] == (
+        "1000 * hhru_scheduler_last_triggered_run_timestamp_seconds"
+    )
+    assert last_triggered_panel["fieldConfig"]["defaults"]["unit"] == "dateTimeAsIso"
+
+    last_run_panel = _find_panel(collector_dashboard, "Scheduler Last Run Finished")
+    assert last_run_panel["targets"][0]["expr"] == (
+        "1000 * hhru_scheduler_last_run_finished_timestamp_seconds"
+    )
+    assert last_run_panel["fieldConfig"]["defaults"]["unit"] == "dateTimeAsIso"
+
+    last_status_panel = _find_panel(collector_dashboard, "Scheduler Last Observed Run Status")
+    assert last_status_panel["targets"][0]["expr"] == (
+        "sort_desc(max by (status) (hhru_scheduler_last_observed_run_status == 1))"
+    )
+    assert last_status_panel["targets"][0]["format"] == "table"
+    assert last_status_panel["targets"][0]["instant"] is True
+
+
+def test_grafana_recovery_panels_use_lifecycle_metrics() -> None:
+    collector_dashboard = _load_dashboard("collector-overview.json")
+
+    run_status_panel = _find_panel(collector_dashboard, "Run Terminal Statuses In Range")
+    assert run_status_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (status) (increase(hhru_run_terminal_status_total[$__range])))"
+    )
+    assert run_status_panel["targets"][0]["format"] == "table"
+    assert run_status_panel["targets"][0]["instant"] is True
+
+    backlog_panel = _find_panel(collector_dashboard, "Detail Repair Backlog")
+    assert backlog_panel["targets"][0]["expr"] == "sum(hhru_detail_repair_backlog_size)"
+    assert backlog_panel["targets"][0]["instant"] is True
+
+    repaired_panel = _find_panel(collector_dashboard, "Detail Repaired In Range")
+    assert repaired_panel["targets"][0]["expr"] == (
+        "sum(increase(hhru_detail_repair_repaired_total[$__range]))"
+    )
+    assert repaired_panel["targets"][0]["instant"] is True
+
+    still_failing_panel = _find_panel(collector_dashboard, "Detail Still Failing In Range")
+    assert still_failing_panel["targets"][0]["expr"] == (
+        "sum(increase(hhru_detail_repair_still_failing_total[$__range]))"
+    )
+    assert still_failing_panel["targets"][0]["instant"] is True
+
+    resume_attempts_panel = _find_panel(collector_dashboard, "Resume Attempts In Range")
+    assert resume_attempts_panel["targets"][0]["expr"] == (
+        "sum(increase(hhru_resume_run_v2_attempt_total[$__range]))"
+    )
+    assert resume_attempts_panel["targets"][0]["instant"] is True
+
+    repair_attempts_panel = _find_panel(collector_dashboard, "Detail Repair Attempts In Range")
+    assert repair_attempts_panel["targets"][0]["expr"] == (
+        "sum(increase(hhru_detail_repair_attempt_total[$__range]))"
+    )
+    assert repair_attempts_panel["targets"][0]["instant"] is True
 
 
 def _load_dashboard(filename: str) -> dict:

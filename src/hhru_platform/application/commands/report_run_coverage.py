@@ -90,10 +90,12 @@ class RunCoverageMetricsRecorder(Protocol):
         run_id: str,
         run_type: str,
         coverage_ratio: float,
+        total_partitions: int,
         covered_terminal_partitions: int,
         pending_terminal_partitions: int,
         split_partitions: int,
         unresolved_partitions: int,
+        failed_partitions: int,
     ) -> None:
         """Persist the latest run tree coverage gauges."""
 
@@ -115,10 +117,12 @@ def report_run_coverage(
             run_id=str(crawl_run.id),
             run_type=crawl_run.run_type,
             coverage_ratio=summary.coverage_ratio,
+            total_partitions=summary.total_partitions,
             covered_terminal_partitions=summary.covered_terminal_partitions,
             pending_terminal_partitions=summary.pending_terminal_partitions,
             split_partitions=summary.split_partitions,
             unresolved_partitions=summary.unresolved_partitions,
+            failed_partitions=summary.failed_partitions,
         )
 
     return RunCoverageReport(

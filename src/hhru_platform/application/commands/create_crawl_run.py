@@ -15,6 +15,12 @@ from hhru_platform.infrastructure.observability.operations import (
 LOGGER = logging.getLogger(__name__)
 
 
+class ActiveCrawlRunExistsError(RuntimeError):
+    def __init__(self, active_run_id) -> None:
+        super().__init__(f"active crawl_run already exists: {active_run_id}")
+        self.active_run_id = active_run_id
+
+
 @dataclass(slots=True, frozen=True)
 class CreateCrawlRunCommand:
     run_type: str
@@ -38,6 +44,9 @@ class CrawlRunRepository(Protocol):
     def add(self, *, run_type: str, status: str, triggered_by: str) -> CrawlRun:
         """Persist and return a newly created crawl run."""
 
+    def get_latest_by_statuses(self, statuses: tuple[str, ...]) -> CrawlRun | None:
+        """Return the most recent crawl run matching one of the requested statuses."""
+
 
 def create_crawl_run(command: CreateCrawlRunCommand, repository: CrawlRunRepository) -> CrawlRun:
     started_at = log_operation_started(
@@ -47,6 +56,9 @@ def create_crawl_run(command: CreateCrawlRunCommand, repository: CrawlRunReposit
         triggered_by=command.triggered_by,
     )
     try:
+        active_run = repository.get_latest_by_statuses((CrawlRunStatus.CREATED.value,))
+        if active_run is not None:
+            raise ActiveCrawlRunExistsError(active_run.id)
         crawl_run = repository.add(
             run_type=command.run_type,
             status=CrawlRunStatus.CREATED.value,

@@ -4,6 +4,10 @@ from enum import StrEnum
 class CrawlRunStatus(StrEnum):
     CREATED = "created"
     COMPLETED = "completed"
+    SUCCEEDED = "succeeded"
+    COMPLETED_WITH_DETAIL_ERRORS = "completed_with_detail_errors"
+    COMPLETED_WITH_UNRESOLVED = "completed_with_unresolved"
+    FAILED = "failed"
 
 
 class CrawlPartitionStatus(StrEnum):

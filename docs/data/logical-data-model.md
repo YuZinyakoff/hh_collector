@@ -122,8 +122,15 @@ Reporting semantics на уровне `crawl_run` выводятся из эти
 Tree-aware orchestration v2 читает итог run именно из этих агрегатов:
 
 - `succeeded` возможно только когда `coverage_ratio = 1.0`, `pending_terminal_partitions = 0`, `unresolved_partitions = 0`, `failed_partitions = 0`;
+- `completed_with_detail_errors` означает, что list tree покрыт полностью и `reconcile_run` завершён, но часть selective detail fetches завершилась с ошибками;
 - `completed_with_unresolved` означает, что дерево не покрыто полностью, но terminal failure в execution path нет;
-- `failed` означает failed partitions или ошибку последующих orchestration stages.
+- `failed` означает failed partitions или критическую orchestration/list ошибку.
+
+Operational continuation semantics:
+
+- `completed_with_unresolved` допускает `resume-run-v2` поверх того же `crawl_run`: status run может снова стать `created`, а unresolved terminal leaves переводятся обратно в `pending` для повторного tree execution;
+- `completed_with_detail_errors` не считается list coverage failure и не требует нового run: detail repair выполняется отдельно поверх того же `crawl_run`;
+- promotion из `completed_with_detail_errors` в `succeeded` допустим только после того, как derived repair backlog для этого run опустел.
 
 ---
 
@@ -376,6 +383,14 @@ Tree-aware orchestration v2 читает итог run именно из этих
 - `idx_detail_fetch_attempt_vacancy_id`
 - `idx_detail_fetch_attempt_status`
 - `idx_detail_fetch_attempt_requested_at`
+
+Derived repair backlog semantics:
+
+- repair backlog не хранится отдельной таблицей;
+- backlog для конкретного `crawl_run` вычисляется как latest `detail_fetch_attempt` per `vacancy_id` внутри этого run, где latest status = `failed`;
+- backlog item считается `repaired`, когда более новая попытка для того же `vacancy_id` в этом же `crawl_run` получает status = `succeeded`;
+- если после retry latest status снова `failed`, item остаётся в backlog и run сохраняет status `completed_with_detail_errors`;
+- reason `repair_backlog` используется для operator-driven retry path и позволяет отделить post-run repair от обычной selective detail policy.
 
 ---
 

@@ -75,20 +75,20 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 Запускает регулярные системные процессы по расписанию.
 
 ### Ответственность
-- создать новый `crawl_run`;
-- инициировать weekly sweep;
-- инициировать dictionary sync;
-- запускать housekeeping jobs;
-- запускать backup jobs;
-- запускать health-check jobs.
+- выполнять interval-based admission tick;
+- пытаться запустить новый `run_collection_once_v2`;
+- не допускать overlapping runs;
+- публиковать scheduler health metrics;
+- поддерживать ручной guarded запуск через `trigger-run-now`.
 
 ### Вход
-- cron/встроенное расписание;
+- interval-based loop;
 - ручной запуск из CLI.
 
 ### Выход
 - записи в `crawl_run`;
-- публикация задач в очередь.
+- scheduler metrics и structured logs.
+- без отдельной queue framework: запуск bounded use case напрямую через guarded admission.
 
 ---
 
@@ -132,7 +132,8 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 - `show-run-coverage` считает coverage summary из текущего набора `crawl_partition` этого run;
 - `show-run-tree` печатает компактное text-tree представление с `depth`, `scope_key`, `status`, `coverage_status`;
 - completion ratio интерпретируется как `covered_terminal_partitions / terminal_partitions`;
-- run coverage не хранится отдельной таблицей, а вычисляется из tree semantics на чтении.
+- run coverage не хранится отдельной таблицей, а вычисляется из tree semantics на чтении;
+- coverage metrics публикуются тем же `report_run_coverage` автоматически в lifecycle points `run_collection_once_v2` и `resume_run_v2`, а не только через operator CLI reporting.
 
 Поверх planner v2, list engine v2 и coverage reporting добавлен orchestration use case `run_collection_once_v2`:
 
@@ -145,8 +146,22 @@ LLD не фиксирует все SQL-детали на уровне DDL, но 
 Stop condition у `run_collection_once_v2` основан именно на tree semantics:
 
 - `succeeded`: все terminal leaves покрыты, pending/running/unresolved/failed leaves отсутствуют;
+- `completed_with_detail_errors`: list coverage успешно завершено и `reconcile_run` выполнен, но часть selective detail fetches завершилась ошибкой;
 - `completed_with_unresolved`: failed leaves нет, но есть unresolved scopes, поэтому list stage остановлен без полного coverage;
-- `failed`: есть failed partitions, orchestration step error или detail stage вернул failed fetches.
+- `failed`: есть failed partitions или произошла критическая orchestration/list ошибка.
+
+Для operational hardening поверх этих terminal outcomes добавлены два продолжения без нового `crawl_run` и без отдельного queue framework:
+
+- `resume_run_v2` переоткрывает существующий run со статусом `created` или `completed_with_unresolved`, переводит `unresolved` leaves обратно в `pending`, затем снова использует existing `run_list_engine_v2`, `report_run_coverage`, selective detail и `reconcile_run`;
+- `retry_failed_details` не трогает list coverage tree, а строит derived repair backlog из `detail_fetch_attempt` и повторяет только backlog detail fetches внутри того же `crawl_run`.
+
+Operator semantics:
+
+- `completed_with_unresolved` больше не является тупиковым финалом: его можно продолжить через `resume-run-v2`;
+- `completed_with_detail_errors` больше не смешивается с list coverage failure: его можно чинить отдельно через `retry-failed-details`;
+- при успешном `retry_failed_details` run может быть promoted из `completed_with_detail_errors` в `succeeded`, потому что list coverage уже завершён, а repair-контур касается только detail backlog;
+- backlog и coverage остаются раздельными контурами: `resume_run_v2` не трогает detail repair backlog, а `retry_failed_details` не меняет partition tree.
+- observability для этих continuation paths публикуется по lifecycle: отдельные counters для terminal run statuses, scheduler ticks/outcomes и operator recovery attempts, плюс backlog/coverage gauges.
 
 ### Вход
 - `crawl_run_id`
@@ -283,9 +298,13 @@ Stop condition у `run_collection_once_v2` основан именно на tree
 - `run-once` для legacy orchestration-lite smoke flow;
 - `plan-run-v2` для создания area-root tree;
 - `run-once-v2` для tree-aware full run path: planner v2 -> list engine v2 -> selective detail -> reconcile;
+- `resume-run-v2` для продолжения existing `crawl_run` после `completed_with_unresolved` или незавершённого `created` state;
+- `trigger-run-now` для одного guarded запуска `run-once-v2` с admission control;
+- `scheduler-loop` для unattended interval-based guarded execution;
 - `process-list-page` для legacy page-by-page flow;
 - `process-partition-v2` для одного terminal leaf с pagination/saturation handling;
 - `run-list-engine-v2` для прохода по всем pending terminal leaves внутри `crawl_run`.
+- `retry-failed-details` для derived detail repair backlog текущего `crawl_run`;
 - `show-run-coverage` для tree-based coverage summary;
 - `show-run-tree` для компактного tree view без SQL.
 

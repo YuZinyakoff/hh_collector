@@ -418,6 +418,8 @@ Operator-facing reporting для `crawl_run` должен уметь ответ�
 - force detail refresh.
 - execute `run-once` для legacy smoke orchestration-lite path;
 - execute `run-once-v2` для tree-aware exhaustive collection path без ручной сборки planner/list/detail/reconcile шагов.
+- execute `trigger-run-now` для одного guarded запуска tree-aware orchestration v2;
+- execute `scheduler-loop` для unattended interval-based execution без queue/distributed orchestration.
 
 `run-once-v2` должен оркестрировать уже существующие use cases, а не дублировать их логику:
 
@@ -431,8 +433,9 @@ Operator-facing reporting для `crawl_run` должен уметь ответ�
 Для текущего этапа stop condition формулируется через coverage semantics дерева:
 
 - success: `coverage_ratio = 1.0`, `pending_terminal_partitions = 0`, `unresolved_partitions = 0`, `failed_partitions = 0`;
+- `completed_with_detail_errors`: list coverage завершён полностью, но selective detail stage вернул failed fetches;
 - `completed_with_unresolved`: failed partitions нет, но есть unresolved leaves/scopes;
-- failed: есть failed partitions, orchestration step error или detail stage завершился с ошибками.
+- failed: есть failed partitions или критическая orchestration/list ошибка.
 
 ---
 

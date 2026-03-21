@@ -303,6 +303,15 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                             '{}'::jsonb,
                             'raw-active',
                             :active_received_at
+                        ),
+                        (
+                            204,
+                            101,
+                            'list_page',
+                            NULL,
+                            '{}'::jsonb,
+                            'raw-v2-short-snapshot',
+                            :old_received_at
                         )
                     """
                 ),
@@ -320,7 +329,9 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                         snapshot_type,
                         captured_at,
                         crawl_run_id,
+                        short_hash,
                         detail_hash,
+                        short_payload_ref_id,
                         detail_payload_ref_id,
                         normalized_json,
                         change_reason
@@ -332,7 +343,9 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                             'detail',
                             :older_snapshot_at,
                             :old_run_id,
+                            NULL,
                             'hash-old',
+                            NULL,
                             NULL,
                             '{}'::jsonb,
                             'older_snapshot'
@@ -343,10 +356,38 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                             'detail',
                             :latest_snapshot_at,
                             :old_run_id,
+                            NULL,
                             'hash-latest',
+                            NULL,
                             202,
                             '{}'::jsonb,
                             'latest_snapshot'
+                        ),
+                        (
+                            303,
+                            :vacancy_one_id,
+                            'short',
+                            :latest_short_snapshot_at,
+                            :old_run_id,
+                            'short-hash-latest',
+                            NULL,
+                            204,
+                            NULL,
+                            CAST(:latest_short_snapshot_json AS jsonb),
+                            'latest_short_snapshot'
+                        ),
+                        (
+                            304,
+                            :vacancy_one_id,
+                            'short',
+                            :older_short_snapshot_at,
+                            :old_run_id,
+                            'short-hash-old',
+                            NULL,
+                            NULL,
+                            NULL,
+                            CAST(:older_short_snapshot_json AS jsonb),
+                            'older_short_snapshot'
                         )
                     """
                 ),
@@ -355,6 +396,14 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                     "old_run_id": old_run_id,
                     "older_snapshot_at": datetime(2025, 12, 1, 10, 10, tzinfo=UTC),
                     "latest_snapshot_at": datetime(2025, 12, 2, 10, 10, tzinfo=UTC),
+                    "older_short_snapshot_at": datetime(2025, 12, 1, 10, 20, tzinfo=UTC),
+                    "latest_short_snapshot_at": datetime(2025, 12, 2, 10, 20, tzinfo=UTC),
+                    "latest_short_snapshot_json": (
+                        '{"schema_version": 2, "source": "short", "payload": {"id": "hh-1"}}'
+                    ),
+                    "older_short_snapshot_json": (
+                        '{"schema_version": 2, "source": "short", "payload": {"id": "hh-1-old"}}'
+                    ),
                 },
             )
             session.execute(
@@ -421,15 +470,16 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
             repository = SqlAlchemyHousekeepingRepository(session)
             cutoff = datetime(2026, 2, 1, tzinfo=UTC)
 
-            assert repository.count_raw_api_payload_candidates(cutoff=cutoff) == 1
+            assert repository.count_raw_api_payload_candidates(cutoff=cutoff) == 2
             assert repository.list_raw_api_payload_ids_for_retention(cutoff=cutoff, limit=10) == [
-                201
+                201,
+                204,
             ]
-            assert repository.count_vacancy_snapshot_candidates(cutoff=cutoff) == 1
+            assert repository.count_vacancy_snapshot_candidates(cutoff=cutoff) == 2
             assert repository.list_vacancy_snapshot_ids_for_retention(
                 cutoff=cutoff,
                 limit=10,
-            ) == [301]
+            ) == [301, 304]
             assert repository.count_detail_fetch_attempt_candidates(cutoff=cutoff) == 1
             assert repository.list_detail_fetch_attempt_ids_for_retention(
                 cutoff=cutoff,

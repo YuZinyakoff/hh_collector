@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     backup_restore_drill_target_db: str = "hhru_platform_restore_drill"
     backup_restore_drill_drop_existing: bool = True
     housekeeping_raw_api_payload_retention_days: int = 90
-    housekeeping_vacancy_snapshot_retention_days: int = 365
+    housekeeping_vacancy_snapshot_retention_days: int = 0
     housekeeping_finished_crawl_run_retention_days: int = 90
     housekeeping_detail_fetch_attempt_retention_days: int = 180
     housekeeping_report_artifact_retention_days: int = 30

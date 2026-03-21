@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 
 from hhru_platform.domain.value_objects.enums import CrawlRunStatus
 from hhru_platform.infrastructure.db.models.api_request_log import ApiRequestLog
@@ -22,7 +25,6 @@ from hhru_platform.infrastructure.db.models.raw_api_payload import (
 from hhru_platform.infrastructure.db.models.vacancy_snapshot import (
     VacancySnapshot as VacancySnapshotModel,
 )
-
 
 ACTIVE_RUN_STATUS = CrawlRunStatus.CREATED.value
 
@@ -74,8 +76,11 @@ class SqlAlchemyHousekeepingRepository:
     def delete_raw_api_payloads(self, payload_ids: Sequence[int]) -> int:
         if not payload_ids:
             return 0
-        result = self._session.execute(
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
             delete(RawApiPayloadModel).where(RawApiPayloadModel.id.in_(tuple(payload_ids)))
+            ),
         )
         return int(result.rowcount or 0)
 
@@ -120,8 +125,11 @@ class SqlAlchemyHousekeepingRepository:
     def delete_vacancy_snapshots(self, snapshot_ids: Sequence[int]) -> int:
         if not snapshot_ids:
             return 0
-        result = self._session.execute(
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
             delete(VacancySnapshotModel).where(VacancySnapshotModel.id.in_(tuple(snapshot_ids)))
+            ),
         )
         return int(result.rowcount or 0)
 
@@ -169,10 +177,13 @@ class SqlAlchemyHousekeepingRepository:
     def delete_detail_fetch_attempts(self, attempt_ids: Sequence[int]) -> int:
         if not attempt_ids:
             return 0
-        result = self._session.execute(
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
             delete(DetailFetchAttemptModel).where(
                 DetailFetchAttemptModel.id.in_(tuple(attempt_ids))
             )
+            ),
         )
         return int(result.rowcount or 0)
 
@@ -205,8 +216,11 @@ class SqlAlchemyHousekeepingRepository:
     def delete_finished_crawl_runs(self, run_ids: Sequence[UUID]) -> int:
         if not run_ids:
             return 0
-        result = self._session.execute(
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
             delete(CrawlRunModel).where(CrawlRunModel.id.in_(tuple(run_ids)))
+            ),
         )
         return int(result.rowcount or 0)
 
@@ -232,24 +246,65 @@ class SqlAlchemyHousekeepingRepository:
         return int(self._session.scalar(statement) or 0)
 
     @staticmethod
-    def _latest_snapshot_ids_subquery():
-        return select(func.max(VacancySnapshotModel.id)).group_by(VacancySnapshotModel.vacancy_id)
+    def _latest_snapshot_ids_subquery() -> Select[tuple[int]]:
+        ranked_snapshots = (
+            select(
+                VacancySnapshotModel.id.label("snapshot_id"),
+                func.row_number()
+                .over(
+                    partition_by=(
+                        VacancySnapshotModel.vacancy_id,
+                        VacancySnapshotModel.snapshot_type,
+                    ),
+                    order_by=(
+                        VacancySnapshotModel.captured_at.desc(),
+                        VacancySnapshotModel.id.desc(),
+                    ),
+                )
+                .label("snapshot_rank"),
+            )
+            .subquery()
+        )
+        return cast(
+            Select[tuple[int]],
+            select(ranked_snapshots.c.snapshot_id).where(ranked_snapshots.c.snapshot_rank == 1),
+        )
 
     @staticmethod
-    def _latest_detail_attempt_ids_subquery():
+    def _latest_detail_attempt_ids_subquery() -> Select[tuple[int]]:
         return select(func.max(DetailFetchAttemptModel.id)).group_by(
             DetailFetchAttemptModel.vacancy_id,
             DetailFetchAttemptModel.crawl_run_id,
         )
 
     @staticmethod
-    def _protected_raw_payload_ids_subquery():
+    def _protected_raw_payload_ids_subquery() -> Select[tuple[int]]:
+        legacy_snapshot_filter = or_(
+            VacancySnapshotModel.normalized_json.is_(None),
+            func.coalesce(
+                func.jsonb_extract_path_text(
+                    VacancySnapshotModel.normalized_json,
+                    "schema_version",
+                ),
+                "",
+            )
+            != "2",
+        )
         protected_short_payload_ids = (
             select(VacancySnapshotModel.short_payload_ref_id.label("payload_id"))
-            .where(VacancySnapshotModel.short_payload_ref_id.is_not(None))
+            .where(
+                VacancySnapshotModel.short_payload_ref_id.is_not(None),
+                legacy_snapshot_filter,
+            )
         )
         protected_detail_payload_ids = (
             select(VacancySnapshotModel.detail_payload_ref_id.label("payload_id"))
-            .where(VacancySnapshotModel.detail_payload_ref_id.is_not(None))
+            .where(
+                VacancySnapshotModel.detail_payload_ref_id.is_not(None),
+                legacy_snapshot_filter,
+            )
         )
-        return protected_short_payload_ids.union(protected_detail_payload_ids)
+        protected_payload_ids = protected_short_payload_ids.union(
+            protected_detail_payload_ids
+        ).subquery()
+        return cast(Select[tuple[int]], select(protected_payload_ids.c.payload_id))

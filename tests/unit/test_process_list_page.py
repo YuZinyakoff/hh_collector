@@ -140,6 +140,15 @@ class RecordingVacancyCurrentStateRepository:
         return len(self.observations)
 
 
+class InMemoryVacancySnapshotRepository:
+    def __init__(self) -> None:
+        self.records: list[dict[str, object]] = []
+
+    def add(self, **kwargs: object) -> int:
+        self.records.append(dict(kwargs))
+        return len(self.records)
+
+
 def test_process_list_page_persists_request_raw_and_observations() -> None:
     partition = CrawlPartition(
         id=uuid4(),
@@ -161,6 +170,7 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
     vacancy_repository = RecordingVacancyRepository()
     vacancy_seen_event_repository = RecordingVacancySeenEventRepository()
     vacancy_current_state_repository = RecordingVacancyCurrentStateRepository()
+    vacancy_snapshot_repository = InMemoryVacancySnapshotRepository()
 
     response = VacancySearchResponse(
         endpoint="/vacancies",
@@ -230,6 +240,7 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
         vacancy_repository=vacancy_repository,
         vacancy_seen_event_repository=vacancy_seen_event_repository,
         vacancy_current_state_repository=vacancy_current_state_repository,
+        vacancy_snapshot_repository=vacancy_snapshot_repository,
     )
 
     assert result.partition_id == partition.id
@@ -260,6 +271,17 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
         observation.list_position for observation in vacancy_seen_event_repository.observations
     ] == [0, 1]
     assert len(vacancy_current_state_repository.observations) == 2
+    assert len(vacancy_snapshot_repository.records) == 2
+    assert vacancy_snapshot_repository.records[0]["snapshot_type"] == "short"
+    assert vacancy_snapshot_repository.records[0]["short_payload_ref_id"] == 1
+    assert (
+        vacancy_snapshot_repository.records[0]["normalized_json"]["payload"]["id"]
+        == "pytest-vacancy-1"
+    )
+    assert (
+        vacancy_snapshot_repository.records[0]["normalized_json"]["payload"]["name"]
+        == "Python Engineer"
+    )
     assert partition.pages_processed == 1
     assert partition.items_seen == 2
     assert partition.pages_total_expected == 6
@@ -289,6 +311,7 @@ def test_process_list_page_raises_when_partition_is_missing() -> None:
             vacancy_repository=RecordingVacancyRepository(),
             vacancy_seen_event_repository=RecordingVacancySeenEventRepository(),
             vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(),
+            vacancy_snapshot_repository=InMemoryVacancySnapshotRepository(),
         )
 
 
@@ -319,6 +342,7 @@ def test_process_list_page_marks_partition_failed_when_live_search_user_agent_is
         vacancy_repository=RecordingVacancyRepository(),
         vacancy_seen_event_repository=RecordingVacancySeenEventRepository(),
         vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(),
+        vacancy_snapshot_repository=InMemoryVacancySnapshotRepository(),
     )
 
     assert result.partition_status == "failed"

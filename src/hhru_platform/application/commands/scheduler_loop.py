@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
 
 from hhru_platform.application.commands.run_collection_once_v2 import (
     RunCollectionOnceV2Command,
@@ -80,7 +81,7 @@ class SchedulerLoopResult:
         return self.tick_results[-1].status
 
     @property
-    def last_run_id(self):
+    def last_run_id(self) -> UUID | None:
         for result in reversed(self.tick_results):
             if result.run_id is not None:
                 return result.run_id

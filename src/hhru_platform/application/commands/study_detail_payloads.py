@@ -335,7 +335,7 @@ def _fetch_detail_observation(
             error_message = error_message or str(error)
         else:
             normalized_leaf_values = _collect_leaf_values(normalized_detail.normalized_json)
-            normalized_detail_hash = normalized_detail.detail_hash
+            normalized_detail_hash = normalized_detail.normalized_hash
 
     return _DetailFetchObservation(
         round_index=round_index,
@@ -509,24 +509,27 @@ def _build_report_payload(
             }
         )
 
-    summary = {
+    raw_changed_pair_rate = _safe_ratio(raw_changed_pairs, raw_comparable_pairs)
+    normalized_changed_pair_rate = _safe_ratio(
+        normalized_changed_pairs,
+        normalized_comparable_pairs,
+    )
+    detail_only_research_fields = sorted(important_detail_only_counter)
+    summary: dict[str, object] = {
         "vacancies_with_search_sample": vacancies_with_search_sample,
         "vacancies_with_successful_detail": vacancies_with_successful_detail,
         "raw_comparable_pairs": raw_comparable_pairs,
         "raw_changed_pairs": raw_changed_pairs,
-        "raw_changed_pair_rate": _safe_ratio(raw_changed_pairs, raw_comparable_pairs),
+        "raw_changed_pair_rate": raw_changed_pair_rate,
         "normalized_comparable_pairs": normalized_comparable_pairs,
         "normalized_changed_pairs": normalized_changed_pairs,
-        "normalized_changed_pair_rate": _safe_ratio(
-            normalized_changed_pairs,
-            normalized_comparable_pairs,
-        ),
-        "detail_only_research_fields": sorted(important_detail_only_counter),
+        "normalized_changed_pair_rate": normalized_changed_pair_rate,
+        "detail_only_research_fields": detail_only_research_fields,
     }
     summary["conclusion"] = _build_conclusion(
-        detail_only_research_fields=summary["detail_only_research_fields"],
-        raw_changed_pair_rate=summary["raw_changed_pair_rate"],
-        normalized_changed_pair_rate=summary["normalized_changed_pair_rate"],
+        detail_only_research_fields=detail_only_research_fields,
+        raw_changed_pair_rate=raw_changed_pair_rate,
+        normalized_changed_pair_rate=normalized_changed_pair_rate,
     )
 
     return {

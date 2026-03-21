@@ -4,12 +4,11 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from hhru_platform.domain.entities.detail_fetch_attempt import (
     DetailFetchAttempt as DetailFetchAttemptEntity,
 )
-from sqlalchemy.orm import Session
-
 from hhru_platform.infrastructure.db.models.detail_fetch_attempt import DetailFetchAttempt
 
 

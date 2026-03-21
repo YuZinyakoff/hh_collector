@@ -6,9 +6,13 @@ from pathlib import Path
 from uuid import UUID
 
 from hhru_platform.application.commands.fetch_vacancy_detail import (
+    FetchVacancyDetailCommand,
+    FetchVacancyDetailResult,
     fetch_vacancy_detail,
 )
 from hhru_platform.application.commands.study_detail_payloads import (
+    DetailStudyCandidate,
+    StoredRawPayload,
     StudyDetailPayloadsCommand,
     study_detail_payloads,
 )
@@ -129,7 +133,7 @@ def _resolve_latest_crawl_run_id_with_search_payloads() -> UUID | None:
         return repository.get_latest_crawl_run_id_with_search_payloads()
 
 
-def _load_candidates(crawl_run_id: UUID, sample_size: int):
+def _load_candidates(crawl_run_id: UUID, sample_size: int) -> list[DetailStudyCandidate]:
     with session_scope() as session:
         repository = SqlAlchemyDetailPayloadStudyRepository(session)
         return repository.list_recent_candidates(
@@ -138,13 +142,13 @@ def _load_candidates(crawl_run_id: UUID, sample_size: int):
         )
 
 
-def _load_raw_payload(payload_id: int):
+def _load_raw_payload(payload_id: int) -> StoredRawPayload | None:
     with session_scope() as session:
         repository = SqlAlchemyDetailPayloadStudyRepository(session)
         return repository.get_raw_payload(payload_id)
 
 
-def _fetch_detail(command):
+def _fetch_detail(command: FetchVacancyDetailCommand) -> FetchVacancyDetailResult:
     with session_scope() as session:
         return fetch_vacancy_detail(
             command,

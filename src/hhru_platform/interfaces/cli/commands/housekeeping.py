@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from hhru_platform.application.commands.run_housekeeping import (
     HOUSEKEEPING_MODE_DRY_RUN,
@@ -53,7 +54,7 @@ def handle_run_housekeeping(args: argparse.Namespace) -> int:
                 settings.housekeeping_detail_fetch_attempt_retention_days
             ),
             report_artifact_retention_days=settings.housekeeping_report_artifact_retention_days,
-            report_artifact_dir=settings.housekeeping_report_artifact_dir,
+            report_artifact_dir=Path(settings.housekeeping_report_artifact_dir),
             delete_limit_per_target=settings.housekeeping_delete_limit_per_target,
         ),
         execute=bool(args.execute),

@@ -35,6 +35,10 @@ from hhru_platform.interfaces.cli.commands.run_once import (
 )
 
 
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 def register_scheduler_commands(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
@@ -127,7 +131,7 @@ def handle_scheduler_loop(args: argparse.Namespace) -> int:
                 ),
                 metrics_recorder=metrics_recorder,
             ),
-            sleep_step=time.sleep,
+            sleep_step=_sleep,
         )
     except KeyboardInterrupt:
         print("scheduler loop interrupted", file=sys.stderr)

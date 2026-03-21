@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import UUID
 
 from hhru_platform.domain.entities.crawl_run import CrawlRun
 from hhru_platform.domain.value_objects.enums import CrawlRunStatus
@@ -16,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ActiveCrawlRunExistsError(RuntimeError):
-    def __init__(self, active_run_id) -> None:
+    def __init__(self, active_run_id: UUID) -> None:
         super().__init__(f"active crawl_run already exists: {active_run_id}")
         self.active_run_id = active_run_id
 

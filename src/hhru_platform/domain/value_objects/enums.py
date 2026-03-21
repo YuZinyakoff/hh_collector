@@ -42,4 +42,5 @@ class DetailFetchStatus(StrEnum):
 
 
 class VacancySnapshotType(StrEnum):
+    SHORT = "short"
     DETAIL = "detail"

@@ -141,7 +141,9 @@ class VacancySnapshotRepository(Protocol):
         crawl_run_id: UUID | None,
         snapshot_type: str,
         captured_at: datetime,
+        short_hash: str | None,
         detail_hash: str | None,
+        short_payload_ref_id: int | None,
         detail_payload_ref_id: int | None,
         normalized_json: dict[str, object] | None,
         change_reason: str | None,
@@ -270,9 +272,11 @@ def fetch_vacancy_detail(
             crawl_run_id=command.crawl_run_id,
             snapshot_type=VacancySnapshotType.DETAIL.value,
             captured_at=captured_at,
+            short_hash=None,
             detail_hash=normalized_detail.detail_hash,
+            short_payload_ref_id=None,
             detail_payload_ref_id=raw_payload_id,
-            normalized_json=normalized_detail.normalized_json,
+            normalized_json=normalized_detail.snapshot_json,
             change_reason=command.reason,
         )
         vacancy_current_state_repository.record_detail_fetch(

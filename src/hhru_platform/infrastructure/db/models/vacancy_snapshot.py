@@ -16,6 +16,12 @@ class VacancySnapshot(Base):
         Index("idx_vacancy_snapshot_vacancy_id", "vacancy_id"),
         Index("idx_vacancy_snapshot_captured_at", desc("captured_at")),
         Index("idx_vacancy_snapshot_detail_hash", "detail_hash"),
+        Index(
+            "idx_vacancy_snapshot_vacancy_type_captured_at",
+            "vacancy_id",
+            "snapshot_type",
+            desc("captured_at"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

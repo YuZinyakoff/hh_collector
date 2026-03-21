@@ -37,6 +37,9 @@ from hhru_platform.infrastructure.db.repositories.vacancy_repo import SqlAlchemy
 from hhru_platform.infrastructure.db.repositories.vacancy_seen_event_repo import (
     SqlAlchemyVacancySeenEventRepository,
 )
+from hhru_platform.infrastructure.db.repositories.vacancy_snapshot_backfill_repo import (
+    SqlAlchemyVacancySnapshotBackfillRepository,
+)
 from hhru_platform.infrastructure.db.repositories.vacancy_snapshot_repo import (
     SqlAlchemyVacancySnapshotRepository,
 )
@@ -57,5 +60,6 @@ __all__ = [
     "SqlAlchemyVacancyProfessionalRoleRepository",
     "SqlAlchemyVacancyRepository",
     "SqlAlchemyVacancySeenEventRepository",
+    "SqlAlchemyVacancySnapshotBackfillRepository",
     "SqlAlchemyVacancySnapshotRepository",
 ]

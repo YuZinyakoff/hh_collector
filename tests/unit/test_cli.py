@@ -1351,6 +1351,10 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
         def __init__(self, session: object) -> None:
             self.session = session
 
+    class FakeVacancySnapshotRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
     class FakeHHApiClient:
         pass
 
@@ -1363,6 +1367,7 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
         vacancy_repository,
         vacancy_seen_event_repository,
         vacancy_current_state_repository,
+        vacancy_snapshot_repository,
     ):
         assert command.partition_id == partition_id
         assert command.page == 0
@@ -1376,6 +1381,7 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
             vacancy_current_state_repository.__class__.__name__
             == "FakeVacancyCurrentStateRepository"
         )
+        assert vacancy_snapshot_repository.__class__.__name__ == "FakeVacancySnapshotRepository"
         return SimpleNamespace(
             partition_id=partition_id,
             partition_status="done",
@@ -1426,6 +1432,10 @@ def test_process_list_page_cli_prints_processing_summary(monkeypatch, capsys) ->
     monkeypatch.setattr(
         "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyVacancyCurrentStateRepository",
         FakeVacancyCurrentStateRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.list_page.SqlAlchemyVacancySnapshotRepository",
+        FakeVacancySnapshotRepository,
     )
     monkeypatch.setattr(
         "hhru_platform.interfaces.cli.commands.list_page.HHApiClient.from_settings",

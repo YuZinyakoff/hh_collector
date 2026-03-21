@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -148,7 +148,9 @@ def test_retry_failed_details_rebuilds_backlog_from_latest_attempts_and_promotes
             crawl_run_repository = SqlAlchemyCrawlRunRepository(session)
             detail_fetch_attempt_repository = SqlAlchemyDetailFetchAttemptRepository(session)
 
-            def fetch_vacancy_detail_step(command: FetchVacancyDetailCommand) -> FetchVacancyDetailResult:
+            def fetch_vacancy_detail_step(
+                command: FetchVacancyDetailCommand,
+            ) -> FetchVacancyDetailResult:
                 attempt_id = detail_fetch_attempt_repository.start(
                     vacancy_id=command.vacancy_id,
                     crawl_run_id=command.crawl_run_id,

@@ -298,6 +298,9 @@ CREATE INDEX idx_vacancy_snapshot_captured_at
 CREATE INDEX idx_vacancy_snapshot_detail_hash
     ON vacancy_snapshot(detail_hash);
 
+CREATE INDEX idx_vacancy_snapshot_vacancy_type_captured_at
+    ON vacancy_snapshot(vacancy_id, snapshot_type, captured_at DESC);
+
 CREATE TABLE detail_fetch_attempt (
     id BIGSERIAL PRIMARY KEY,
     vacancy_id UUID NOT NULL REFERENCES vacancy(id) ON DELETE CASCADE,

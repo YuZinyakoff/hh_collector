@@ -13,6 +13,10 @@ from hhru_platform.infrastructure.normalization.employer_normalizer import (
     EmployerNormalizationError,
     normalize_employer_reference,
 )
+from hhru_platform.infrastructure.normalization.vacancy_snapshot_document import (
+    build_detail_snapshot_document,
+    build_payload_hash,
+)
 
 
 class VacancyDetailNormalizationError(ValueError):
@@ -54,6 +58,7 @@ def normalize_vacancy_detail(payload_json: object) -> NormalizedVacancyDetail:
         "published_at": published_at.isoformat() if published_at is not None else None,
         "created_at_hh": created_at_hh.isoformat() if created_at_hh is not None else None,
     }
+    snapshot_json = build_detail_snapshot_document(payload_json)
 
     return NormalizedVacancyDetail(
         hh_vacancy_id=hh_vacancy_id,
@@ -68,7 +73,9 @@ def normalize_vacancy_detail(payload_json: object) -> NormalizedVacancyDetail:
         employer=employer,
         professional_role_hh_ids=professional_role_hh_ids,
         normalized_json=normalized_json,
-        detail_hash=_build_detail_hash(normalized_json),
+        normalized_hash=_build_detail_hash(normalized_json),
+        snapshot_json=snapshot_json,
+        detail_hash=build_payload_hash(payload_json),
     )
 
 

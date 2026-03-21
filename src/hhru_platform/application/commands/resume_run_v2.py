@@ -642,7 +642,12 @@ def resume_run_v2(
     )
     error_message = None
     if final_status == RESUME_RUN_V2_STATUS_COMPLETED_WITH_DETAIL_ERRORS:
-        error_message = f"{sum(1 for result in detail_results if result.error_message is not None)} detail fetch(es) failed after resume"
+        failed_detail_count = sum(
+            1 for result in detail_results if result.error_message is not None
+        )
+        error_message = (
+            f"{failed_detail_count} detail fetch(es) failed after resume"
+        )
 
     result = _build_resume_result(
         status=final_status,

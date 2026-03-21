@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -221,6 +221,11 @@ class HousekeepingMetricsRecorder(Protocol):
         """Persist cumulative housekeeping deletions for a target."""
 
 
+CountRetentionCandidatesStep = Callable[..., int]
+ListRetentionIdentifiersStep = Callable[..., Sequence[int | UUID | Path]]
+DeleteRetentionIdentifiersStep = Callable[..., int]
+
+
 @dataclass(slots=True)
 class _RetentionPlan:
     target: str
@@ -359,7 +364,11 @@ def run_housekeeping(
             metrics_recorder.set_housekeeping_last_action_count(
                 target=summary.target,
                 mode=result.mode,
-                count=summary.action_count if result.mode == HOUSEKEEPING_MODE_DRY_RUN else summary.deleted_count,
+                count=(
+                    summary.action_count
+                    if result.mode == HOUSEKEEPING_MODE_DRY_RUN
+                    else summary.deleted_count
+                ),
             )
             if result.mode == HOUSEKEEPING_MODE_EXECUTE:
                 metrics_recorder.record_housekeeping_deleted(
@@ -377,7 +386,7 @@ def run_housekeeping(
         total_candidates=result.total_candidates,
         total_action_count=result.total_action_count,
         total_deleted=result.total_deleted,
-        **_summary_fields(result.summaries),
+        summary_fields=_summary_fields(result.summaries),
     )
     return result
 
@@ -542,8 +551,8 @@ def _plan_sequence_target(
     retention_days: int,
     delete_limit: int,
     evaluated_at: datetime,
-    count_step,
-    list_step,
+    count_step: CountRetentionCandidatesStep,
+    list_step: ListRetentionIdentifiersStep,
 ) -> _RetentionPlan:
     if retention_days == 0:
         return _RetentionPlan(
@@ -574,7 +583,7 @@ def _execute_simple_plan(
     *,
     plan: _RetentionPlan,
     execute: bool,
-    delete_step,
+    delete_step: DeleteRetentionIdentifiersStep,
 ) -> HousekeepingTargetSummary:
     deleted_count = 0
     if execute and plan.enabled and plan.identifiers:

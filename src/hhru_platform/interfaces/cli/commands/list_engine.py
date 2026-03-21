@@ -20,6 +20,8 @@ from hhru_platform.application.commands.run_list_engine_v2 import (
 )
 from hhru_platform.application.commands.split_partition import split_partition
 from hhru_platform.application.policies.list_engine import PartitionSaturationPolicyV1
+from hhru_platform.domain.entities.crawl_partition import CrawlPartition
+from hhru_platform.domain.entities.crawl_run import CrawlRun
 from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyApiRequestLogRepository,
     SqlAlchemyAreaRepository,
@@ -29,6 +31,7 @@ from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyVacancyCurrentStateRepository,
     SqlAlchemyVacancyRepository,
     SqlAlchemyVacancySeenEventRepository,
+    SqlAlchemyVacancySnapshotRepository,
 )
 from hhru_platform.infrastructure.db.session import session_scope
 from hhru_platform.infrastructure.hh_api.client import HHApiClient
@@ -134,6 +137,7 @@ def _execute_process_partition_v2_step(
                 vacancy_repository=SqlAlchemyVacancyRepository(session),
                 vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
                 vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
+                vacancy_snapshot_repository=SqlAlchemyVacancySnapshotRepository(session),
             ),
             split_partition_step=lambda step_command: split_partition(
                 step_command,
@@ -192,13 +196,18 @@ def _print_run_list_engine_v2_summary(result: RunListEngineV2Result) -> None:
 
 
 class _SessionlessCrawlRunRepository:
-    def get(self, run_id: UUID):
+    def get(self, run_id: UUID) -> CrawlRun | None:
         with session_scope() as session:
             return SqlAlchemyCrawlRunRepository(session).get(run_id)
 
 
 class _SessionlessCrawlPartitionRepository:
-    def list_pending_terminal_by_run_id(self, run_id: UUID, *, limit: int | None = None):
+    def list_pending_terminal_by_run_id(
+        self,
+        run_id: UUID,
+        *,
+        limit: int | None = None,
+    ) -> list[CrawlPartition]:
         with session_scope() as session:
             return SqlAlchemyCrawlPartitionRepository(session).list_pending_terminal_by_run_id(
                 run_id,

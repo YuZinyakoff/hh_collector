@@ -73,11 +73,16 @@ class SchedulerMetricsRecorder(Protocol):
         """Persist scheduler health metrics for one admission attempt."""
 
 
+class RunCollectionOnceV2Step(Protocol):
+    def __call__(self, command: RunCollectionOnceV2Command) -> RunCollectionOnceV2Result:
+        """Execute one run-once-v2 collection attempt."""
+
+
 def trigger_run_now(
     command: TriggerRunNowCommand,
     *,
     admission_controller: SchedulerAdmissionController,
-    run_collection_once_v2_step,
+    run_collection_once_v2_step: RunCollectionOnceV2Step,
     metrics_recorder: SchedulerMetricsRecorder | None = None,
     now: datetime | None = None,
 ) -> TriggerRunNowResult:

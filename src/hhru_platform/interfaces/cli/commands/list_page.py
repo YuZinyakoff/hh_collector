@@ -16,6 +16,7 @@ from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyVacancyCurrentStateRepository,
     SqlAlchemyVacancyRepository,
     SqlAlchemyVacancySeenEventRepository,
+    SqlAlchemyVacancySnapshotRepository,
 )
 from hhru_platform.infrastructure.db.session import session_scope
 from hhru_platform.infrastructure.hh_api.client import HHApiClient
@@ -57,6 +58,7 @@ def handle_process_list_page(args: argparse.Namespace) -> int:
                 vacancy_repository=SqlAlchemyVacancyRepository(session),
                 vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
                 vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
+                vacancy_snapshot_repository=SqlAlchemyVacancySnapshotRepository(session),
             )
     except CrawlPartitionNotFoundError as error:
         print(str(error), file=sys.stderr)

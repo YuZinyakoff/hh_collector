@@ -423,7 +423,11 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
                 connection.execute(
                     text(
                         """
-                    SELECT snapshot_type, change_reason, detail_hash, detail_payload_ref_id
+                    SELECT snapshot_type,
+                           change_reason,
+                           detail_hash,
+                           detail_payload_ref_id,
+                           normalized_json
                     FROM vacancy_snapshot
                     WHERE vacancy_id = :vacancy_id
                     """
@@ -477,6 +481,8 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_current_state_and_logs()
         assert snapshot_row["change_reason"] == "manual_refetch"
         assert snapshot_row["detail_hash"] is not None
         assert snapshot_row["detail_payload_ref_id"] == raw_payload_row["id"]
+        assert snapshot_row["normalized_json"]["payload"]["id"] == TEST_VACANCY_HH_ID
+        assert snapshot_row["normalized_json"]["payload"]["description"] is not None
         assert current_state_row["last_detail_hash"] == snapshot_row["detail_hash"]
         assert current_state_row["last_detail_fetched_at"] is not None
         assert current_state_row["detail_fetch_status"] == "succeeded"

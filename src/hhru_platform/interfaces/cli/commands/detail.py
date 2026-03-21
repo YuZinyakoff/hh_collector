@@ -4,8 +4,13 @@ import argparse
 import sys
 from uuid import UUID
 
+from hhru_platform.application.commands.backfill_vacancy_snapshots import (
+    BackfillVacancySnapshotsCommand,
+    backfill_vacancy_snapshots,
+)
 from hhru_platform.application.commands.fetch_vacancy_detail import (
     FetchVacancyDetailCommand,
+    FetchVacancyDetailResult,
     VacancyNotFoundError,
     fetch_vacancy_detail,
 )
@@ -21,6 +26,7 @@ from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyRawApiPayloadRepository,
     SqlAlchemyVacancyCurrentStateRepository,
     SqlAlchemyVacancyRepository,
+    SqlAlchemyVacancySnapshotBackfillRepository,
     SqlAlchemyVacancySnapshotRepository,
 )
 from hhru_platform.infrastructure.db.session import session_scope
@@ -67,6 +73,29 @@ def register_detail_commands(
         ),
     )
     retry_parser.set_defaults(handler=handle_retry_failed_details)
+
+    backfill_parser = subparsers.add_parser(
+        "backfill-vacancy-snapshots",
+        help="Backfill lossless vacancy snapshots from retained raw payloads.",
+    )
+    backfill_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=500,
+        help="How many rows to process per repository batch. Defaults to 500.",
+    )
+    backfill_parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="Optional limit on repository batches per phase.",
+    )
+    backfill_parser.add_argument(
+        "--triggered-by",
+        default="backfill-vacancy-snapshots",
+        help="Actor or subsystem that initiated the backfill flow.",
+    )
+    backfill_parser.set_defaults(handler=handle_backfill_vacancy_snapshots)
 
 
 def handle_fetch_vacancy_detail(args: argparse.Namespace) -> int:
@@ -134,11 +163,40 @@ def handle_retry_failed_details(args: argparse.Namespace) -> int:
     return 0 if result.status == "succeeded" else 1
 
 
+def handle_backfill_vacancy_snapshots(args: argparse.Namespace) -> int:
+    command = BackfillVacancySnapshotsCommand(
+        batch_size=int(args.batch_size),
+        max_batches=args.max_batches,
+        triggered_by=str(args.triggered_by),
+    )
+    try:
+        with session_scope() as session:
+            result = backfill_vacancy_snapshots(
+                command,
+                repository=SqlAlchemyVacancySnapshotBackfillRepository(session),
+            )
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    print("completed vacancy snapshot backfill")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"detail_candidates_seen={result.detail_candidates_seen}")
+    print(f"detail_snapshots_updated={result.detail_snapshots_updated}")
+    print(f"short_candidates_seen={result.short_candidates_seen}")
+    print(f"short_snapshots_created={result.short_snapshots_created}")
+    print(f"skipped_missing_raw_payload={result.skipped_missing_raw_payload}")
+    print(f"skipped_missing_search_item={result.skipped_missing_search_item}")
+    print(f"batches_processed={result.batches_processed}")
+    return 0
+
+
 def _execute_fetch_detail_step(
     command: FetchVacancyDetailCommand,
     *,
     api_client: HHApiClient,
-):
+) -> FetchVacancyDetailResult:
     with session_scope() as session:
         return fetch_vacancy_detail(
             command,

@@ -24,6 +24,7 @@ from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyVacancyCurrentStateRepository,
     SqlAlchemyVacancyRepository,
     SqlAlchemyVacancySeenEventRepository,
+    SqlAlchemyVacancySnapshotRepository,
 )
 from hhru_platform.infrastructure.db.session import (
     create_engine_from_settings,
@@ -199,6 +200,7 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                 vacancy_repository=SqlAlchemyVacancyRepository(session),
                 vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
                 vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
+                vacancy_snapshot_repository=SqlAlchemyVacancySnapshotRepository(session),
             )
 
         assert result.partition_status == "done"
@@ -354,6 +356,24 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
                 .mappings()
                 .one()
             )
+            snapshot_rows = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT snapshot_type,
+                           short_hash,
+                           short_payload_ref_id,
+                           normalized_json
+                    FROM vacancy_snapshot
+                    WHERE crawl_run_id = :crawl_run_id
+                    ORDER BY captured_at, id
+                    """
+                    ),
+                    {"crawl_run_id": created_run_id},
+                )
+                .mappings()
+                .all()
+            )
 
         assert [row["hh_vacancy_id"] for row in vacancy_rows] == list(TEST_VACANCY_IDS)
         assert all(row["area_hh_id"] == TEST_AREA_HH_ID for row in vacancy_rows)
@@ -390,6 +410,11 @@ def test_process_list_page_persists_vacancies_seen_events_current_state_and_logs
         assert all(row["last_seen_run_id"] == created_run_id for row in current_state_rows)
         assert request_log_row["status_code"] == 200
         assert raw_payload_row["endpoint_type"] == "vacancies.search"
+        assert len(snapshot_rows) == 2
+        assert all(row["snapshot_type"] == "short" for row in snapshot_rows)
+        assert all(row["short_payload_ref_id"] == raw_payload_row["id"] for row in snapshot_rows)
+        assert snapshot_rows[0]["normalized_json"]["payload"]["id"] == TEST_VACANCY_IDS[0]
+        assert snapshot_rows[1]["normalized_json"]["payload"]["id"] == TEST_VACANCY_IDS[1]
         assert partition_row["status"] == "done"
         assert partition_row["pages_total_expected"] == 4
         assert partition_row["pages_processed"] == 1

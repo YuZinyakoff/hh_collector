@@ -33,6 +33,7 @@ from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyVacancyCurrentStateRepository,
     SqlAlchemyVacancyRepository,
     SqlAlchemyVacancySeenEventRepository,
+    SqlAlchemyVacancySnapshotRepository,
 )
 from hhru_platform.infrastructure.db.session import (
     create_engine_from_settings,
@@ -225,6 +226,7 @@ def test_process_partition_v2_reads_all_pages_and_marks_leaf_covered() -> None:
             vacancy_repository = SqlAlchemyVacancyRepository(session)
             vacancy_seen_event_repository = SqlAlchemyVacancySeenEventRepository(session)
             vacancy_current_state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
+            vacancy_snapshot_repository = SqlAlchemyVacancySnapshotRepository(session)
             api_client = MultiPageVacancySearchApiClient()
 
             result = process_partition_v2(
@@ -239,6 +241,7 @@ def test_process_partition_v2_reads_all_pages_and_marks_leaf_covered() -> None:
                     vacancy_repository=vacancy_repository,
                     vacancy_seen_event_repository=vacancy_seen_event_repository,
                     vacancy_current_state_repository=vacancy_current_state_repository,
+                    vacancy_snapshot_repository=vacancy_snapshot_repository,
                 ),
                 split_partition_step=lambda step_command: split_partition(
                     step_command,
@@ -412,6 +415,7 @@ def test_run_list_engine_v2_splits_saturated_parent_and_covers_children() -> Non
             vacancy_repository = SqlAlchemyVacancyRepository(session)
             vacancy_seen_event_repository = SqlAlchemyVacancySeenEventRepository(session)
             vacancy_current_state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
+            vacancy_snapshot_repository = SqlAlchemyVacancySnapshotRepository(session)
             api_client = TreeVacancySearchApiClient()
 
             result = run_list_engine_v2(
@@ -430,6 +434,7 @@ def test_run_list_engine_v2_splits_saturated_parent_and_covers_children() -> Non
                         vacancy_repository=vacancy_repository,
                         vacancy_seen_event_repository=vacancy_seen_event_repository,
                         vacancy_current_state_repository=vacancy_current_state_repository,
+                        vacancy_snapshot_repository=vacancy_snapshot_repository,
                     ),
                     split_partition_step=lambda split_command: split_partition(
                         split_command,

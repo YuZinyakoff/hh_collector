@@ -336,7 +336,7 @@ def _validate_partition_is_runnable(partition: CrawlPartition) -> None:
 def _finalize_process_partition_v2_result(
     *,
     result: ProcessPartitionV2Result,
-    started_at,
+    started_at: float,
 ) -> ProcessPartitionV2Result:
     if result.status == "failed":
         record_operation_failed(

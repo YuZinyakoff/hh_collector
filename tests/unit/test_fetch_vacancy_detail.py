@@ -186,7 +186,15 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_raw_and_current_state() 
     assert vacancy_snapshot_repository.records[0]["snapshot_type"] == "detail"
     assert vacancy_snapshot_repository.records[0]["change_reason"] == "manual_refetch"
     assert (
-        vacancy_snapshot_repository.records[0]["normalized_json"]["description"]
+        vacancy_snapshot_repository.records[0]["normalized_json"]["payload"]["description"]
+        == "Detailed vacancy description"
+    )
+    assert (
+        vacancy_repository.updated_detail.snapshot_json["payload"]["id"]
+        == "pytest-detail-vacancy"
+    )
+    assert (
+        vacancy_repository.updated_detail.normalized_json["description"]
         == "Detailed vacancy description"
     )
     assert vacancy_current_state_repository.records[0]["detail_fetch_status"] == "succeeded"

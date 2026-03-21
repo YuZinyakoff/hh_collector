@@ -606,18 +606,21 @@ class FileBackedMetricsRegistry:
                     f"# TYPE {metric_name} gauge",
                 ]
             )
-            for key, value in sorted(state["run_tree_coverage_gauge"].items()):
+            for key, gauge_value in sorted(state["run_tree_coverage_gauge"].items()):
                 recorded_metric_name, run_id, run_type = _split_triple_key(key)
                 if recorded_metric_name != metric_name:
                     continue
                 lines.append(
                     f'{metric_name}{{run_id="{_label_value(run_id)}",'
-                    f'run_type="{_label_value(run_type)}"}} {value:.6f}'
+                    f'run_type="{_label_value(run_type)}"}} {gauge_value:.6f}'
                 )
 
         lines.extend(
             [
-                "# HELP hhru_run_terminal_status_total Total number of crawl_run terminal status publications.",
+                (
+                    "# HELP hhru_run_terminal_status_total "
+                    "Total number of crawl_run terminal status publications."
+                ),
                 "# TYPE hhru_run_terminal_status_total counter",
             ]
         )
@@ -638,12 +641,12 @@ class FileBackedMetricsRegistry:
                 f"# TYPE {RUN_TERMINAL_STATUS_TIMESTAMP_METRIC} gauge",
             ]
         )
-        for key, value in sorted(state["run_terminal_status_timestamp"].items()):
+        for key, timestamp_value in sorted(state["run_terminal_status_timestamp"].items()):
             run_type, status = _split_composite_key(key)
             lines.append(
                 f"{RUN_TERMINAL_STATUS_TIMESTAMP_METRIC}"
                 f'{{run_type="{_label_value(run_type)}",status="{_label_value(status)}"}} '
-                f"{value:.3f}"
+                f"{timestamp_value:.3f}"
             )
 
         lines.extend(
@@ -677,15 +680,18 @@ class FileBackedMetricsRegistry:
                 f"# TYPE {SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC} gauge",
             ]
         )
-        for status, value in sorted(state["scheduler_status_gauge"].items()):
+        for status, gauge_value in sorted(state["scheduler_status_gauge"].items()):
             lines.append(
                 f"{SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC}"
-                f'{{status="{_label_value(status)}"}} {value:.1f}'
+                f'{{status="{_label_value(status)}"}} {gauge_value:.1f}'
             )
 
         lines.extend(
             [
-                "# HELP hhru_resume_run_v2_attempt_total Total number of resume-run-v2 attempts by outcome.",
+                (
+                    "# HELP hhru_resume_run_v2_attempt_total "
+                    "Total number of resume-run-v2 attempts by outcome."
+                ),
                 "# TYPE hhru_resume_run_v2_attempt_total counter",
             ]
         )
@@ -699,7 +705,10 @@ class FileBackedMetricsRegistry:
 
         lines.extend(
             [
-                "# HELP hhru_detail_repair_attempt_total Total number of detail repair attempts by outcome.",
+                (
+                    "# HELP hhru_detail_repair_attempt_total "
+                    "Total number of detail repair attempts by outcome."
+                ),
                 "# TYPE hhru_detail_repair_attempt_total counter",
             ]
         )
@@ -720,14 +729,14 @@ class FileBackedMetricsRegistry:
                 f"# TYPE {DETAIL_REPAIR_BACKLOG_METRIC} gauge",
             ]
         )
-        for key, value in sorted(state["detail_repair_gauge"].items()):
+        for key, gauge_value in sorted(state["detail_repair_gauge"].items()):
             metric_name, run_id, run_type = _split_triple_key(key)
             if metric_name != DETAIL_REPAIR_BACKLOG_METRIC:
                 continue
             lines.append(
                 f"{DETAIL_REPAIR_BACKLOG_METRIC}"
                 f'{{run_id="{_label_value(run_id)}",run_type="{_label_value(run_type)}"}} '
-                f"{value:.6f}"
+                f"{gauge_value:.6f}"
             )
 
         for metric_name, help_text in DETAIL_REPAIR_TOTAL_METRIC_HELP.items():
@@ -749,7 +758,10 @@ class FileBackedMetricsRegistry:
 
         lines.extend(
             [
-                "# HELP hhru_housekeeping_run_total Total number of housekeeping runs by mode and status.",
+                (
+                    "# HELP hhru_housekeeping_run_total "
+                    "Total number of housekeeping runs by mode and status."
+                ),
                 "# TYPE hhru_housekeeping_run_total counter",
             ]
         )
@@ -780,10 +792,10 @@ class FileBackedMetricsRegistry:
                 "# TYPE hhru_housekeeping_last_run_status gauge",
             ]
         )
-        for status, value in sorted(state["housekeeping_status_gauge"].items()):
+        for status, gauge_value in sorted(state["housekeeping_status_gauge"].items()):
             lines.append(
                 "hhru_housekeeping_last_run_status"
-                f'{{status="{_label_value(status)}"}} {value:.1f}'
+                f'{{status="{_label_value(status)}"}} {gauge_value:.1f}'
             )
 
         lines.extend(
@@ -795,10 +807,10 @@ class FileBackedMetricsRegistry:
                 "# TYPE hhru_housekeeping_last_run_mode gauge",
             ]
         )
-        for mode, value in sorted(state["housekeeping_mode_gauge"].items()):
+        for mode, gauge_value in sorted(state["housekeeping_mode_gauge"].items()):
             lines.append(
                 "hhru_housekeeping_last_run_mode"
-                f'{{mode="{_label_value(mode)}"}} {value:.1f}'
+                f'{{mode="{_label_value(mode)}"}} {gauge_value:.1f}'
             )
 
         lines.extend(
@@ -810,12 +822,12 @@ class FileBackedMetricsRegistry:
                 f"# TYPE {HOUSEKEEPING_LAST_ACTION_COUNT_METRIC} gauge",
             ]
         )
-        for key, value in sorted(state["housekeeping_action_gauge"].items()):
+        for key, gauge_value in sorted(state["housekeeping_action_gauge"].items()):
             target, mode = _split_composite_key(key)
             lines.append(
                 f"{HOUSEKEEPING_LAST_ACTION_COUNT_METRIC}"
                 f'{{target="{_label_value(target)}",mode="{_label_value(mode)}"}} '
-                f"{value:.6f}"
+                f"{gauge_value:.6f}"
             )
 
         lines.extend(

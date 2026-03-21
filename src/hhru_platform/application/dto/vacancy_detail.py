@@ -36,4 +36,6 @@ class NormalizedVacancyDetail:
     employer: NormalizedEmployerReference | None
     professional_role_hh_ids: tuple[str, ...]
     normalized_json: dict[str, object]
+    normalized_hash: str
+    snapshot_json: dict[str, object]
     detail_hash: str

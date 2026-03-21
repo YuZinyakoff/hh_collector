@@ -42,15 +42,15 @@ from hhru_platform.application.commands.reconcile_run import (
     ReconcileRunResult,
     reconcile_run,
 )
-from hhru_platform.application.commands.resume_run_v2 import (
-    ResumeRunV2Command,
-    ResumeRunV2Result,
-    resume_run_v2,
-)
 from hhru_platform.application.commands.report_run_coverage import (
     ReportRunCoverageCommand,
     RunCoverageReport,
     report_run_coverage,
+)
+from hhru_platform.application.commands.resume_run_v2 import (
+    ResumeRunV2Command,
+    ResumeRunV2Result,
+    resume_run_v2,
 )
 from hhru_platform.application.commands.run_collection_once import (
     RunCollectionOnceCommand,
@@ -83,6 +83,7 @@ from hhru_platform.application.policies.planner import SinglePartitionPlannerPol
 from hhru_platform.application.policies.reconciliation import (
     MissingRunsReconciliationPolicyV1,
 )
+from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.entities.crawl_run import CrawlRun
 from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyApiRequestLogRepository,
@@ -395,6 +396,7 @@ def _execute_process_list_page_step(
             vacancy_repository=SqlAlchemyVacancyRepository(session),
             vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
             vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
+            vacancy_snapshot_repository=SqlAlchemyVacancySnapshotRepository(session),
         )
 
 
@@ -520,6 +522,7 @@ def _execute_process_partition_v2_step(
                 vacancy_repository=SqlAlchemyVacancyRepository(session),
                 vacancy_seen_event_repository=SqlAlchemyVacancySeenEventRepository(session),
                 vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
+                vacancy_snapshot_repository=SqlAlchemyVacancySnapshotRepository(session),
             ),
             split_partition_step=lambda step_command: split_partition(
                 step_command,
@@ -706,14 +709,14 @@ class _SessionlessCrawlPartitionRepository:
         run_id: UUID,
         *,
         limit: int | None = None,
-    ) -> list:
+    ) -> list[CrawlPartition]:
         with session_scope() as session:
             return SqlAlchemyCrawlPartitionRepository(session).list_pending_terminal_by_run_id(
                 run_id,
                 limit=limit,
             )
 
-    def requeue_unresolved_by_run_id(self, run_id: UUID) -> list:
+    def requeue_unresolved_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
         with session_scope() as session:
             return SqlAlchemyCrawlPartitionRepository(session).requeue_unresolved_by_run_id(
                 run_id

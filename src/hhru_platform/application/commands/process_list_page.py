@@ -15,13 +15,17 @@ from hhru_platform.application.dto import (
     VacancyUpsertResult,
 )
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
-from hhru_platform.domain.value_objects.enums import CrawlPartitionStatus
+from hhru_platform.domain.value_objects.enums import CrawlPartitionStatus, VacancySnapshotType
 from hhru_platform.infrastructure.hh_api.user_agent import (
     HHApiUserAgentValidationError,
 )
 from hhru_platform.infrastructure.normalization.vacancy_short_normalizer import (
     VacancySearchNormalizationError,
     normalize_vacancy_search_page,
+)
+from hhru_platform.infrastructure.normalization.vacancy_snapshot_document import (
+    build_short_snapshot_document,
+    extract_search_item_payload,
 )
 from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
@@ -169,6 +173,24 @@ class VacancyCurrentStateRepository(Protocol):
         """Create or update vacancy_current_state rows."""
 
 
+class VacancySnapshotRepository(Protocol):
+    def add(
+        self,
+        *,
+        vacancy_id: UUID,
+        crawl_run_id: UUID | None,
+        snapshot_type: str,
+        captured_at: datetime,
+        short_hash: str | None,
+        detail_hash: str | None,
+        short_payload_ref_id: int | None,
+        detail_payload_ref_id: int | None,
+        normalized_json: dict[str, object] | None,
+        change_reason: str | None,
+    ) -> int:
+        """Persist a vacancy snapshot row and return its identifier."""
+
+
 def process_list_page(
     command: ProcessListPageCommand,
     crawl_partition_repository: CrawlPartitionRepository,
@@ -178,6 +200,7 @@ def process_list_page(
     vacancy_repository: VacancyRepository,
     vacancy_seen_event_repository: VacancySeenEventRepository,
     vacancy_current_state_repository: VacancyCurrentStateRepository,
+    vacancy_snapshot_repository: VacancySnapshotRepository,
 ) -> ProcessListPageResult:
     started_at = log_operation_started(
         LOGGER,
@@ -306,6 +329,17 @@ def process_list_page(
             observed_at=observed_at,
             observations=observed_records,
         )
+        short_snapshots_created = _create_short_snapshots(
+            vacancy_snapshot_repository=vacancy_snapshot_repository,
+            crawl_partition_id=partition.id,
+            crawl_run_id=partition.crawl_run_id,
+            captured_at=observed_at,
+            raw_payload_id=raw_payload_id,
+            normalized_page=normalized_page,
+            upsert_result=upsert_result,
+            search_payload_json=response.payload_json,
+            search_params=response.params_json,
+        )
         updated_partition = crawl_partition_repository.record_page_processed(
             partition_id=partition.id,
             pages_total_expected=normalized_page.pages,
@@ -347,6 +381,7 @@ def process_list_page(
         records_written={
             "vacancy": result.vacancies_processed,
             "vacancy_seen_event": result.seen_events_created,
+            "vacancy_snapshot": short_snapshots_created,
         },
         run_id=partition.crawl_run_id,
         partition_id=result.partition_id,
@@ -427,3 +462,58 @@ def _build_observed_records(
 
 def _payload_is_present(payload_json: object | None) -> bool:
     return isinstance(payload_json, dict | list)
+
+
+def _create_short_snapshots(
+    *,
+    vacancy_snapshot_repository: VacancySnapshotRepository,
+    crawl_partition_id: UUID,
+    crawl_run_id: UUID,
+    captured_at: datetime,
+    raw_payload_id: int | None,
+    normalized_page: NormalizedVacancySearchPage,
+    upsert_result: VacancyUpsertResult,
+    search_payload_json: object | None,
+    search_params: dict[str, object],
+) -> int:
+    if not _payload_is_present(search_payload_json):
+        return 0
+
+    stored_vacancies_by_hh_id = {
+        vacancy.hh_vacancy_id: vacancy.id for vacancy in upsert_result.vacancies
+    }
+    created_count = 0
+
+    for record in normalized_page.items:
+        item_payload = extract_search_item_payload(
+            search_payload_json,
+            hh_vacancy_id=record.hh_vacancy_id,
+        )
+        if item_payload is None:
+            continue
+
+        vacancy_snapshot_repository.add(
+            vacancy_id=stored_vacancies_by_hh_id[record.hh_vacancy_id],
+            crawl_run_id=crawl_run_id,
+            snapshot_type=VacancySnapshotType.SHORT.value,
+            captured_at=captured_at,
+            short_hash=record.short_hash,
+            detail_hash=None,
+            short_payload_ref_id=raw_payload_id,
+            detail_payload_ref_id=None,
+            normalized_json=build_short_snapshot_document(
+                item_payload,
+                seen_at=captured_at,
+                crawl_partition_id=crawl_partition_id,
+                list_position=record.list_position,
+                page=normalized_page.page,
+                per_page=normalized_page.per_page,
+                found=normalized_page.found,
+                pages=normalized_page.pages,
+                search_params=search_params,
+            ),
+            change_reason="search_observation",
+        )
+        created_count += 1
+
+    return created_count

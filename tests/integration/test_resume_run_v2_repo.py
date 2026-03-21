@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from sqlalchemy import text
@@ -22,10 +22,7 @@ from hhru_platform.application.commands.reconcile_run import (
     ReconcileRunCommand,
     reconcile_run,
 )
-from hhru_platform.application.commands.report_run_coverage import (
-    ReportRunCoverageCommand,
-    report_run_coverage,
-)
+from hhru_platform.application.commands.report_run_coverage import report_run_coverage
 from hhru_platform.application.commands.resume_run_v2 import (
     ResumeRunV2Command,
     resume_run_v2,

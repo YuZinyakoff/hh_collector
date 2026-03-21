@@ -36,6 +36,10 @@ class MetricsState(TypedDict):
     operation_duration_sum: dict[str, float]
     operation_last_success_timestamp: dict[str, float]
     records_written_total: dict[str, int]
+    backup_run_total: dict[str, int]
+    backup_gauge: dict[str, float]
+    restore_drill_run_total: dict[str, int]
+    restore_drill_gauge: dict[str, float]
     run_tree_coverage_gauge: dict[str, float]
     run_terminal_status_total: dict[str, int]
     run_terminal_status_timestamp: dict[str, float]
@@ -46,6 +50,12 @@ class MetricsState(TypedDict):
     detail_repair_attempt_total: dict[str, int]
     detail_repair_gauge: dict[str, float]
     detail_repair_total: dict[str, int]
+    housekeeping_run_total: dict[str, int]
+    housekeeping_gauge: dict[str, float]
+    housekeeping_status_gauge: dict[str, float]
+    housekeeping_mode_gauge: dict[str, float]
+    housekeeping_action_gauge: dict[str, float]
+    housekeeping_deleted_total: dict[str, int]
     upstream_request_total: dict[str, int]
     upstream_request_duration_bucket: dict[str, int]
     upstream_request_duration_count: dict[str, int]
@@ -92,10 +102,22 @@ SCHEDULER_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
 RUN_TERMINAL_STATUS_TIMESTAMP_METRIC: Final[str] = (
     "hhru_run_terminal_status_last_timestamp_seconds"
 )
+BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC: Final[str] = (
+    "hhru_backup_last_success_timestamp_seconds"
+)
+RESTORE_DRILL_LAST_SUCCESS_TIMESTAMP_METRIC: Final[str] = (
+    "hhru_restore_drill_last_success_timestamp_seconds"
+)
 SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC: Final[str] = (
     "hhru_scheduler_last_observed_run_status"
 )
 DETAIL_REPAIR_BACKLOG_METRIC: Final[str] = "hhru_detail_repair_backlog_size"
+HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC: Final[str] = (
+    "hhru_housekeeping_last_run_timestamp_seconds"
+)
+HOUSEKEEPING_LAST_ACTION_COUNT_METRIC: Final[str] = (
+    "hhru_housekeeping_last_action_count"
+)
 DETAIL_REPAIR_TOTAL_METRIC_HELP: Final[dict[str, str]] = {
     "hhru_detail_repair_retried_total": (
         "Total number of backlog detail fetch retries attempted."
@@ -107,12 +129,38 @@ DETAIL_REPAIR_TOTAL_METRIC_HELP: Final[dict[str, str]] = {
         "Total number of backlog detail fetches still failing after retry."
     ),
 }
+HOUSEKEEPING_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
+    HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC: (
+        "Timestamp of the latest housekeeping run completion."
+    ),
+}
+HOUSEKEEPING_DELETED_TOTAL_METRIC: Final[str] = "hhru_housekeeping_deleted_total"
 SCHEDULER_OBSERVED_RUN_STATUSES: Final[tuple[str, ...]] = (
     "succeeded",
     "completed_with_detail_errors",
     "completed_with_unresolved",
     "failed",
 )
+HOUSEKEEPING_RUN_STATUSES: Final[tuple[str, ...]] = (
+    "succeeded",
+    "failed",
+)
+HOUSEKEEPING_RUN_MODES: Final[tuple[str, ...]] = (
+    "dry_run",
+    "execute",
+)
+BACKUP_RUN_STATUSES: Final[tuple[str, ...]] = (
+    "succeeded",
+    "failed",
+)
+BACKUP_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
+    BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC: (
+        "Timestamp of the latest successful PostgreSQL backup."
+    ),
+    RESTORE_DRILL_LAST_SUCCESS_TIMESTAMP_METRIC: (
+        "Timestamp of the latest successful restore drill."
+    ),
+}
 
 
 class FileBackedMetricsRegistry:
@@ -164,6 +212,42 @@ class FileBackedMetricsRegistry:
                 )
         except Exception as error:
             LOGGER.warning("metrics record counter update failed: %s", error)
+
+    def record_backup_run(
+        self,
+        *,
+        status: str,
+        recorded_at: datetime,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                state["backup_run_total"][status] = (
+                    state["backup_run_total"].get(status, 0) + 1
+                )
+                if status == "succeeded":
+                    state["backup_gauge"][
+                        BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC
+                    ] = recorded_at.timestamp()
+        except Exception as error:
+            LOGGER.warning("metrics backup run update failed: %s", error)
+
+    def record_restore_drill_run(
+        self,
+        *,
+        status: str,
+        recorded_at: datetime,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                state["restore_drill_run_total"][status] = (
+                    state["restore_drill_run_total"].get(status, 0) + 1
+                )
+                if status == "succeeded":
+                    state["restore_drill_gauge"][
+                        RESTORE_DRILL_LAST_SUCCESS_TIMESTAMP_METRIC
+                    ] = recorded_at.timestamp()
+        except Exception as error:
+            LOGGER.warning("metrics restore drill update failed: %s", error)
 
     def set_run_tree_coverage(
         self,
@@ -313,6 +397,63 @@ class FileBackedMetricsRegistry:
         except Exception as error:
             LOGGER.warning("metrics detail repair attempt update failed: %s", error)
 
+    def record_housekeeping_run(
+        self,
+        *,
+        mode: str,
+        status: str,
+        recorded_at: datetime,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                key = _composite_key(mode, status)
+                state["housekeeping_run_total"][key] = (
+                    state["housekeeping_run_total"].get(key, 0) + 1
+                )
+                state["housekeeping_gauge"][
+                    HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC
+                ] = recorded_at.timestamp()
+                for recorded_status in HOUSEKEEPING_RUN_STATUSES:
+                    state["housekeeping_status_gauge"][recorded_status] = (
+                        1.0 if recorded_status == status else 0.0
+                    )
+                for recorded_mode in HOUSEKEEPING_RUN_MODES:
+                    state["housekeeping_mode_gauge"][recorded_mode] = (
+                        1.0 if recorded_mode == mode else 0.0
+                    )
+        except Exception as error:
+            LOGGER.warning("metrics housekeeping run update failed: %s", error)
+
+    def set_housekeeping_last_action_count(
+        self,
+        *,
+        target: str,
+        mode: str,
+        count: int,
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                key = _composite_key(target, mode)
+                state["housekeeping_action_gauge"][key] = float(max(count, 0))
+        except Exception as error:
+            LOGGER.warning("metrics housekeeping action gauge update failed: %s", error)
+
+    def record_housekeeping_deleted(
+        self,
+        *,
+        target: str,
+        count: int,
+    ) -> None:
+        if count <= 0:
+            return
+        try:
+            with self._mutating_state() as state:
+                state["housekeeping_deleted_total"][target] = (
+                    state["housekeeping_deleted_total"].get(target, 0) + count
+                )
+        except Exception as error:
+            LOGGER.warning("metrics housekeeping deleted counter update failed: %s", error)
+
     def record_upstream_request(
         self,
         *,
@@ -418,6 +559,45 @@ class FileBackedMetricsRegistry:
                 f'record_type="{_label_value(record_type)}"}} '
                 f"{value}"
             )
+
+        lines.extend(
+            [
+                "# HELP hhru_backup_run_total Total number of PostgreSQL backup runs by status.",
+                "# TYPE hhru_backup_run_total counter",
+            ]
+        )
+        for status, value in sorted(state["backup_run_total"].items()):
+            lines.append(
+                "hhru_backup_run_total"
+                f'{{status="{_label_value(status)}"}} {value}'
+            )
+
+        lines.extend(
+            [
+                "# HELP hhru_restore_drill_run_total Total number of restore drill runs by status.",
+                "# TYPE hhru_restore_drill_run_total counter",
+            ]
+        )
+        for status, value in sorted(state["restore_drill_run_total"].items()):
+            lines.append(
+                "hhru_restore_drill_run_total"
+                f'{{status="{_label_value(status)}"}} {value}'
+            )
+
+        for metric_name, help_text in BACKUP_GAUGE_METRIC_HELP.items():
+            lines.extend(
+                [
+                    f"# HELP {metric_name} {help_text}",
+                    f"# TYPE {metric_name} gauge",
+                ]
+            )
+            gauge_map = (
+                state["backup_gauge"]
+                if metric_name == BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC
+                else state["restore_drill_gauge"]
+            )
+            if metric_name in gauge_map:
+                lines.append(f"{metric_name} {gauge_map[metric_name]:.3f}")
 
         for metric_name, help_text in RUN_TREE_COVERAGE_METRIC_HELP.items():
             lines.extend(
@@ -566,6 +746,92 @@ class FileBackedMetricsRegistry:
                     f'{{run_type="{_label_value(run_type)}"}} '
                     f"{value}"
                 )
+
+        lines.extend(
+            [
+                "# HELP hhru_housekeeping_run_total Total number of housekeeping runs by mode and status.",
+                "# TYPE hhru_housekeeping_run_total counter",
+            ]
+        )
+        for key, value in sorted(state["housekeeping_run_total"].items()):
+            mode, status = _split_composite_key(key)
+            lines.append(
+                "hhru_housekeeping_run_total"
+                f'{{mode="{_label_value(mode)}",status="{_label_value(status)}"}} '
+                f"{value}"
+            )
+
+        for metric_name, help_text in HOUSEKEEPING_GAUGE_METRIC_HELP.items():
+            lines.extend(
+                [
+                    f"# HELP {metric_name} {help_text}",
+                    f"# TYPE {metric_name} gauge",
+                ]
+            )
+            if metric_name in state["housekeeping_gauge"]:
+                lines.append(f"{metric_name} {state['housekeeping_gauge'][metric_name]:.3f}")
+
+        lines.extend(
+            [
+                (
+                    "# HELP hhru_housekeeping_last_run_status "
+                    "One-hot gauge for the latest housekeeping run status."
+                ),
+                "# TYPE hhru_housekeeping_last_run_status gauge",
+            ]
+        )
+        for status, value in sorted(state["housekeeping_status_gauge"].items()):
+            lines.append(
+                "hhru_housekeeping_last_run_status"
+                f'{{status="{_label_value(status)}"}} {value:.1f}'
+            )
+
+        lines.extend(
+            [
+                (
+                    "# HELP hhru_housekeeping_last_run_mode "
+                    "One-hot gauge for the latest housekeeping run mode."
+                ),
+                "# TYPE hhru_housekeeping_last_run_mode gauge",
+            ]
+        )
+        for mode, value in sorted(state["housekeeping_mode_gauge"].items()):
+            lines.append(
+                "hhru_housekeeping_last_run_mode"
+                f'{{mode="{_label_value(mode)}"}} {value:.1f}'
+            )
+
+        lines.extend(
+            [
+                (
+                    f"# HELP {HOUSEKEEPING_LAST_ACTION_COUNT_METRIC} "
+                    "Affected row or file count in the latest housekeeping run by target and mode."
+                ),
+                f"# TYPE {HOUSEKEEPING_LAST_ACTION_COUNT_METRIC} gauge",
+            ]
+        )
+        for key, value in sorted(state["housekeeping_action_gauge"].items()):
+            target, mode = _split_composite_key(key)
+            lines.append(
+                f"{HOUSEKEEPING_LAST_ACTION_COUNT_METRIC}"
+                f'{{target="{_label_value(target)}",mode="{_label_value(mode)}"}} '
+                f"{value:.6f}"
+            )
+
+        lines.extend(
+            [
+                (
+                    f"# HELP {HOUSEKEEPING_DELETED_TOTAL_METRIC} "
+                    "Total number of rows or files deleted by housekeeping per target."
+                ),
+                f"# TYPE {HOUSEKEEPING_DELETED_TOTAL_METRIC} counter",
+            ]
+        )
+        for target, value in sorted(state["housekeeping_deleted_total"].items()):
+            lines.append(
+                f"{HOUSEKEEPING_DELETED_TOTAL_METRIC}"
+                f'{{target="{_label_value(target)}"}} {value}'
+            )
 
         lines.extend(
             [
@@ -751,6 +1017,10 @@ def _empty_state() -> MetricsState:
         operation_duration_sum={},
         operation_last_success_timestamp={},
         records_written_total={},
+        backup_run_total={},
+        backup_gauge={},
+        restore_drill_run_total={},
+        restore_drill_gauge={},
         run_tree_coverage_gauge={},
         run_terminal_status_total={},
         run_terminal_status_timestamp={},
@@ -761,6 +1031,12 @@ def _empty_state() -> MetricsState:
         detail_repair_attempt_total={},
         detail_repair_gauge={},
         detail_repair_total={},
+        housekeeping_run_total={},
+        housekeeping_gauge={},
+        housekeeping_status_gauge={},
+        housekeeping_mode_gauge={},
+        housekeeping_action_gauge={},
+        housekeeping_deleted_total={},
         upstream_request_total={},
         upstream_request_duration_bucket={},
         upstream_request_duration_count={},
@@ -785,6 +1061,10 @@ def _deserialize_state(raw_state: str) -> MetricsState:
             loaded.get("operation_last_success_timestamp")
         ),
         records_written_total=_coerce_int_map(loaded.get("records_written_total")),
+        backup_run_total=_coerce_int_map(loaded.get("backup_run_total")),
+        backup_gauge=_coerce_float_map(loaded.get("backup_gauge")),
+        restore_drill_run_total=_coerce_int_map(loaded.get("restore_drill_run_total")),
+        restore_drill_gauge=_coerce_float_map(loaded.get("restore_drill_gauge")),
         run_tree_coverage_gauge=_coerce_float_map(loaded.get("run_tree_coverage_gauge")),
         run_terminal_status_total=_coerce_int_map(loaded.get("run_terminal_status_total")),
         run_terminal_status_timestamp=_coerce_float_map(
@@ -799,6 +1079,18 @@ def _deserialize_state(raw_state: str) -> MetricsState:
         ),
         detail_repair_gauge=_coerce_float_map(loaded.get("detail_repair_gauge")),
         detail_repair_total=_coerce_int_map(loaded.get("detail_repair_total")),
+        housekeeping_run_total=_coerce_int_map(loaded.get("housekeeping_run_total")),
+        housekeeping_gauge=_coerce_float_map(loaded.get("housekeeping_gauge")),
+        housekeeping_status_gauge=_coerce_float_map(
+            loaded.get("housekeeping_status_gauge")
+        ),
+        housekeeping_mode_gauge=_coerce_float_map(loaded.get("housekeeping_mode_gauge")),
+        housekeeping_action_gauge=_coerce_float_map(
+            loaded.get("housekeeping_action_gauge")
+        ),
+        housekeeping_deleted_total=_coerce_int_map(
+            loaded.get("housekeeping_deleted_total")
+        ),
         upstream_request_total=_coerce_int_map(loaded.get("upstream_request_total")),
         upstream_request_duration_bucket=_coerce_int_map(
             loaded.get("upstream_request_duration_bucket")

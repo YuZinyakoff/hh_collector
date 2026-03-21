@@ -131,6 +131,7 @@ Operational continuation semantics:
 - `completed_with_unresolved` допускает `resume-run-v2` поверх того же `crawl_run`: status run может снова стать `created`, а unresolved terminal leaves переводятся обратно в `pending` для повторного tree execution;
 - `completed_with_detail_errors` не считается list coverage failure и не требует нового run: detail repair выполняется отдельно поверх того же `crawl_run`;
 - promotion из `completed_with_detail_errors` в `succeeded` допустим только после того, как derived repair backlog для этого run опустел.
+- housekeeping retention допускает удаление старых terminal `crawl_run` по `finished_at`, но active `status=created` не должны затрагиваться.
 
 ---
 
@@ -183,6 +184,12 @@ Operational continuation semantics:
 
 Примечание:
 На старте можно хранить raw в PostgreSQL. Позже можно вынести payload в объектное хранилище, оставив metadata в БД.
+
+Retention semantics:
+
+- raw payload может чиститься housekeeping-проходом по TTL;
+- active `crawl_run.status=created` не должны терять связанные raw rows;
+- raw rows, на которые всё ещё ссылаются retained `vacancy_snapshot`, безопаснее сохранять дольше TTL как conservative guardrail.
 
 ---
 
@@ -363,6 +370,12 @@ Operational continuation semantics:
 Примечание:
 В MVP допустимо хранить normalized snapshot в jsonb. Позже можно вынести часть полей в более нормализованную историческую модель.
 
+Retention semantics:
+
+- `vacancy_snapshot` допускает TTL cleanup, но conservative housekeeping сохраняет latest snapshot на каждую vacancy;
+- удаление старых snapshot rows не должно ломать `vacancy_current_state`, потому что current state хранится отдельно и не зависит FK от snapshot history;
+- если старый `crawl_run` удалён раньше snapshot row, `crawl_run_id` может стать `null` через FK semantics: это допустимо для retention path, но сокращает historical lineage.
+
 ---
 
 ## 7.4. `detail_fetch_attempt`
@@ -391,6 +404,11 @@ Derived repair backlog semantics:
 - backlog item считается `repaired`, когда более новая попытка для того же `vacancy_id` в этом же `crawl_run` получает status = `succeeded`;
 - если после retry latest status снова `failed`, item остаётся в backlog и run сохраняет status `completed_with_detail_errors`;
 - reason `repair_backlog` используется для operator-driven retry path и позволяет отделить post-run repair от обычной selective detail policy.
+
+Retention semantics:
+
+- старые `detail_fetch_attempt` могут чиститься по TTL, но conservative housekeeping сохраняет latest attempt на `(vacancy_id, crawl_run_id)`;
+- это позволяет уменьшать historical noise, не ломая текущий repair backlog derivation для ещё нужных run-ов.
 
 ---
 

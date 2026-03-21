@@ -39,4 +39,40 @@ def handle_health_check(_: argparse.Namespace) -> int:
     print(f"metrics_endpoint=http://{settings.metrics_host}:{settings.metrics_port}/metrics")
     print(f"backup_dir={settings.backup_dir}")
     print(f"backup_retention_days={settings.backup_retention_days}")
+    print(
+        "backup_restore_drill_target_db="
+        f"{settings.backup_restore_drill_target_db}"
+    )
+    print(
+        "backup_restore_drill_drop_existing="
+        f"{'yes' if settings.backup_restore_drill_drop_existing else 'no'}"
+    )
+    print(
+        "housekeeping_raw_api_payload_retention_days="
+        f"{settings.housekeeping_raw_api_payload_retention_days}"
+    )
+    print(
+        "housekeeping_vacancy_snapshot_retention_days="
+        f"{settings.housekeeping_vacancy_snapshot_retention_days}"
+    )
+    print(
+        "housekeeping_finished_crawl_run_retention_days="
+        f"{settings.housekeeping_finished_crawl_run_retention_days}"
+    )
+    print(
+        "housekeeping_detail_fetch_attempt_retention_days="
+        f"{settings.housekeeping_detail_fetch_attempt_retention_days}"
+    )
+    print(
+        "housekeeping_report_artifact_retention_days="
+        f"{settings.housekeeping_report_artifact_retention_days}"
+    )
+    print(
+        "housekeeping_report_artifact_dir="
+        f"{settings.housekeeping_report_artifact_dir}"
+    )
+    print(
+        "housekeeping_delete_limit_per_target="
+        f"{settings.housekeeping_delete_limit_per_target}"
+    )
     return 0

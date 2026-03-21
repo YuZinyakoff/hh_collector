@@ -146,6 +146,87 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main scheduler
 - overlapping runs не допускаются через PostgreSQL advisory lock плюс active-run check
 - summary печатает `ticks_executed`, `runs_started`, `skipped_overlap_ticks`, `skipped_active_run_ticks` и разбивку по terminal run statuses
 
+## Housekeeping Dry-Run
+
+Для безопасной проверки retention plan сначала запусти dry-run:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-housekeeping --triggered-by cli-housekeeping-dry-run
+```
+
+Ожидаемо:
+- `status=succeeded`
+- `mode=dry_run`
+- `total_candidates>=0`
+- `total_deleted=0`
+- есть per-target строки вида `target=raw_api_payload ... candidate_count=... action_count=... limited=yes|no`
+
+Dry-run использует retention policy из runtime settings и ничего не удаляет. Это основной operator preview перед реальным cleanup.
+
+## Housekeeping Execute
+
+Если dry-run summary выглядит корректно, выполнить real cleanup можно так:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main run-housekeeping --execute --triggered-by cli-housekeeping
+```
+
+Ожидаемо:
+- `status=succeeded`
+- `mode=execute`
+- `total_deleted>=0`
+- per-target summary показывает фактически удалённые rows/files через `deleted_count`
+
+Что делает housekeeping:
+
+- удаляет только старые `raw_api_payload`, которые старше TTL, не относятся к active run и не защищены snapshot references;
+- удаляет старые `vacancy_snapshot`, но сохраняет latest snapshot на каждую vacancy;
+- удаляет старые `detail_fetch_attempt`, но сохраняет latest attempt на `(vacancy_id, crawl_run_id)`;
+- удаляет старые terminal `crawl_run` и их `crawl_partition` tree state только по `finished_at`;
+- удаляет старые локальные artifacts из `.state/reports/detail-payload-study`;
+- не трогает `vacancy_current_state`, справочники и актуальные `vacancy` rows;
+- не трогает `crawl_run` со статусом `created` и связанные с ними live artifacts.
+
+## Backup / Restore Drill
+
+Перед длинным unattended run или любым опасным ops-действием baseline теперь такой:
+
+```bash
+make backup
+make verify-backup BACKUP_FILE=.state/backups/<file>.dump
+make restore-drill BACKUP_FILE=.state/backups/<file>.dump
+```
+
+Подробный runbook:
+
+- [backup-restore-drill.md](/home/yurizinyakov/projects/hh_collector/docs/ops/backup-restore-drill.md)
+
+Ожидаемо:
+
+- backup summary печатает `backup_sha256` и `archive_entry_count`
+- restore drill идёт только в separate target DB
+- restore drill завершает проверку с `schema_verified=yes`
+
+Legacy `make restore` остаётся аварийным destructive path и больше не считается default operator flow.
+
+## Night Soak-Test
+
+Для ночного локального прогона используй:
+
+```bash
+HHRU_SCHEDULER_INTERVAL_SECONDS=900 \
+HHRU_SCHEDULER_SYNC_DICTIONARIES=no \
+HHRU_SCHEDULER_DETAIL_LIMIT=25 \
+HHRU_SCHEDULER_TRIGGERED_BY=soak-test \
+make soak-test
+```
+
+Подробный checklist:
+
+- [soak-test-readiness.md](/home/yurizinyakov/projects/hh_collector/docs/ops/soak-test-readiness.md)
+
+Утром первым экраном должен быть `Scheduler / Recovery Health`.
+
 ## Happy Path
 
 1. Синхронизировать `areas`:

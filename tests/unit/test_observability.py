@@ -26,6 +26,14 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         record_type="vacancy",
         count=5,
     )
+    registry.record_backup_run(
+        status="succeeded",
+        recorded_at=datetime(2026, 3, 20, 9, 30, tzinfo=UTC),
+    )
+    registry.record_restore_drill_run(
+        status="succeeded",
+        recorded_at=datetime(2026, 3, 20, 9, 45, tzinfo=UTC),
+    )
     registry.record_upstream_request(
         endpoint="/vacancies",
         status_code=200,
@@ -71,6 +79,20 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         repaired_count=1,
         still_failing_count=1,
     )
+    registry.record_housekeeping_run(
+        mode="dry_run",
+        status="succeeded",
+        recorded_at=datetime(2026, 3, 21, 8, 0, tzinfo=UTC),
+    )
+    registry.set_housekeeping_last_action_count(
+        target="raw_api_payload",
+        mode="dry_run",
+        count=12,
+    )
+    registry.record_housekeeping_deleted(
+        target="crawl_partition",
+        count=5,
+    )
 
     rendered = registry.render_prometheus()
 
@@ -79,6 +101,10 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         'hhru_records_written_total{operation="process_list_page",record_type="vacancy"} 5'
         in rendered
     )
+    assert 'hhru_backup_run_total{status="succeeded"} 1' in rendered
+    assert "hhru_backup_last_success_timestamp_seconds" in rendered
+    assert 'hhru_restore_drill_run_total{status="succeeded"} 1' in rendered
+    assert "hhru_restore_drill_last_success_timestamp_seconds" in rendered
     assert 'hhru_upstream_request_total{endpoint="/vacancies",status_class="2xx"} 1' in rendered
     assert (
         'hhru_run_tree_total_partitions{run_id="run-1",run_type="weekly_sweep"} 6.000000'
@@ -97,8 +123,8 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         in rendered
     )
     assert (
-        'hhru_run_terminal_status_total{run_type="weekly_sweep",status="completed_with_detail_errors"} 1'
-        in rendered
+        'hhru_run_terminal_status_total{run_type="weekly_sweep",'
+        'status="completed_with_detail_errors"} 1' in rendered
     )
     assert 'hhru_scheduler_tick_total{outcome="completed_with_detail_errors"} 1' in rendered
     assert "hhru_scheduler_last_tick_timestamp_seconds" in rendered
@@ -110,20 +136,29 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         in rendered
     )
     assert (
-        'hhru_resume_run_v2_attempt_total{run_type="weekly_sweep",outcome="completed_with_unresolved"} 1'
-        in rendered
+        'hhru_resume_run_v2_attempt_total{run_type="weekly_sweep",'
+        'outcome="completed_with_unresolved"} 1' in rendered
     )
     assert (
         'hhru_detail_repair_backlog_size{run_id="run-1",run_type="weekly_sweep"} 2.000000'
         in rendered
     )
     assert (
-        'hhru_detail_repair_attempt_total{run_type="weekly_sweep",outcome="completed_with_detail_errors"} 1'
-        in rendered
+        'hhru_detail_repair_attempt_total{run_type="weekly_sweep",'
+        'outcome="completed_with_detail_errors"} 1' in rendered
     )
     assert 'hhru_detail_repair_retried_total{run_type="weekly_sweep"} 2' in rendered
     assert 'hhru_detail_repair_repaired_total{run_type="weekly_sweep"} 1' in rendered
     assert 'hhru_detail_repair_still_failing_total{run_type="weekly_sweep"} 1' in rendered
+    assert 'hhru_housekeeping_run_total{mode="dry_run",status="succeeded"} 1' in rendered
+    assert "hhru_housekeeping_last_run_timestamp_seconds" in rendered
+    assert 'hhru_housekeeping_last_run_status{status="succeeded"} 1.0' in rendered
+    assert 'hhru_housekeeping_last_run_mode{mode="dry_run"} 1.0' in rendered
+    assert (
+        'hhru_housekeeping_last_action_count{target="raw_api_payload",mode="dry_run"} 12.000000'
+        in rendered
+    )
+    assert 'hhru_housekeeping_deleted_total{target="crawl_partition"} 5' in rendered
     assert "hhru_operation_duration_seconds_count" in rendered
     assert "hhru_upstream_request_duration_seconds_count" in rendered
 

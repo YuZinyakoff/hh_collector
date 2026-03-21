@@ -1,9 +1,13 @@
 import argparse
 
 from hhru_platform.config.logging import configure_logging
+from hhru_platform.interfaces.cli.commands.backup import register_backup_commands
 from hhru_platform.interfaces.cli.commands.detail import register_detail_commands
 from hhru_platform.interfaces.cli.commands.dictionary import register_dictionary_commands
 from hhru_platform.interfaces.cli.commands.health import register_health_commands
+from hhru_platform.interfaces.cli.commands.housekeeping import (
+    register_housekeeping_commands,
+)
 from hhru_platform.interfaces.cli.commands.list_engine import register_list_engine_commands
 from hhru_platform.interfaces.cli.commands.list_page import register_list_page_commands
 from hhru_platform.interfaces.cli.commands.observability import (
@@ -21,7 +25,9 @@ from hhru_platform.interfaces.cli.commands.scheduler import register_scheduler_c
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hhru-platform")
     subparsers = parser.add_subparsers(dest="command")
+    register_backup_commands(subparsers)
     register_health_commands(subparsers)
+    register_housekeeping_commands(subparsers)
     register_run_commands(subparsers)
     register_run_once_commands(subparsers)
     register_scheduler_commands(subparsers)

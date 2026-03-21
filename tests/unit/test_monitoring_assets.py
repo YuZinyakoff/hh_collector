@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -10,6 +11,11 @@ def test_grafana_dashboards_are_valid_json_assets() -> None:
     dashboard_paths = (
         REPO_ROOT / "monitoring" / "grafana" / "dashboards" / "collector-overview.json",
         REPO_ROOT / "monitoring" / "grafana" / "dashboards" / "hh-api-ingest-health.json",
+        REPO_ROOT
+        / "monitoring"
+        / "grafana"
+        / "dashboards"
+        / "scheduler-recovery-health.json",
     )
 
     for dashboard_path in dashboard_paths:
@@ -212,6 +218,144 @@ def test_grafana_recovery_panels_use_lifecycle_metrics() -> None:
         "sum(increase(hhru_detail_repair_attempt_total[$__range]))"
     )
     assert repair_attempts_panel["targets"][0]["instant"] is True
+
+
+def test_scheduler_recovery_dashboard_uses_recording_rules_and_debt_tables() -> None:
+    dashboard = _load_dashboard("scheduler-recovery-health.json")
+
+    tick_age_panel = _find_panel(dashboard, "Scheduler Tick Age")
+    assert tick_age_panel["targets"][0]["expr"] == "hhru:scheduler_tick_age_seconds"
+    assert tick_age_panel["fieldConfig"]["defaults"]["unit"] == "s"
+
+    triggered_age_panel = _find_panel(dashboard, "Last Triggered Run Age")
+    assert triggered_age_panel["targets"][0]["expr"] == (
+        "hhru:scheduler_last_triggered_run_age_seconds"
+    )
+    assert triggered_age_panel["fieldConfig"]["defaults"]["unit"] == "s"
+
+    failed_panel = _find_panel(dashboard, "Open Failed Partitions")
+    assert failed_panel["targets"][0]["expr"] == "hhru:coverage_failed_partitions_open"
+
+    unresolved_panel = _find_panel(dashboard, "Open Unresolved Partitions")
+    assert unresolved_panel["targets"][0]["expr"] == "hhru:coverage_unresolved_partitions_open"
+
+    backlog_panel = _find_panel(dashboard, "Open Detail Repair Backlog")
+    assert backlog_panel["targets"][0]["expr"] == "hhru:detail_repair_backlog_open"
+
+    resume_again_panel = _find_panel(dashboard, "Resume Unresolved Again In 12h")
+    assert resume_again_panel["targets"][0]["expr"] == (
+        'sum(increase(hhru_resume_run_v2_attempt_total{outcome="completed_with_unresolved"}[12h]))'
+    )
+
+    failed_runs_table = _find_panel(dashboard, "Runs With Failed Partitions")
+    assert failed_runs_table["targets"][0]["expr"] == (
+        "sort_desc(hhru_run_tree_failed_partitions > 0)"
+    )
+    assert failed_runs_table["targets"][0]["format"] == "table"
+
+    unresolved_runs_table = _find_panel(dashboard, "Runs With Unresolved Partitions")
+    assert unresolved_runs_table["targets"][0]["expr"] == (
+        "sort_desc(hhru_run_tree_unresolved_partitions > 0)"
+    )
+
+    backlog_runs_table = _find_panel(dashboard, "Runs With Detail Repair Backlog")
+    assert backlog_runs_table["targets"][0]["expr"] == (
+        "sort_desc(hhru_detail_repair_backlog_size > 0)"
+    )
+
+    resume_outcomes_panel = _find_panel(dashboard, "Resume Outcomes In Range")
+    assert resume_outcomes_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (outcome) (increase(hhru_resume_run_v2_attempt_total[$__range])))"
+    )
+
+    repair_outcomes_panel = _find_panel(dashboard, "Detail Repair Outcomes In Range")
+    assert repair_outcomes_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (outcome) (increase(hhru_detail_repair_attempt_total[$__range])))"
+    )
+
+    housekeeping_age_panel = _find_panel(dashboard, "Housekeeping Last Run Age")
+    assert housekeeping_age_panel["targets"][0]["expr"] == (
+        "hhru:housekeeping_last_run_age_seconds"
+    )
+    assert housekeeping_age_panel["fieldConfig"]["defaults"]["unit"] == "s"
+
+    housekeeping_status_panel = _find_panel(dashboard, "Housekeeping Last Run Status")
+    assert housekeeping_status_panel["targets"][0]["expr"] == (
+        "sort_desc(max by (status) (hhru_housekeeping_last_run_status == 1))"
+    )
+
+    housekeeping_mode_panel = _find_panel(dashboard, "Housekeeping Last Run Mode")
+    assert housekeeping_mode_panel["targets"][0]["expr"] == (
+        "sort_desc(max by (mode) (hhru_housekeeping_last_run_mode == 1))"
+    )
+
+    housekeeping_deleted_panel = _find_panel(dashboard, "Housekeeping Deletions In Range")
+    assert housekeeping_deleted_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (target) (increase(hhru_housekeeping_deleted_total[$__range])))"
+    )
+
+    backup_age_panel = _find_panel(dashboard, "Backup Last Success Age")
+    assert backup_age_panel["targets"][0]["expr"] == "hhru:backup_last_success_age_seconds"
+    assert backup_age_panel["fieldConfig"]["defaults"]["unit"] == "s"
+
+    backup_runs_panel = _find_panel(dashboard, "Backup Runs In Range")
+    assert backup_runs_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (status) (increase(hhru_backup_run_total[$__range])))"
+    )
+
+    restore_drill_age_panel = _find_panel(dashboard, "Restore Drill Last Success Age")
+    assert restore_drill_age_panel["targets"][0]["expr"] == (
+        "hhru:restore_drill_last_success_age_seconds"
+    )
+    assert restore_drill_age_panel["fieldConfig"]["defaults"]["unit"] == "s"
+
+    restore_drill_runs_panel = _find_panel(dashboard, "Restore Drill Runs In Range")
+    assert restore_drill_runs_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (status) (increase(hhru_restore_drill_run_total[$__range])))"
+    )
+
+
+def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
+    rules_text = (
+        REPO_ROOT / "monitoring" / "alerting" / "rules.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "record: hhru:scheduler_tick_age_seconds" in rules_text
+    assert "record: hhru:scheduler_last_triggered_run_age_seconds" in rules_text
+    assert "record: hhru:coverage_failed_partitions_open" in rules_text
+    assert "record: hhru:coverage_unresolved_partitions_open" in rules_text
+    assert "record: hhru:detail_repair_backlog_open" in rules_text
+    assert "record: hhru:housekeeping_last_run_age_seconds" in rules_text
+    assert "record: hhru:backup_last_success_age_seconds" in rules_text
+    assert "record: hhru:restore_drill_last_success_age_seconds" in rules_text
+
+    alert_names = set(re.findall(r"alert:\s+([A-Za-z0-9]+)", rules_text))
+    assert {
+        "HHRUPlatformMetricsEndpointDown",
+        "HHRUPlatformOperationFailures",
+        "HHRUPlatformNoRecentReconciliation",
+        "HHRUPlatformSchedulerTickStale",
+        "HHRUPlatformSchedulerTriggeredRunStale",
+        "HHRUPlatformFailedPartitionsPresent",
+        "HHRUPlatformUnresolvedPartitionsStuck",
+        "HHRUPlatformDetailRepairBacklogStuck",
+        "HHRUPlatformResumeUnresolvedRepeatedly",
+        "HHRUPlatformHousekeepingStale",
+        "HHRUPlatformBackupStale",
+    }.issubset(alert_names)
+
+    assert "expr: hhru:scheduler_tick_age_seconds > 7200" in rules_text
+    assert "expr: hhru:scheduler_last_triggered_run_age_seconds > 86400" in rules_text
+    assert "expr: hhru:coverage_failed_partitions_open > 0" in rules_text
+    assert "expr: hhru:coverage_unresolved_partitions_open > 0" in rules_text
+    assert "expr: hhru:detail_repair_backlog_open > 0" in rules_text
+    assert "expr: hhru:housekeeping_last_run_age_seconds > 604800" in rules_text
+    assert "expr: hhru:backup_last_success_age_seconds > 259200" in rules_text
+    assert (
+        'expr: increase(hhru_resume_run_v2_attempt_total'
+        '{outcome="completed_with_unresolved"}[12h]) >= 2'
+        in rules_text
+    )
 
 
 def _load_dashboard(filename: str) -> dict:

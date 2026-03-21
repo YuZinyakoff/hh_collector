@@ -18,6 +18,9 @@ from hhru_platform.infrastructure.db.repositories.dictionary_sync_run_repo impor
 from hhru_platform.infrastructure.db.repositories.employer_repo import (
     SqlAlchemyEmployerRepository,
 )
+from hhru_platform.infrastructure.db.repositories.housekeeping_repo import (
+    SqlAlchemyHousekeepingRepository,
+)
 from hhru_platform.infrastructure.db.repositories.professional_role_repo import (
     SqlAlchemyProfessionalRoleRepository,
 )
@@ -47,6 +50,7 @@ __all__ = [
     "SqlAlchemyDictionaryStore",
     "SqlAlchemyDictionarySyncRunRepository",
     "SqlAlchemyEmployerRepository",
+    "SqlAlchemyHousekeepingRepository",
     "SqlAlchemyProfessionalRoleRepository",
     "SqlAlchemyRawApiPayloadRepository",
     "SqlAlchemyVacancyCurrentStateRepository",

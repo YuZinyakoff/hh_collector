@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from hhru_platform.application.commands.reconcile_run import ReconcileRunResult
+from hhru_platform.application.commands.run_backup import RunBackupResult
 from hhru_platform.application.commands.run_collection_once import RunCollectionOnceResult
 from hhru_platform.application.commands.run_collection_once_v2 import (
     RunCollectionOnceV2Result,
 )
+from hhru_platform.application.commands.run_restore_drill import RunRestoreDrillResult
 from hhru_platform.config.settings import Settings
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.entities.crawl_run import CrawlRun
@@ -22,7 +24,11 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     captured = capsys.readouterr()
 
     assert exit_code == 0
+    assert "run-backup" in captured.out
+    assert "verify-backup-file" in captured.out
+    assert "run-restore-drill" in captured.out
     assert "health-check" in captured.out
+    assert "run-housekeeping" in captured.out
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "run-once-v2" in captured.out
@@ -67,6 +73,15 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             metrics_state_path=".state/metrics/metrics.json",
             backup_dir=".state/backups",
             backup_retention_days=14,
+            backup_restore_drill_target_db="hhru_platform_restore_drill",
+            backup_restore_drill_drop_existing=True,
+            housekeeping_raw_api_payload_retention_days=90,
+            housekeeping_vacancy_snapshot_retention_days=365,
+            housekeeping_finished_crawl_run_retention_days=60,
+            housekeeping_detail_fetch_attempt_retention_days=180,
+            housekeeping_report_artifact_retention_days=21,
+            housekeeping_report_artifact_dir=".state/reports/detail-payload-study",
+            housekeeping_delete_limit_per_target=5000,
         ),
     )
     monkeypatch.setattr("sys.argv", ["hhru-platform", "health-check"])
@@ -85,6 +100,15 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "hh_api_user_agent_live_search_valid=yes" in captured.out
     assert "metrics_state_path=.state/metrics/metrics.json" in captured.out
     assert "backup_retention_days=14" in captured.out
+    assert "backup_restore_drill_target_db=hhru_platform_restore_drill" in captured.out
+    assert "backup_restore_drill_drop_existing=yes" in captured.out
+    assert "housekeeping_raw_api_payload_retention_days=90" in captured.out
+    assert "housekeeping_vacancy_snapshot_retention_days=365" in captured.out
+    assert "housekeeping_finished_crawl_run_retention_days=60" in captured.out
+    assert "housekeeping_detail_fetch_attempt_retention_days=180" in captured.out
+    assert "housekeeping_report_artifact_retention_days=21" in captured.out
+    assert "housekeeping_report_artifact_dir=.state/reports/detail-payload-study" in captured.out
+    assert "housekeeping_delete_limit_per_target=5000" in captured.out
 
 
 def test_run_once_cli_prints_summary(monkeypatch, capsys) -> None:
@@ -211,6 +235,123 @@ def test_run_once_cli_returns_non_zero_and_prints_failure_summary(monkeypatch, c
     assert "skipped_steps=fetch_vacancy_detail,reconcile_run" in captured.out
     assert "failed_step=process_list_page" in captured.out
     assert "error=Invalid HH API User-Agent for live vacancy search" in captured.out
+
+
+def test_run_backup_cli_prints_summary(monkeypatch, capsys, tmp_path) -> None:
+    backup_file = tmp_path / "sample.dump"
+
+    def fake_run_backup(command, **kwargs) -> RunBackupResult:
+        assert command.triggered_by == "cli-backup"
+        return RunBackupResult(
+            status="succeeded",
+            triggered_by=command.triggered_by,
+            recorded_at=datetime(2026, 3, 21, 12, 0, tzinfo=UTC),
+            backup_file=backup_file,
+            backup_size_bytes=256,
+            backup_sha256="abc123",
+            archive_entry_count=8,
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.backup.run_backup",
+        fake_run_backup,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.backup.BackupService",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.backup.get_metrics_registry",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["hhru-platform", "run-backup", "--triggered-by", "cli-backup"],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed backup" in captured.out
+    assert "status=succeeded" in captured.out
+    assert f"backup_file={backup_file}" in captured.out
+    assert "backup_size_bytes=256" in captured.out
+    assert "backup_sha256=abc123" in captured.out
+    assert "archive_entry_count=8" in captured.out
+
+
+def test_run_restore_drill_cli_prints_summary(monkeypatch, capsys, tmp_path) -> None:
+    backup_file = tmp_path / "sample.dump"
+
+    def fake_run_restore_drill(command, **kwargs) -> RunRestoreDrillResult:
+        assert command.target_db == "hhru_platform_restore_drill"
+        assert command.triggered_by == "cli-restore"
+        return RunRestoreDrillResult(
+            status="succeeded",
+            triggered_by=command.triggered_by,
+            recorded_at=datetime(2026, 3, 21, 13, 0, tzinfo=UTC),
+            backup_file=backup_file,
+            target_db=command.target_db,
+            archive_entry_count=9,
+            checked_tables=(
+                "crawl_run",
+                "crawl_partition",
+                "raw_api_payload",
+                "vacancy_snapshot",
+                "vacancy_current_state",
+            ),
+            verified_tables_count=5,
+            schema_verified=True,
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.backup.run_restore_drill",
+        fake_run_restore_drill,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.backup.BackupService",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.backup.get_metrics_registry",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.backup.get_settings",
+        lambda: Settings(
+            db_host="postgres",
+            db_port=5432,
+            db_name="hhru_platform",
+            db_user="hhru",
+            db_password="secret",
+            backup_restore_drill_target_db="hhru_platform_restore_drill",
+            backup_restore_drill_drop_existing=True,
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-restore-drill",
+            "--backup-file",
+            str(backup_file),
+            "--triggered-by",
+            "cli-restore",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed restore drill" in captured.out
+    assert "status=succeeded" in captured.out
+    assert f"backup_file={backup_file}" in captured.out
+    assert "target_db=hhru_platform_restore_drill" in captured.out
+    assert "archive_entry_count=9" in captured.out
+    assert "schema_verified=yes" in captured.out
+    assert "verified_tables=5/5" in captured.out
 
 
 def test_run_once_v2_cli_prints_tree_aware_summary(monkeypatch, capsys) -> None:
@@ -1685,6 +1826,105 @@ def test_retry_failed_details_cli_prints_summary_and_returns_non_zero_when_backl
     assert "still_failing_count=1" in captured.out
     assert "remaining_backlog_count=1" in captured.out
     assert f"vacancy={vacancy_id}" in captured.out
+
+
+def test_run_housekeeping_cli_prints_dry_run_summary(monkeypatch, capsys) -> None:
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    class FakeHousekeepingRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeReportArtifactStore:
+        pass
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.SqlAlchemyHousekeepingRepository",
+        FakeHousekeepingRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.LocalReportArtifactStore",
+        FakeReportArtifactStore,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.get_metrics_registry",
+        lambda: SimpleNamespace(name="fake-metrics"),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.get_settings",
+        lambda: Settings(
+            housekeeping_raw_api_payload_retention_days=90,
+            housekeeping_vacancy_snapshot_retention_days=365,
+            housekeeping_finished_crawl_run_retention_days=60,
+            housekeeping_detail_fetch_attempt_retention_days=180,
+            housekeeping_report_artifact_retention_days=21,
+            housekeeping_report_artifact_dir=".state/reports/detail-payload-study",
+            housekeeping_delete_limit_per_target=5000,
+        ),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.run_housekeeping",
+        lambda command, **kwargs: SimpleNamespace(
+            status="succeeded",
+            mode=command.mode,
+            triggered_by=command.triggered_by,
+            evaluated_at=datetime(2026, 3, 21, 14, 0, tzinfo=UTC),
+            total_candidates=9,
+            total_action_count=5,
+            total_deleted=0,
+            summaries=(
+                SimpleNamespace(
+                    target="raw_api_payload",
+                    item_type="rows",
+                    enabled=True,
+                    retention_days=90,
+                    cutoff=datetime(2025, 12, 21, 14, 0, tzinfo=UTC),
+                    candidate_count=3,
+                    action_count=2,
+                    deleted_count=0,
+                    limited=True,
+                ),
+                SimpleNamespace(
+                    target="detail_payload_study_artifact",
+                    item_type="files",
+                    enabled=True,
+                    retention_days=21,
+                    cutoff=datetime(2026, 2, 28, 14, 0, tzinfo=UTC),
+                    candidate_count=2,
+                    action_count=2,
+                    deleted_count=0,
+                    limited=False,
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-housekeeping",
+            "--triggered-by",
+            "pytest-housekeeping",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed housekeeping dry-run" in captured.out
+    assert "status=succeeded" in captured.out
+    assert "mode=dry_run" in captured.out
+    assert "triggered_by=pytest-housekeeping" in captured.out
+    assert "total_candidates=9" in captured.out
+    assert "target=raw_api_payload item_type=rows enabled=yes" in captured.out
+    assert "target=detail_payload_study_artifact item_type=files enabled=yes" in captured.out
 
 
 def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) -> None:

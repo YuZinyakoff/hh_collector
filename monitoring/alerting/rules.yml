@@ -1,4 +1,22 @@
 groups:
+  - name: hhru-platform-recording
+    rules:
+      - record: hhru:scheduler_tick_age_seconds
+        expr: clamp_min(time() - max(hhru_scheduler_last_tick_timestamp_seconds), 0)
+      - record: hhru:scheduler_last_triggered_run_age_seconds
+        expr: clamp_min(time() - max(hhru_scheduler_last_triggered_run_timestamp_seconds), 0)
+      - record: hhru:coverage_failed_partitions_open
+        expr: sum(hhru_run_tree_failed_partitions)
+      - record: hhru:coverage_unresolved_partitions_open
+        expr: sum(hhru_run_tree_unresolved_partitions)
+      - record: hhru:detail_repair_backlog_open
+        expr: sum(hhru_detail_repair_backlog_size)
+      - record: hhru:housekeeping_last_run_age_seconds
+        expr: clamp_min(time() - max(hhru_housekeeping_last_run_timestamp_seconds), 0)
+      - record: hhru:backup_last_success_age_seconds
+        expr: clamp_min(time() - max(hhru_backup_last_success_timestamp_seconds), 0)
+      - record: hhru:restore_drill_last_success_age_seconds
+        expr: clamp_min(time() - max(hhru_restore_drill_last_success_timestamp_seconds), 0)
   - name: hhru-platform
     rules:
       - alert: HHRUPlatformMetricsEndpointDown
@@ -25,3 +43,75 @@ groups:
         annotations:
           summary: reconcile-run has not succeeded recently
           description: No successful reconciliation has been recorded for more than 7 days.
+      - alert: HHRUPlatformSchedulerTickStale
+        expr: hhru:scheduler_tick_age_seconds > 7200
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: scheduler tick is stale
+          description: No scheduler tick has been observed for more than 2 hours.
+          action: Check the scheduler-loop process, logs, and Compose/container health before forcing a manual run.
+      - alert: HHRUPlatformSchedulerTriggeredRunStale
+        expr: hhru:scheduler_last_triggered_run_age_seconds > 86400
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: scheduler has not triggered a run recently
+          description: No scheduler-admitted run has started for more than 24 hours.
+          action: Verify whether scheduler ticks are only skipping because of an active run or whether admission/start logic is stuck.
+      - alert: HHRUPlatformFailedPartitionsPresent
+        expr: hhru:coverage_failed_partitions_open > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: failed crawl partitions are present
+          description: One or more crawl partitions remain in failed state across the published coverage snapshots.
+          action: Inspect the affected run in Grafana and CLI, then debug planner/list execution before starting another full run.
+      - alert: HHRUPlatformUnresolvedPartitionsStuck
+        expr: hhru:coverage_unresolved_partitions_open > 0
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: unresolved crawl partitions remain open
+          description: Unresolved branches have remained in the published coverage snapshots for more than 6 hours.
+          action: Review unresolved runs and use resume-run-v2 where appropriate; if resumes repeat, investigate split-policy or upstream behaviour.
+      - alert: HHRUPlatformDetailRepairBacklogStuck
+        expr: hhru:detail_repair_backlog_open > 0
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: detail repair backlog remains open
+          description: Detail repair backlog has remained non-empty for more than 6 hours.
+          action: Run retry-failed-details for the affected run and inspect repeatedly failing vacancies or upstream detail errors.
+      - alert: HHRUPlatformResumeUnresolvedRepeatedly
+        expr: increase(hhru_resume_run_v2_attempt_total{outcome="completed_with_unresolved"}[12h]) >= 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: resume-run-v2 repeatedly returns unresolved coverage
+          description: At least two resume attempts in the last 12 hours still ended with unresolved branches.
+          action: Stop blind retries and inspect the unresolved scopes, planner split behaviour, and related upstream/API responses.
+      - alert: HHRUPlatformHousekeepingStale
+        expr: hhru:housekeeping_last_run_age_seconds > 604800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: housekeeping has not run recently
+          description: No successful or dry-run housekeeping execution has been observed for more than 7 days.
+          action: Run run-housekeeping in dry-run mode first, review the summary, and then execute it if the retention plan looks correct.
+      - alert: HHRUPlatformBackupStale
+        expr: hhru:backup_last_success_age_seconds > 259200
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL backup is stale
+          description: No successful PostgreSQL backup has been observed for more than 72 hours.
+          action: Run run-backup, verify the archive, and if it still fails inspect PostgreSQL connectivity, disk space, and backup script output.

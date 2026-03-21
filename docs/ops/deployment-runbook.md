@@ -92,6 +92,7 @@ curl http://127.0.0.1:9090/-/ready
 
 Dashboards provisioned автоматически из репозитория:
 
+- `Scheduler / Recovery Health`
 - `Collector Overview`
 - `HH API / Ingest Health`
 
@@ -137,10 +138,23 @@ make backup
 - делается через `pg_dump --format=custom`
 - содержит `--create` и `--clean`
 - чистит старые dump-файлы по `HHRU_BACKUP_RETENTION_DAYS`
+- сразу проверяется как restorable archive и публикует lifecycle metrics
+
+Повторно проверить конкретный файл:
+
+```bash
+make verify-backup BACKUP_FILE=.state/backups/<file>.dump
+```
 
 ## 8. Restore
 
-Restore перезаписывает базу из dump и поэтому требует явного подтверждения.
+Рекомендуемый путь сначала сделать safe restore drill в отдельную DB:
+
+```bash
+make restore-drill BACKUP_FILE=.state/backups/<file>.dump
+```
+
+Legacy destructive restore остаётся только как аварийный инструмент и требует явного подтверждения.
 
 Восстановить из файла, который уже виден внутри backup container как `/backups/...`:
 

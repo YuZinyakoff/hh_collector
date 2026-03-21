@@ -4,8 +4,9 @@ COMPOSE ?= docker compose
 ARGS ?=
 
 .PHONY: up up-observability up-scheduler down migrate migrate-compose test lint format \
-	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop \
-	compose-health compose-show-metrics backup restore
+	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop run-housekeeping \
+	run-backup verify-backup-file run-restore-drill compose-health compose-show-metrics \
+	backup verify-backup restore restore-drill soak-test
 
 up:
 	$(COMPOSE) up -d postgres redis metrics
@@ -50,6 +51,20 @@ trigger-run-now:
 scheduler-loop:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main scheduler-loop $(ARGS)
 
+run-housekeeping:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-housekeeping $(ARGS)
+
+run-backup:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-backup $(ARGS)
+
+verify-backup-file:
+	@test -n "$(BACKUP_FILE)" || (echo "BACKUP_FILE=.state/backups/<file>.dump is required" >&2; exit 1)
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-backup-file --backup-file "$(BACKUP_FILE)" $(ARGS)
+
+run-restore-drill:
+	@test -n "$(BACKUP_FILE)" || (echo "BACKUP_FILE=.state/backups/<file>.dump is required" >&2; exit 1)
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-restore-drill --backup-file "$(BACKUP_FILE)" $(ARGS)
+
 compose-health:
 	$(COMPOSE) --profile ops run --rm app health-check
 
@@ -57,11 +72,23 @@ compose-show-metrics:
 	$(COMPOSE) --profile ops run --rm app show-metrics
 
 backup:
-	$(COMPOSE) --profile ops run --rm backup
+	$(COMPOSE) --profile ops run --rm app run-backup $(ARGS)
+
+verify-backup:
+	@test -n "$(BACKUP_FILE)" || (echo "BACKUP_FILE=.state/backups/<file>.dump is required" >&2; exit 1)
+	$(COMPOSE) --profile ops run --rm app verify-backup-file --backup-file "$(BACKUP_FILE)" $(ARGS)
 
 restore:
 	@test -n "$(BACKUP_FILE)" || (echo "BACKUP_FILE=/backups/<file>.dump is required" >&2; exit 1)
 	$(COMPOSE) --profile ops run --rm \
+		--entrypoint /usr/local/bin/restore_postgres.sh \
 		-e HHRU_RESTORE_FILE="$(BACKUP_FILE)" \
 		-e HHRU_RESTORE_CONFIRM=yes \
-		backup /usr/local/bin/restore_postgres.sh
+		backup
+
+restore-drill:
+	@test -n "$(BACKUP_FILE)" || (echo "BACKUP_FILE=.state/backups/<file>.dump is required" >&2; exit 1)
+	$(COMPOSE) --profile ops run --rm app run-restore-drill --backup-file "$(BACKUP_FILE)" $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
+
+soak-test:
+	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus grafana scheduler

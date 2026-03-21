@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+umask 077
+
 backup_dir="${HHRU_BACKUP_DIR:-.state/backups}"
 backup_prefix="${HHRU_BACKUP_PREFIX:-hhru-platform}"
 backup_retention_days="${HHRU_BACKUP_RETENTION_DAYS:-7}"

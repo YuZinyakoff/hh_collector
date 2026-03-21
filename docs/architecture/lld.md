@@ -305,6 +305,7 @@ Operator semantics:
 - `process-partition-v2` для одного terminal leaf с pagination/saturation handling;
 - `run-list-engine-v2` для прохода по всем pending terminal leaves внутри `crawl_run`.
 - `retry-failed-details` для derived detail repair backlog текущего `crawl_run`;
+- `run-housekeeping` для operator-driven retention cleanup поверх old raw/history/run artifacts;
 - `show-run-coverage` для tree-based coverage summary;
 - `show-run-tree` для компактного tree view без SQL.
 
@@ -322,11 +323,19 @@ Operator semantics:
 Техническое обслуживание системы.
 
 ### Ответственность
-- cleanup старых raw/log records по retention;
-- пересчёт служебных counters;
-- архивирование;
-- контроль подвисших jobs;
-- mark stale partitions/jobs.
+- cleanup старых raw/history artifacts по retention policy;
+- cleanup old terminal `crawl_run` / `crawl_partition` tree state без затрагивания active runs;
+- cleanup derived detail-attempt history и local report artifacts;
+- dry-run preview перед execute mode;
+- публикация housekeeping lifecycle metrics и structured logs.
+
+Минимальный hardening-stage контракт:
+
+- retention policy config-driven через env/settings, с отдельными окнами для `raw_api_payload`, `vacancy_snapshot`, old finished `crawl_run`, `detail_fetch_attempt` и local report artifacts;
+- latest `vacancy_snapshot` на vacancy сохраняется как conservative guardrail;
+- latest `detail_fetch_attempt` на `(vacancy_id, crawl_run_id)` сохраняется как conservative guardrail;
+- active `crawl_run.status=created` и связанные artifacts не удаляются;
+- отдельный queue/framework не появляется: housekeeping выполняется как bounded operator CLI/use case.
 
 ---
 
@@ -336,10 +345,11 @@ Operator semantics:
 Резервное копирование.
 
 ### Ответственность
-- pg_dump / иная backup strategy;
-- backup raw storage metadata;
-- загрузка в удалённое хранилище;
-- логирование результата backup.
+- PostgreSQL backup через bounded operator flow;
+- verify backup archive сразу после создания;
+- safe restore drill в отдельную target DB;
+- публикация backup / restore drill lifecycle metrics и structured logs;
+- low-level destructive restore только как explicit аварийный path, не default flow.
 
 ---
 

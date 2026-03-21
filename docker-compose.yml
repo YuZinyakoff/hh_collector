@@ -19,6 +19,15 @@ x-app-env: &app-env
   HHRU_BACKUP_DIR: .state/backups
   HHRU_BACKUP_RETENTION_DAYS: ${HHRU_BACKUP_RETENTION_DAYS:-7}
   HHRU_BACKUP_PREFIX: ${HHRU_BACKUP_PREFIX:-hhru-platform}
+  HHRU_BACKUP_RESTORE_DRILL_TARGET_DB: ${HHRU_BACKUP_RESTORE_DRILL_TARGET_DB:-hhru_platform_restore_drill}
+  HHRU_BACKUP_RESTORE_DRILL_DROP_EXISTING: ${HHRU_BACKUP_RESTORE_DRILL_DROP_EXISTING:-true}
+  HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS:-90}
+  HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS:-365}
+  HHRU_HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS:-90}
+  HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS:-180}
+  HHRU_HOUSEKEEPING_REPORT_ARTIFACT_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_REPORT_ARTIFACT_RETENTION_DAYS:-30}
+  HHRU_HOUSEKEEPING_REPORT_ARTIFACT_DIR: ${HHRU_HOUSEKEEPING_REPORT_ARTIFACT_DIR:-.state/reports/detail-payload-study}
+  HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET: ${HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET:-10000}
 
 x-app-image: &app-image
   build:
@@ -32,6 +41,8 @@ x-app-image: &app-image
       condition: service_healthy
   volumes:
     - ./.state/metrics:/app/.state/metrics
+    - ./.state/backups:/app/.state/backups
+    - ./.state/reports:/app/.state/reports
 
 services:
   postgres:
@@ -143,7 +154,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${HHRU_GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/collector-overview.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/scheduler-recovery-health.json
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro

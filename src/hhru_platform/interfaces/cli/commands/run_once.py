@@ -716,6 +716,12 @@ class _SessionlessCrawlPartitionRepository:
                 limit=limit,
             )
 
+    def count_pending_terminal_by_run_id(self, run_id: UUID) -> int:
+        with session_scope() as session:
+            return SqlAlchemyCrawlPartitionRepository(session).count_pending_terminal_by_run_id(
+                run_id
+            )
+
     def requeue_unresolved_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
         with session_scope() as session:
             return SqlAlchemyCrawlPartitionRepository(session).requeue_unresolved_by_run_id(

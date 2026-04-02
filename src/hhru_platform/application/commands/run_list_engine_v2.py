@@ -41,7 +41,11 @@ class RunListEngineV2Result:
     status: str
     crawl_run_id: UUID
     partition_results: tuple[ProcessPartitionV2Result, ...]
-    remaining_pending_terminal_partitions: tuple[CrawlPartition, ...]
+    remaining_pending_terminal_count: int
+    search_transport_failures_total: int = 0
+    search_captcha_failures_total: int = 0
+    first_failure_error_type: str | None = None
+    first_failure_error_message: str | None = None
 
     @property
     def partitions_attempted(self) -> int:
@@ -83,10 +87,6 @@ class RunListEngineV2Result:
     def children_created_total(self) -> int:
         return sum(result.children_created_count for result in self.partition_results)
 
-    @property
-    def remaining_pending_terminal_count(self) -> int:
-        return len(self.remaining_pending_terminal_partitions)
-
 
 class CrawlRunRepository(Protocol):
     def get(self, run_id: UUID) -> CrawlRun | None:
@@ -101,6 +101,9 @@ class CrawlPartitionRepository(Protocol):
         limit: int | None = None,
     ) -> list[CrawlPartition]:
         """Return pending terminal partitions ordered for execution."""
+
+    def count_pending_terminal_by_run_id(self, run_id: UUID) -> int:
+        """Return the number of pending terminal partitions for a run."""
 
 
 class ProcessPartitionV2Step(Protocol):
@@ -135,12 +138,15 @@ def run_list_engine_v2(
                 break
 
             partition = pending_partitions[0]
-            partition_results.append(
-                process_partition_v2_step(ProcessPartitionV2Command(partition_id=partition.id))
+            partition_result = process_partition_v2_step(
+                ProcessPartitionV2Command(partition_id=partition.id)
             )
+            partition_results.append(partition_result)
+            if partition_result.status == "failed":
+                break
 
-        remaining_pending_terminal_partitions = tuple(
-            crawl_partition_repository.list_pending_terminal_by_run_id(command.crawl_run_id)
+        remaining_pending_terminal_count = (
+            crawl_partition_repository.count_pending_terminal_by_run_id(command.crawl_run_id)
         )
     except Exception as error:
         record_operation_failed(
@@ -153,6 +159,10 @@ def run_list_engine_v2(
         )
         raise
 
+    first_failed_partition = next(
+        (item for item in partition_results if item.status == "failed"),
+        None,
+    )
     result = RunListEngineV2Result(
         status=(
             "failed"
@@ -161,7 +171,21 @@ def run_list_engine_v2(
         ),
         crawl_run_id=crawl_run.id,
         partition_results=tuple(partition_results),
-        remaining_pending_terminal_partitions=remaining_pending_terminal_partitions,
+        remaining_pending_terminal_count=remaining_pending_terminal_count,
+        search_transport_failures_total=sum(
+            1 for item in partition_results if item.is_transport_failure
+        ),
+        search_captcha_failures_total=sum(
+            1 for item in partition_results if item.is_captcha_failure
+        ),
+        first_failure_error_type=(
+            first_failed_partition.search_failure_error_type
+            if first_failed_partition is not None
+            else None
+        ),
+        first_failure_error_message=(
+            first_failed_partition.error_message if first_failed_partition is not None else None
+        ),
     )
     if result.status == "failed":
         record_operation_failed(
@@ -183,6 +207,9 @@ def run_list_engine_v2(
             saturated_partitions=result.saturated_partitions,
             children_created_total=result.children_created_total,
             remaining_pending_terminal_count=result.remaining_pending_terminal_count,
+            search_transport_failures_total=result.search_transport_failures_total,
+            search_captcha_failures_total=result.search_captcha_failures_total,
+            first_failure_error_type=result.first_failure_error_type,
         )
         return result
 

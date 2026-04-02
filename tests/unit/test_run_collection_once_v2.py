@@ -10,6 +10,7 @@ from hhru_platform.application.commands.finalize_crawl_run import (
     FinalizeCrawlRunResult,
 )
 from hhru_platform.application.commands.plan_sweep import PlanRunResult
+from hhru_platform.application.commands.process_list_page import ProcessListPageResult
 from hhru_platform.application.commands.process_partition_v2 import (
     ProcessPartitionV2Result,
 )
@@ -106,7 +107,7 @@ def test_run_collection_once_v2_sequences_tree_aware_flow_and_succeeds() -> None
                     final_coverage_status="covered",
                 ),
             ),
-            remaining_pending_terminal_partitions=(),
+            remaining_pending_terminal_count=0,
         )
 
     def select_detail_candidates_step(command) -> SelectDetailCandidatesResult:
@@ -283,7 +284,7 @@ def test_run_collection_once_v2_returns_completed_with_unresolved() -> None:
                     error_message="root area cannot be split further",
                 ),
             ),
-            remaining_pending_terminal_partitions=(),
+            remaining_pending_terminal_count=0,
         )
 
     def finalize_crawl_run_step(command) -> FinalizeCrawlRunResult:
@@ -424,7 +425,7 @@ def test_run_collection_once_v2_fails_when_tree_coverage_has_failed_partitions()
                     error_message="upstream search request failed",
                 ),
             ),
-            remaining_pending_terminal_partitions=(),
+            remaining_pending_terminal_count=0,
         )
 
     def finalize_crawl_run_step(command) -> FinalizeCrawlRunResult:
@@ -562,7 +563,7 @@ def test_run_collection_once_v2_marks_final_status_failed_when_detail_stage_has_
                     final_coverage_status="covered",
                 ),
             ),
-            remaining_pending_terminal_partitions=(),
+            remaining_pending_terminal_count=0,
         )
 
     def select_detail_candidates_step(command) -> SelectDetailCandidatesResult:
@@ -650,6 +651,156 @@ def test_run_collection_once_v2_marks_final_status_failed_when_detail_stage_has_
     assert result.skipped_steps == ()
 
 
+def test_run_collection_once_v2_surfaces_transport_failure_in_list_stage() -> None:
+    run_id = uuid4()
+    root_partition_id = uuid4()
+    events: list[tuple[object, ...]] = []
+
+    def create_crawl_run_step(command) -> CrawlRun:
+        events.append(("create", command.run_type, command.triggered_by))
+        return _build_crawl_run(run_id=run_id, run_type=command.run_type)
+
+    def plan_run_v2_step(command) -> PlanRunResult:
+        events.append(("plan_v2", command.crawl_run_id))
+        root_partition = _build_partition(
+            crawl_run_id=command.crawl_run_id,
+            partition_id=root_partition_id,
+            partition_key="area:113",
+            status="pending",
+            coverage_status="unassessed",
+        )
+        return PlanRunResult(
+            crawl_run_id=command.crawl_run_id,
+            created_partitions=[root_partition],
+            partitions=[root_partition],
+        )
+
+    coverage_reports = iter(
+        (
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=1,
+                pending_terminal_partitions=1,
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                failed_partitions=1,
+                coverage_ratio=0.0,
+                run_status="failed",
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                failed_partitions=1,
+                coverage_ratio=0.0,
+                run_status="failed",
+            ),
+        )
+    )
+
+    def report_run_coverage_step(command) -> RunCoverageReport:
+        events.append(("coverage", command.crawl_run_id))
+        return next(coverage_reports)
+
+    def run_list_engine_v2_step(command) -> RunListEngineV2Result:
+        events.append(("list_engine", command.crawl_run_id, command.partition_limit))
+        return RunListEngineV2Result(
+            status="failed",
+            crawl_run_id=command.crawl_run_id,
+            partition_results=(
+                _build_partition_result(
+                    crawl_run_id=command.crawl_run_id,
+                    partition_id=root_partition_id,
+                    final_partition_status="failed",
+                    final_coverage_status="unassessed",
+                    error_message="transport_error: Connection reset by peer",
+                    page_results=(
+                        ProcessListPageResult(
+                            partition_id=root_partition_id,
+                            partition_status="failed",
+                            page=0,
+                            pages_total_expected=None,
+                            vacancies_processed=0,
+                            vacancies_created=0,
+                            seen_events_created=0,
+                            request_log_id=10,
+                            raw_payload_id=None,
+                            processed_vacancies=[],
+                            error_message="transport_error: Connection reset by peer",
+                            status_code=0,
+                            error_type=None,
+                        ),
+                    ),
+                ),
+            ),
+            remaining_pending_terminal_count=0,
+            search_transport_failures_total=1,
+            search_captcha_failures_total=0,
+            first_failure_error_type=None,
+            first_failure_error_message="transport_error: Connection reset by peer",
+        )
+
+    def finalize_crawl_run_step(command) -> FinalizeCrawlRunResult:
+        events.append(("finalize", command.crawl_run_id, command.final_status))
+        assert command.final_status == "failed"
+        return FinalizeCrawlRunResult(
+            crawl_run_id=command.crawl_run_id,
+            run_status=command.final_status,
+            partitions_done=0,
+            partitions_failed=1,
+        )
+
+    result = run_collection_once_v2(
+        RunCollectionOnceV2Command(
+            detail_limit=0,
+            run_type="weekly_sweep",
+            triggered_by="cli",
+        ),
+        sync_dictionary_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected dictionary sync {command.dictionary_name}")
+        ),
+        create_crawl_run_step=create_crawl_run_step,
+        plan_run_v2_step=plan_run_v2_step,
+        run_list_engine_v2_step=run_list_engine_v2_step,
+        report_run_coverage_step=report_run_coverage_step,
+        select_detail_candidates_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected detail selection {command.crawl_run_id}")
+        ),
+        fetch_vacancy_detail_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected detail fetch {command.vacancy_id}")
+        ),
+        reconcile_run_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected reconcile {command.crawl_run_id}")
+        ),
+        finalize_crawl_run_step=finalize_crawl_run_step,
+    )
+
+    assert events == [
+        ("create", "weekly_sweep", "cli"),
+        ("plan_v2", run_id),
+        ("coverage", run_id),
+        ("list_engine", run_id, 1),
+        ("coverage", run_id),
+        ("finalize", run_id, "failed"),
+        ("coverage", run_id),
+    ]
+    assert result.status == "failed"
+    assert result.failed_step == "run_list_engine_v2"
+    assert "transport" in (result.error_message or "")
+
+
 def _build_crawl_run(*, run_id: UUID, run_type: str) -> CrawlRun:
     return CrawlRun(
         id=run_id,
@@ -708,6 +859,7 @@ def _build_partition_result(
     final_coverage_status: str,
     saturated: bool = False,
     error_message: str | None = None,
+    page_results: tuple[ProcessListPageResult, ...] = (),
 ) -> ProcessPartitionV2Result:
     return ProcessPartitionV2Result(
         partition_id=partition_id,
@@ -715,7 +867,7 @@ def _build_partition_result(
         final_partition_status=final_partition_status,
         final_coverage_status=final_coverage_status,
         saturated=saturated,
-        page_results=(),
+        page_results=page_results,
         split_result=None,
         saturation_reason=None,
         error_message=error_message,

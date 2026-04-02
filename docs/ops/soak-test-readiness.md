@@ -2,6 +2,16 @@
 
 Короткий runbook для ночного локального прогона перед VPS pilot.
 
+Статус на 2026-04-03:
+
+- local soak-grade baseline contour уже подтверждён near-complete long run;
+- документ остаётся полезным как operator checklist, но следующий практический шаг уже смещается в VPS pilot.
+
+Смежные документы:
+
+- [current-readiness.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-readiness.md)
+- [testing-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/testing-plan.md)
+
 ## 1. Цель
 
 Проверить, что система выдерживает длинный unattended запуск без:

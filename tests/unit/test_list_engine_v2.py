@@ -71,6 +71,9 @@ class InMemoryCrawlPartitionRepository:
             return partitions
         return partitions[:limit]
 
+    def count_pending_terminal_by_run_id(self, run_id: UUID) -> int:
+        return len(self.list_pending_terminal_by_run_id(run_id))
+
     def mark_pending(self, partition_id: UUID) -> CrawlPartition:
         partition = self._partitions[partition_id]
         partition.status = CrawlPartitionStatus.PENDING.value
@@ -155,6 +158,8 @@ def _page_result(
     vacancy_suffix: str,
     partition_status: str = "done",
     error_message: str | None = None,
+    status_code: int | None = None,
+    error_type: str | None = None,
 ) -> ProcessListPageResult:
     return ProcessListPageResult(
         partition_id=partition_id,
@@ -178,6 +183,8 @@ def _page_result(
             else []
         ),
         error_message=error_message,
+        status_code=status_code,
+        error_type=error_type,
     )
 
 
@@ -392,3 +399,56 @@ def test_run_list_engine_v2_processes_new_child_leaves_recursively() -> None:
     assert result.saturated_partitions == 1
     assert result.children_created_total == 2
     assert result.remaining_pending_terminal_count == 0
+
+
+def test_run_list_engine_v2_stops_after_first_failed_partition() -> None:
+    crawl_run = _build_crawl_run()
+    first_partition = _build_partition(crawl_run_id=crawl_run.id, partition_key="area:001")
+    second_partition = _build_partition(crawl_run_id=crawl_run.id, partition_key="area:999")
+    repository = InMemoryCrawlPartitionRepository([first_partition, second_partition])
+    run_repository = InMemoryCrawlRunRepository(crawl_run)
+    processed_order: list[UUID] = []
+
+    def process_partition_v2_step(command: ProcessPartitionV2Command) -> ProcessPartitionV2Result:
+        processed_order.append(command.partition_id)
+        if command.partition_id != first_partition.id:
+            raise AssertionError(f"unexpected partition execution {command.partition_id}")
+
+        first_partition.status = CrawlPartitionStatus.FAILED.value
+        return ProcessPartitionV2Result(
+            partition_id=first_partition.id,
+            crawl_run_id=crawl_run.id,
+            final_partition_status=first_partition.status,
+            final_coverage_status=CrawlPartitionCoverageStatus.UNASSESSED.value,
+            saturated=False,
+            page_results=(
+                _page_result(
+                    partition_id=first_partition.id,
+                    page=0,
+                    pages_total_expected=1,
+                    vacancy_suffix="failed",
+                    partition_status=CrawlPartitionStatus.FAILED.value,
+                    error_message="transport request failed",
+                    status_code=0,
+                ),
+            ),
+            split_result=None,
+            saturation_reason=None,
+            error_message="transport request failed",
+        )
+
+    result = run_list_engine_v2(
+        RunListEngineV2Command(crawl_run_id=crawl_run.id),
+        crawl_run_repository=run_repository,
+        crawl_partition_repository=repository,
+        process_partition_v2_step=process_partition_v2_step,
+    )
+
+    assert processed_order == [first_partition.id]
+    assert result.status == "failed"
+    assert result.partitions_attempted == 1
+    assert result.partitions_failed == 1
+    assert result.search_transport_failures_total == 1
+    assert result.search_captcha_failures_total == 0
+    assert result.first_failure_error_message == "transport request failed"
+    assert result.remaining_pending_terminal_count == 1

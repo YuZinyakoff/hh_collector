@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -12,7 +13,9 @@ from hhru_platform.domain.value_objects.enums import CrawlPartitionCoverageStatu
 PLANNER_POLICY_VERSION_V1 = "v1"
 PLANNER_POLICY_VERSION_V2 = "v2"
 AREA_SPLIT_DIMENSION = "area"
+TIME_WINDOW_SPLIT_DIMENSION = "time_window"
 DEFAULT_LIST_PER_PAGE = 20
+TIME_WINDOW_FALLBACK_START = datetime(2000, 1, 1, tzinfo=UTC)
 
 
 @dataclass(slots=True, frozen=True)
@@ -108,11 +111,103 @@ def build_area_partition_definition(
     )
 
 
+def build_time_window_partition_definition(
+    *,
+    area_hh_id: str,
+    date_from: datetime,
+    date_to: datetime,
+    crawl_run: CrawlRun,
+    parent_partition_id: UUID | None = None,
+    depth: int = 0,
+    per_page: int = DEFAULT_LIST_PER_PAGE,
+    area_name: str | None = None,
+    path_text: str | None = None,
+) -> PartitionPlanDefinition:
+    normalized_area_hh_id = area_hh_id.strip()
+    if not normalized_area_hh_id:
+        raise ValueError("area_hh_id must not be empty")
+
+    normalized_date_from = _normalize_split_datetime(date_from)
+    normalized_date_to = _normalize_split_datetime(date_to)
+    if normalized_date_to <= normalized_date_from:
+        raise ValueError("date_to must be greater than date_from for time-window partitions")
+
+    scope_key = build_time_window_scope_key(
+        area_hh_id=normalized_area_hh_id,
+        date_from=normalized_date_from,
+        date_to=normalized_date_to,
+    )
+    date_from_value = _serialize_split_datetime(normalized_date_from)
+    date_to_value = _serialize_split_datetime(normalized_date_to)
+    return PartitionPlanDefinition(
+        partition_key=scope_key,
+        scope_key=scope_key,
+        parent_partition_id=parent_partition_id,
+        depth=depth,
+        split_dimension=TIME_WINDOW_SPLIT_DIMENSION,
+        split_value=f"{date_from_value}|{date_to_value}",
+        planner_policy_version=PLANNER_POLICY_VERSION_V2,
+        is_terminal=True,
+        is_saturated=False,
+        coverage_status=CrawlPartitionCoverageStatus.UNASSESSED.value,
+        params_json={
+            "planner_policy": "area_exhaustive_v2",
+            "planner_policy_version": PLANNER_POLICY_VERSION_V2,
+            "scope": {
+                "dimension": TIME_WINDOW_SPLIT_DIMENSION,
+                "scope_key": scope_key,
+                "hh_area_id": normalized_area_hh_id,
+                "area_name": area_name,
+                "path_text": path_text,
+                "depth": depth,
+                "date_from": date_from_value,
+                "date_to": date_to_value,
+            },
+            "params": {
+                "area": normalized_area_hh_id,
+                "date_from": date_from_value,
+                "date_to": date_to_value,
+                "page": 0,
+                "per_page": per_page,
+            },
+            "run_type": crawl_run.run_type,
+        },
+    )
+
+
 def build_area_scope_key(hh_area_id: str) -> str:
     normalized_hh_area_id = hh_area_id.strip()
     if not normalized_hh_area_id:
         raise ValueError("hh_area_id must not be empty")
     return f"{AREA_SPLIT_DIMENSION}:{normalized_hh_area_id}"
+
+
+def build_time_window_scope_key(
+    *,
+    area_hh_id: str,
+    date_from: datetime,
+    date_to: datetime,
+) -> str:
+    normalized_area_hh_id = area_hh_id.strip()
+    if not normalized_area_hh_id:
+        raise ValueError("area_hh_id must not be empty")
+    normalized_date_from = _normalize_split_datetime(date_from)
+    normalized_date_to = _normalize_split_datetime(date_to)
+    if normalized_date_to <= normalized_date_from:
+        raise ValueError("date_to must be greater than date_from for time-window scopes")
+    return (
+        f"{TIME_WINDOW_SPLIT_DIMENSION}:{normalized_area_hh_id}:"
+        f"{_compact_split_datetime(normalized_date_from)}:"
+        f"{_compact_split_datetime(normalized_date_to)}"
+    )
+
+
+def normalize_split_datetime(value: datetime) -> datetime:
+    return _normalize_split_datetime(value)
+
+
+def serialize_split_datetime(value: datetime) -> str:
+    return _serialize_split_datetime(value)
 
 
 def _sorted_areas(areas: Sequence[Area]) -> list[Area]:
@@ -125,3 +220,17 @@ def _sorted_areas(areas: Sequence[Area]) -> list[Area]:
             area.hh_area_id,
         ),
     )
+
+
+def _normalize_split_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).replace(microsecond=0)
+
+
+def _serialize_split_datetime(value: datetime) -> str:
+    return _normalize_split_datetime(value).isoformat(timespec="seconds")
+
+
+def _compact_split_datetime(value: datetime) -> str:
+    return _normalize_split_datetime(value).strftime("%Y%m%dT%H%M%SZ")

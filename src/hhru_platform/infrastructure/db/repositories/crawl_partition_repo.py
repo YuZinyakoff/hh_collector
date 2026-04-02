@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
@@ -84,6 +84,14 @@ class SqlAlchemyCrawlPartitionRepository:
         if limit is not None:
             statement = statement.limit(limit)
         return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def count_pending_terminal_by_run_id(self, run_id: UUID) -> int:
+        statement = select(func.count()).select_from(CrawlPartitionModel).where(
+            CrawlPartitionModel.crawl_run_id == run_id,
+            CrawlPartitionModel.is_terminal.is_(True),
+            CrawlPartitionModel.status == CrawlPartitionStatus.PENDING.value,
+        )
+        return int(self._session.scalar(statement) or 0)
 
     def list_children(self, parent_partition_id: UUID) -> list[CrawlPartition]:
         statement = (

@@ -29,6 +29,7 @@ from hhru_platform.application.commands.run_collection_once_v2 import (
     LIST_STAGE_STATUS_COMPLETED,
     LIST_STAGE_STATUS_COMPLETED_WITH_UNRESOLVED,
     LIST_STAGE_STATUS_FAILED,
+    _build_run_list_engine_failure_message,
 )
 from hhru_platform.application.commands.run_list_engine_v2 import (
     RunListEngineV2Command,
@@ -849,7 +850,12 @@ def _run_resume_list_stage(
             )
 
         try:
-            run_result = run_list_engine_v2_step(RunListEngineV2Command(crawl_run_id=crawl_run_id))
+            run_result = run_list_engine_v2_step(
+                RunListEngineV2Command(
+                    crawl_run_id=crawl_run_id,
+                    partition_limit=1,
+                )
+            )
         except Exception as error:
             raise ResumeRunV2StepError(
                 step="run_list_engine_v2",
@@ -858,8 +864,19 @@ def _run_resume_list_stage(
                 final_coverage_report=coverage_report,
                 list_engine_results=tuple(list_engine_results),
             ) from error
-        list_engine_results.append(run_result)
+        list_engine_results.append(_compact_run_list_engine_result(run_result))
         coverage_report = _report_resume_coverage(crawl_run_id, report_run_coverage_step)
+
+        if run_result.status == LIST_STAGE_STATUS_FAILED:
+            return (
+                tuple(list_engine_results),
+                coverage_report,
+                LIST_STAGE_STATUS_FAILED,
+                _build_run_list_engine_failure_message(
+                    run_result,
+                    coverage_report=coverage_report,
+                ),
+            )
 
         if (
             run_result.partitions_attempted == 0
@@ -871,3 +888,18 @@ def _run_resume_list_stage(
                 LIST_STAGE_STATUS_FAILED,
                 "run_list_engine_v2 made no progress while pending terminal partitions remained",
             )
+
+
+def _compact_run_list_engine_result(
+    result: RunListEngineV2Result,
+) -> RunListEngineV2Result:
+    return RunListEngineV2Result(
+        status=result.status,
+        crawl_run_id=result.crawl_run_id,
+        partition_results=(),
+        remaining_pending_terminal_count=result.remaining_pending_terminal_count,
+        search_transport_failures_total=result.search_transport_failures_total,
+        search_captcha_failures_total=result.search_captcha_failures_total,
+        first_failure_error_type=result.first_failure_error_type,
+        first_failure_error_message=result.first_failure_error_message,
+    )

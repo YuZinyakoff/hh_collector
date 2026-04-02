@@ -182,7 +182,7 @@ def _print_run_list_engine_v2_summary(result: RunListEngineV2Result) -> None:
     print(f"seen_events_created={result.seen_events_created}")
     print(f"saturated_partitions={result.saturated_partitions}")
     print(f"children_created_total={result.children_created_total}")
-    print(f"remaining_pending_terminal_partitions={result.remaining_pending_terminal_count}")
+    print(f"remaining_pending_terminal_count={result.remaining_pending_terminal_count}")
     for partition_result in result.partition_results:
         print(
             "partition="

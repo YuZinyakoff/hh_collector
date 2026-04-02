@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http.client import HTTPException
 from json import JSONDecodeError
 from time import perf_counter
 from urllib.error import HTTPError, URLError
@@ -21,6 +22,7 @@ from hhru_platform.infrastructure.hh_api.endpoints import (
     get_dictionary_endpoint,
     get_vacancy_detail_endpoint,
 )
+from hhru_platform.infrastructure.hh_api.response_classification import extract_api_error
 from hhru_platform.infrastructure.hh_api.user_agent import (
     validate_live_vacancy_search_user_agent,
 )
@@ -49,10 +51,12 @@ class HHApiClient:
         base_url: str = "https://api.hh.ru",
         timeout: float = 30.0,
         user_agent: str = "hhru-platform/0.1 (contact: change-me@example.com)",
+        application_token: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._user_agent = user_agent
+        self._application_token = application_token or None
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> HHApiClient:
@@ -61,6 +65,7 @@ class HHApiClient:
             base_url=resolved_settings.hh_api_base_url,
             timeout=resolved_settings.hh_api_timeout_seconds,
             user_agent=resolved_settings.hh_api_user_agent,
+            application_token=resolved_settings.hh_api_application_token or None,
         )
 
     def fetch_dictionary(self, dictionary_name: str) -> DictionaryFetchResponse:
@@ -132,6 +137,8 @@ class HHApiClient:
             "Accept": "application/json",
             "User-Agent": self._user_agent,
         }
+        if self._application_token:
+            request_headers["Authorization"] = f"Bearer {self._application_token}"
         request = Request(
             url=_build_url(self._base_url, endpoint, params_json),
             headers=request_headers,
@@ -161,7 +168,51 @@ class HHApiClient:
                 response_received_at=response_received_at,
                 payload_json=None,
                 error_type=error.__class__.__name__,
-                error_message=str(error.reason),
+                error_message=_transport_error_message(error),
+            )
+            get_metrics_registry().record_upstream_request(
+                endpoint=endpoint,
+                status_code=result.status_code,
+                duration_seconds=max(perf_counter() - request_started_at, 0.0),
+                error_type=result.error_type,
+            )
+            return result
+        except OSError as error:
+            response_received_at = datetime.now(UTC)
+            result = _JSONGetResponse(
+                method="GET",
+                params_json=dict(params_json),
+                request_headers_json=request_headers,
+                status_code=0,
+                headers={},
+                latency_ms=_latency_ms(requested_at, response_received_at),
+                requested_at=requested_at,
+                response_received_at=response_received_at,
+                payload_json=None,
+                error_type=error.__class__.__name__,
+                error_message=_transport_error_message(error),
+            )
+            get_metrics_registry().record_upstream_request(
+                endpoint=endpoint,
+                status_code=result.status_code,
+                duration_seconds=max(perf_counter() - request_started_at, 0.0),
+                error_type=result.error_type,
+            )
+            return result
+        except HTTPException as error:
+            response_received_at = datetime.now(UTC)
+            result = _JSONGetResponse(
+                method="GET",
+                params_json=dict(params_json),
+                request_headers_json=request_headers,
+                status_code=0,
+                headers={},
+                latency_ms=_latency_ms(requested_at, response_received_at),
+                requested_at=requested_at,
+                response_received_at=response_received_at,
+                payload_json=None,
+                error_type=error.__class__.__name__,
+                error_message=_transport_error_message(error),
             )
             get_metrics_registry().record_upstream_request(
                 endpoint=endpoint,
@@ -173,6 +224,11 @@ class HHApiClient:
 
         response_received_at = datetime.now(UTC)
         payload_json, error_type, error_message = _decode_json_body(body)
+        if error_type is None:
+            api_error_type, api_error_message = extract_api_error(payload_json)
+            if api_error_type is not None:
+                error_type = api_error_type
+                error_message = api_error_message
         result = _JSONGetResponse(
             method="GET",
             params_json=dict(params_json),
@@ -203,6 +259,15 @@ def _decode_json_body(body: bytes) -> tuple[object | None, str | None, str | Non
         return json.loads(body.decode("utf-8")), None, None
     except (UnicodeDecodeError, JSONDecodeError) as error:
         return None, error.__class__.__name__, str(error)
+
+
+def _transport_error_message(error: BaseException) -> str:
+    reason = getattr(error, "reason", None)
+    if isinstance(reason, BaseException):
+        return str(reason)
+    if reason is not None:
+        return str(reason)
+    return str(error)
 
 
 def _latency_ms(started_at: datetime, finished_at: datetime) -> int:

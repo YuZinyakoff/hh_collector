@@ -26,6 +26,7 @@ def test_hh_api_client_from_settings_uses_runtime_configuration() -> None:
         hh_api_base_url="https://example.test/",
         hh_api_timeout_seconds=12.5,
         hh_api_user_agent="hhru-platform/0.1 (contact: ops@example.com)",
+        hh_api_application_token="secret-token",
     )
 
     client = HHApiClient.from_settings(settings)
@@ -33,6 +34,7 @@ def test_hh_api_client_from_settings_uses_runtime_configuration() -> None:
     assert client._base_url == "https://example.test"
     assert client._timeout == 12.5
     assert client._user_agent == "hhru-platform/0.1 (contact: ops@example.com)"
+    assert client._application_token == "secret-token"
 
 
 def test_settings_ignore_compose_only_env_variables_from_env_file(

@@ -197,6 +197,7 @@ class BackupService:
                 "HHRU_DB_NAME": self._settings.db_name,
                 "HHRU_DB_USER": self._settings.db_user,
                 "HHRU_DB_PASSWORD": self._settings.db_password,
+                "PGPASSWORD": self._settings.db_password,
             }
         )
         env.update(extra_env)

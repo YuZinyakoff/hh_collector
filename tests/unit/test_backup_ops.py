@@ -70,6 +70,7 @@ def test_backup_service_restore_to_target_db_verifies_required_tables(tmp_path) 
                 stderr="",
             )
         if args[0] == "bash":
+            assert kwargs["env"]["PGPASSWORD"] == "secret"
             return subprocess.CompletedProcess(
                 args=args,
                 returncode=0,
@@ -81,6 +82,7 @@ def test_backup_service_restore_to_target_db_verifies_required_tables(tmp_path) 
                 stderr="",
             )
         if args[0] == "psql":
+            assert kwargs["env"]["PGPASSWORD"] == "secret"
             return subprocess.CompletedProcess(
                 args=args,
                 returncode=0,

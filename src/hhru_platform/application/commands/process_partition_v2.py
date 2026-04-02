@@ -23,6 +23,10 @@ from hhru_platform.domain.value_objects.enums import (
     CrawlPartitionCoverageStatus,
     CrawlPartitionStatus,
 )
+from hhru_platform.infrastructure.hh_api.response_classification import (
+    is_captcha_response,
+    is_transport_response,
+)
 from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
     record_operation_failed,
@@ -124,6 +128,47 @@ class ProcessPartitionV2Result:
         if self.split_result is None:
             return 0
         return len(self.split_result.children)
+
+    @property
+    def failed_page_result(self) -> ProcessListPageResult | None:
+        for result in reversed(self.page_results):
+            if _is_failed_page_result(result):
+                return result
+        return None
+
+    @property
+    def search_failure_status_code(self) -> int | None:
+        failed_page_result = self.failed_page_result
+        if failed_page_result is None:
+            return None
+        return failed_page_result.status_code
+
+    @property
+    def search_failure_error_type(self) -> str | None:
+        failed_page_result = self.failed_page_result
+        if failed_page_result is None:
+            return None
+        return failed_page_result.error_type
+
+    @property
+    def is_transport_failure(self) -> bool:
+        status_code = self.search_failure_status_code
+        if status_code is None:
+            return False
+        return is_transport_response(
+            status_code=status_code,
+            error_type=self.search_failure_error_type,
+        )
+
+    @property
+    def is_captcha_failure(self) -> bool:
+        status_code = self.search_failure_status_code
+        if status_code is None:
+            return False
+        return is_captcha_response(
+            status_code=status_code,
+            error_type=self.search_failure_error_type,
+        )
 
 
 class CrawlPartitionRepository(Protocol):

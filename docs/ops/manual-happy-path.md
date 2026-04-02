@@ -146,6 +146,10 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main scheduler
 - overlapping runs не допускаются через PostgreSQL advisory lock плюс active-run check
 - summary печатает `ticks_executed`, `runs_started`, `skipped_overlap_ticks`, `skipped_active_run_ticks` и разбивку по terminal run statuses
 
+Если цель уже не просто "запустить scheduler", а держать его в контуре подтверждённой HH policy, ориентиром для operator settings теперь служит:
+
+- [hh-api-scheduler-policy-v1-draft.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-scheduler-policy-v1-draft.md)
+
 ## Housekeeping Dry-Run
 
 Для безопасной проверки retention plan сначала запусти dry-run:
@@ -224,8 +228,16 @@ make soak-test
 Подробный checklist:
 
 - [soak-test-readiness.md](/home/yurizinyakov/projects/hh_collector/docs/ops/soak-test-readiness.md)
+- [testing-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/testing-plan.md)
+- [current-readiness.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-readiness.md)
 
 Утром первым экраном должен быть `Scheduler / Recovery Health`.
+
+Отдельно от system soak-test есть research-only ночной HH API driver:
+
+- [hh-api-probe-night-driver.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-probe-night-driver.md)
+
+Его нужно использовать, когда цель не проверить scheduler/platform, а проверить HH collection policy на живом API по time-distributed slots.
 
 ## Happy Path
 

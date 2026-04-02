@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import hhru_platform.application.commands.fetch_vacancy_detail as fetch_vacancy_detail_module
+
 from hhru_platform.application.commands.fetch_vacancy_detail import (
     FetchVacancyDetailCommand,
     fetch_vacancy_detail,
@@ -47,6 +49,17 @@ class StaticVacancyDetailApiClient:
     def fetch_vacancy_detail(self, hh_vacancy_id: str) -> VacancyDetailResponse:
         assert hh_vacancy_id == "pytest-detail-vacancy"
         return self._response
+
+
+class SequentialVacancyDetailApiClient:
+    def __init__(self, responses: list[VacancyDetailResponse]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+
+    def fetch_vacancy_detail(self, hh_vacancy_id: str) -> VacancyDetailResponse:
+        assert hh_vacancy_id == "pytest-detail-vacancy"
+        self.calls += 1
+        return self._responses.pop(0)
 
 
 class InMemoryDetailFetchAttemptRepository:
@@ -200,3 +213,107 @@ def test_fetch_vacancy_detail_persists_attempt_snapshot_raw_and_current_state() 
     assert vacancy_current_state_repository.records[0]["detail_fetch_status"] == "succeeded"
     assert vacancy_current_state_repository.records[0]["detail_hash"] is not None
     assert detail_fetch_attempt_repository.records[1]["status"] == "succeeded"
+
+
+def test_fetch_vacancy_detail_retries_transport_failure_once(monkeypatch) -> None:
+    vacancy = Vacancy(
+        id=uuid4(),
+        hh_vacancy_id="pytest-detail-vacancy",
+        employer_id=None,
+        area_id=None,
+        name_current="Old vacancy name",
+        published_at=None,
+        created_at_hh=None,
+        archived_at_hh=None,
+        alternate_url=None,
+        employment_type_code=None,
+        schedule_type_code=None,
+        experience_code=None,
+        source_type="hh_api",
+    )
+    detail_fetch_attempt_repository = InMemoryDetailFetchAttemptRepository()
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    vacancy_snapshot_repository = InMemoryVacancySnapshotRepository()
+    vacancy_current_state_repository = RecordingVacancyCurrentStateRepository()
+    vacancy_repository = InMemoryVacancyRepository(vacancy)
+    api_client = SequentialVacancyDetailApiClient(
+        [_build_transport_detail_response(), _build_successful_detail_response()]
+    )
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(fetch_vacancy_detail_module, "_sleep", sleep_calls.append)
+
+    result = fetch_vacancy_detail(
+        FetchVacancyDetailCommand(vacancy_id=vacancy.id),
+        vacancy_repository=vacancy_repository,
+        api_client=api_client,
+        detail_fetch_attempt_repository=detail_fetch_attempt_repository,
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        vacancy_snapshot_repository=vacancy_snapshot_repository,
+        vacancy_current_state_repository=vacancy_current_state_repository,
+    )
+
+    assert result.detail_fetch_status == "succeeded"
+    assert result.request_log_id == 2
+    assert result.raw_payload_id == 1
+    assert api_client.calls == 2
+    assert len(api_request_log_repository.records) == 2
+    assert len(raw_api_payload_repository.records) == 1
+    assert sleep_calls == [5.0]
+
+
+def _build_transport_detail_response() -> VacancyDetailResponse:
+    return VacancyDetailResponse(
+        endpoint="/vacancies/pytest-detail-vacancy",
+        method="GET",
+        params_json={},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=0,
+        headers={},
+        latency_ms=400,
+        requested_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 0, 1, tzinfo=UTC),
+        payload_json=None,
+        error_type="ConnectionResetError",
+        error_message="Connection reset by peer",
+    )
+
+
+def _build_successful_detail_response() -> VacancyDetailResponse:
+    return VacancyDetailResponse(
+        endpoint="/vacancies/pytest-detail-vacancy",
+        method="GET",
+        params_json={},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=200,
+        headers={},
+        latency_ms=14,
+        requested_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 0, 1, tzinfo=UTC),
+        payload_json={
+            "id": "pytest-detail-vacancy",
+            "name": "Senior Python Engineer",
+            "description": "Detailed vacancy description",
+            "alternate_url": "https://hh.ru/vacancy/pytest-detail-vacancy",
+            "archived": False,
+            "area": {"id": "pytest-area", "name": "Test Area"},
+            "created_at": "2026-03-12T09:30:00+0300",
+            "initial_created_at": "2026-03-11T09:00:00+0300",
+            "employer": {
+                "id": "pytest-employer-1",
+                "name": "Pytest Employer One",
+                "alternate_url": "https://hh.ru/employer/pytest-employer-1",
+                "trusted": True,
+            },
+            "employment": {"id": "full", "name": "Full employment"},
+            "experience": {"id": "between1And3", "name": "1-3 years"},
+            "key_skills": [{"name": "Python"}, {"name": "SQL"}],
+            "professional_roles": [
+                {"id": "pytest-role-python", "name": "Programmer, developer"}
+            ],
+            "published_at": "2026-03-12T10:00:00+0300",
+            "salary": {"currency": "RUR", "from": 200000, "to": 300000, "gross": False},
+            "schedule": {"id": "remote", "name": "Remote"},
+        },
+    )

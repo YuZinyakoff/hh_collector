@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -13,6 +14,11 @@ from hhru_platform.application.dto import (
 )
 from hhru_platform.domain.entities.dictionary_sync_run import DictionarySyncRun
 from hhru_platform.domain.value_objects.enums import DictionarySyncStatus
+from hhru_platform.infrastructure.hh_api.response_classification import (
+    build_response_error_message,
+    is_captcha_response,
+    is_transport_response,
+)
 from hhru_platform.infrastructure.normalization.dictionary_normalizers import (
     DictionaryNormalizationError,
 )
@@ -23,6 +29,7 @@ from hhru_platform.infrastructure.observability.operations import (
 )
 
 LOGGER = logging.getLogger(__name__)
+DICTIONARY_TRANSPORT_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (30.0,)
 
 
 @dataclass(slots=True, frozen=True)
@@ -134,32 +141,12 @@ def sync_dictionary(
             status=DictionarySyncStatus.RUNNING.value,
         )
 
-        response = api_client.fetch_dictionary(command.dictionary_name)
-        request_log_id = api_request_log_repository.add(
-            crawl_run_id=None,
-            crawl_partition_id=None,
-            requested_at=response.requested_at,
-            request_type="dictionary_sync",
-            endpoint=response.endpoint,
-            method=response.method,
-            params_json=dict(response.params_json),
-            request_headers_json=dict(response.request_headers_json),
-            status_code=response.status_code,
-            latency_ms=response.latency_ms,
-            response_received_at=response.response_received_at,
-            error_type=response.error_type,
-            error_message=response.error_message,
+        response, request_log_id, raw_payload_id = _request_dictionary(
+            command=command,
+            api_client=api_client,
+            api_request_log_repository=api_request_log_repository,
+            raw_api_payload_repository=raw_api_payload_repository,
         )
-
-        raw_payload_id: int | None = None
-        if _payload_is_present(response.payload_json):
-            raw_payload_id = raw_api_payload_repository.add(
-                api_request_log_id=request_log_id,
-                received_at=response.response_received_at or response.requested_at,
-                endpoint_type=f"dictionary.{command.dictionary_name}",
-                entity_hh_id=None,
-                payload_json=response.payload_json,
-            )
 
         try:
             summary = _persist_dictionary_payload(
@@ -248,6 +235,24 @@ def _persist_dictionary_payload(
     response: DictionaryFetchResponse,
     dictionary_store: DictionaryStore,
 ) -> DictionaryPersistSummary:
+    if is_captcha_response(status_code=response.status_code, error_type=response.error_type):
+        raise DictionaryNormalizationError(
+            build_response_error_message(
+                error_type=response.error_type,
+                error_message=response.error_message,
+                default_message="dictionary request blocked by captcha",
+            )
+        )
+
+    if is_transport_response(status_code=response.status_code, error_type=response.error_type):
+        raise DictionaryNormalizationError(
+            build_response_error_message(
+                error_type=response.error_type,
+                error_message=response.error_message,
+                default_message="dictionary transport request failed",
+            )
+        )
+
     if response.status_code != 200:
         raise DictionaryNormalizationError(f"Unexpected status code: {response.status_code}")
 
@@ -303,3 +308,58 @@ def _build_success_notes(summary: DictionaryPersistSummary) -> str:
 
 def _payload_is_present(payload_json: object | None) -> bool:
     return isinstance(payload_json, dict | list)
+
+
+def _request_dictionary(
+    *,
+    command: SyncDictionaryCommand,
+    api_client: DictionaryApiClient,
+    api_request_log_repository: ApiRequestLogRepository,
+    raw_api_payload_repository: RawApiPayloadRepository,
+) -> tuple[DictionaryFetchResponse, int, int | None]:
+    attempts_total = len(DICTIONARY_TRANSPORT_RETRY_BACKOFF_SECONDS) + 1
+
+    for attempt_index in range(attempts_total):
+        response = api_client.fetch_dictionary(command.dictionary_name)
+        request_log_id = api_request_log_repository.add(
+            crawl_run_id=None,
+            crawl_partition_id=None,
+            requested_at=response.requested_at,
+            request_type="dictionary_sync",
+            endpoint=response.endpoint,
+            method=response.method,
+            params_json=dict(response.params_json),
+            request_headers_json=dict(response.request_headers_json),
+            status_code=response.status_code,
+            latency_ms=response.latency_ms,
+            response_received_at=response.response_received_at,
+            error_type=response.error_type,
+            error_message=response.error_message,
+        )
+
+        raw_payload_id: int | None = None
+        if _payload_is_present(response.payload_json):
+            raw_payload_id = raw_api_payload_repository.add(
+                api_request_log_id=request_log_id,
+                received_at=response.response_received_at or response.requested_at,
+                endpoint_type=f"dictionary.{command.dictionary_name}",
+                entity_hh_id=None,
+                payload_json=response.payload_json,
+            )
+
+        if not is_transport_response(
+            status_code=response.status_code,
+            error_type=response.error_type,
+        ):
+            return response, request_log_id, raw_payload_id
+
+        if attempt_index >= len(DICTIONARY_TRANSPORT_RETRY_BACKOFF_SECONDS):
+            return response, request_log_id, raw_payload_id
+
+        _sleep(DICTIONARY_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt_index])
+
+    raise AssertionError("dictionary request attempts exhausted unexpectedly")
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)

@@ -129,7 +129,7 @@ def test_resume_run_v2_requeues_unresolved_partition_and_completes_existing_run(
                             error_message=None,
                         ),
                     ),
-                    remaining_pending_terminal_partitions=(),
+                    remaining_pending_terminal_count=0,
                 )
 
             result = resume_run_v2(

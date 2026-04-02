@@ -2,6 +2,7 @@ x-app-env: &app-env
   HHRU_ENV: ${HHRU_ENV:-local}
   HHRU_LOG_LEVEL: ${HHRU_LOG_LEVEL:-INFO}
   HHRU_LOG_FORMAT: ${HHRU_LOG_FORMAT:-json}
+  PYTHONPATH: /app/src
   HHRU_DB_HOST: postgres
   HHRU_DB_PORT: 5432
   HHRU_DB_NAME: ${HHRU_DB_NAME:-hhru_platform}
@@ -13,6 +14,7 @@ x-app-env: &app-env
   HHRU_HH_API_BASE_URL: "${HHRU_HH_API_BASE_URL:-https://api.hh.ru}"
   HHRU_HH_API_TIMEOUT_SECONDS: ${HHRU_HH_API_TIMEOUT_SECONDS:-30.0}
   HHRU_HH_API_USER_AGENT: "${HHRU_HH_API_USER_AGENT:-hhru-platform/0.1 (contact: change-me@example.com)}"
+  HHRU_HH_API_APPLICATION_TOKEN: "${HHRU_HH_API_APPLICATION_TOKEN:-}"
   HHRU_METRICS_HOST: 0.0.0.0
   HHRU_METRICS_PORT: 8001
   HHRU_METRICS_STATE_PATH: .state/metrics/metrics.json
@@ -22,7 +24,7 @@ x-app-env: &app-env
   HHRU_BACKUP_RESTORE_DRILL_TARGET_DB: ${HHRU_BACKUP_RESTORE_DRILL_TARGET_DB:-hhru_platform_restore_drill}
   HHRU_BACKUP_RESTORE_DRILL_DROP_EXISTING: ${HHRU_BACKUP_RESTORE_DRILL_DROP_EXISTING:-true}
   HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS:-90}
-  HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS:-365}
+  HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS:-0}
   HHRU_HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS:-90}
   HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS:-180}
   HHRU_HOUSEKEEPING_REPORT_ARTIFACT_RETENTION_DAYS: ${HHRU_HOUSEKEEPING_REPORT_ARTIFACT_RETENTION_DAYS:-30}
@@ -30,6 +32,7 @@ x-app-env: &app-env
   HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET: ${HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET:-10000}
 
 x-app-image: &app-image
+  image: hh_collector-app
   build:
     context: .
     dockerfile: docker/app.Dockerfile
@@ -40,6 +43,10 @@ x-app-image: &app-image
     redis:
       condition: service_healthy
   volumes:
+    - ./src:/app/src:ro
+    - ./migrations:/app/migrations:ro
+    - ./scripts:/app/scripts:ro
+    - ./alembic.ini:/app/alembic.ini:ro
     - ./.state/metrics:/app/.state/metrics
     - ./.state/backups:/app/.state/backups
     - ./.state/reports:/app/.state/reports

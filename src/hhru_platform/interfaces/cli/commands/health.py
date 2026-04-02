@@ -31,6 +31,14 @@ def handle_health_check(_: argparse.Namespace) -> int:
     print(f"hh_api_timeout_seconds={settings.hh_api_timeout_seconds}")
     print(f"hh_api_user_agent={settings.hh_api_user_agent}")
     print(
+        "hh_api_application_token_configured="
+        f"{'yes' if bool(settings.hh_api_application_token) else 'no'}"
+    )
+    print(
+        "hh_api_default_auth_mode="
+        f"{'application_token' if bool(settings.hh_api_application_token) else 'anonymous'}"
+    )
+    print(
         "hh_api_user_agent_live_search_valid="
         f"{'no' if user_agent_validation_error is not None else 'yes'}"
     )

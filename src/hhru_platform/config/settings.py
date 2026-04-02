@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     hh_api_base_url: str = "https://api.hh.ru"
     hh_api_timeout_seconds: float = 30.0
     hh_api_user_agent: str = "hhru-platform/0.1 (contact: change-me@example.com)"
+    hh_api_application_token: str | None = Field(default=None, repr=False)
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 8001
     metrics_state_path: str = ".state/metrics/metrics.json"

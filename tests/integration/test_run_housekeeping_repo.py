@@ -34,6 +34,48 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _cleanup_test_rows(engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM detail_fetch_attempt WHERE id IN (401, 402, 403)"))
+        connection.execute(text("DELETE FROM vacancy_snapshot WHERE id IN (301, 302, 303, 304)"))
+        connection.execute(text("DELETE FROM raw_api_payload WHERE id IN (201, 202, 203, 204)"))
+        connection.execute(text("DELETE FROM api_request_log WHERE id IN (101, 102, 103)"))
+        connection.execute(
+            text(
+                """
+                DELETE FROM crawl_partition
+                WHERE crawl_run_id IN (
+                    SELECT id
+                    FROM crawl_run
+                    WHERE triggered_by IN (
+                        'pytest-housekeeping-old',
+                        'pytest-housekeeping-active'
+                    )
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                DELETE FROM vacancy
+                WHERE hh_vacancy_id LIKE 'pytest-housekeeping-%'
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                DELETE FROM crawl_run
+                WHERE triggered_by IN (
+                    'pytest-housekeeping-old',
+                    'pytest-housekeeping-active'
+                )
+                """
+            )
+        )
+
+
 def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None:
     engine = create_engine_from_settings()
     session_factory = create_session_factory(engine)
@@ -41,6 +83,8 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
     active_run_id = uuid4()
     vacancy_one_id = uuid4()
     vacancy_two_id = uuid4()
+
+    _cleanup_test_rows(engine)
 
     try:
         with session_scope(session_factory) as session:
@@ -495,24 +539,5 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
             ) == 1
             assert repository.count_crawl_partitions_for_run_ids([old_run_id]) == 1
     finally:
-        with engine.begin() as connection:
-            connection.execute(
-                text("DELETE FROM api_request_log WHERE id IN (101, 102, 103)")
-            )
-            connection.execute(
-                text("DELETE FROM vacancy WHERE id = :vacancy_one_id"),
-                {"vacancy_one_id": vacancy_one_id},
-            )
-            connection.execute(
-                text("DELETE FROM vacancy WHERE id = :vacancy_two_id"),
-                {"vacancy_two_id": vacancy_two_id},
-            )
-            connection.execute(
-                text("DELETE FROM crawl_run WHERE id = :old_run_id"),
-                {"old_run_id": old_run_id},
-            )
-            connection.execute(
-                text("DELETE FROM crawl_run WHERE id = :active_run_id"),
-                {"active_run_id": active_run_id},
-            )
+        _cleanup_test_rows(engine)
         engine.dispose()

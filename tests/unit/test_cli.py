@@ -68,6 +68,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             hh_api_base_url="https://api.hh.ru",
             hh_api_timeout_seconds=15.0,
             hh_api_user_agent="hhru-platform/0.1 (contact: ops@example.com)",
+            hh_api_application_token="secret-token",
             metrics_host="0.0.0.0",
             metrics_port=8001,
             metrics_state_path=".state/metrics/metrics.json",
@@ -97,6 +98,8 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     )
     assert "redis_url=redis://redis.internal:6379/1" in captured.out
     assert "hh_api_user_agent=hhru-platform/0.1 (contact: ops@example.com)" in captured.out
+    assert "hh_api_application_token_configured=yes" in captured.out
+    assert "hh_api_default_auth_mode=application_token" in captured.out
     assert "hh_api_user_agent_live_search_valid=yes" in captured.out
     assert "metrics_state_path=.state/metrics/metrics.json" in captured.out
     assert "backup_retention_days=14" in captured.out

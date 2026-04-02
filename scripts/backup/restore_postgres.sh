@@ -47,15 +47,20 @@ if [[ -n "${restore_target_db}" ]]; then
     "${restore_target_db}"
 
   pg_restore \
-    --host="${db_host}" \
-    --port="${db_port}" \
-    --username="${db_user}" \
-    --dbname="${restore_target_db}" \
     --clean \
     --if-exists \
     --no-owner \
     --no-privileges \
-    "${restore_file}"
+    --file=- \
+    "${restore_file}" \
+    | sed '/^SET transaction_timeout = 0;$/d' \
+    | env PGPASSWORD="${db_password}" psql \
+        --host="${db_host}" \
+        --port="${db_port}" \
+        --username="${db_user}" \
+        --dbname="${restore_target_db}" \
+        --no-psqlrc \
+        --set ON_ERROR_STOP=1
 
   printf 'restore_mode=%s\n' "target_db"
   printf 'restored_from=%s\n' "${restore_file}"
@@ -64,16 +69,21 @@ if [[ -n "${restore_target_db}" ]]; then
 fi
 
 pg_restore \
-  --host="${db_host}" \
-  --port="${db_port}" \
-  --username="${db_user}" \
-  --dbname=postgres \
   --clean \
   --if-exists \
   --create \
   --no-owner \
   --no-privileges \
-  "${restore_file}"
+  --file=- \
+  "${restore_file}" \
+  | sed '/^SET transaction_timeout = 0;$/d' \
+  | env PGPASSWORD="${db_password}" psql \
+      --host="${db_host}" \
+      --port="${db_port}" \
+      --username="${db_user}" \
+      --dbname=postgres \
+      --no-psqlrc \
+      --set ON_ERROR_STOP=1
 
 printf 'restore_mode=%s\n' "replace"
 printf 'restored_from=%s\n' "${restore_file}"

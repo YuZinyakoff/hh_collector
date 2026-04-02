@@ -6,7 +6,7 @@ ARGS ?=
 .PHONY: up up-observability up-scheduler down migrate migrate-compose test lint format \
 	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop run-housekeeping \
 	run-backup verify-backup-file run-restore-drill compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill soak-test
+	backup verify-backup restore restore-drill soak-test soak-test-no-build
 
 up:
 	$(COMPOSE) up -d postgres redis metrics
@@ -92,3 +92,6 @@ restore-drill:
 
 soak-test:
 	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus grafana scheduler
+
+soak-test-no-build:
+	$(COMPOSE) --profile ops --profile observability up -d --no-build postgres redis metrics prometheus grafana scheduler

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import hhru_platform.application.commands.process_list_page as process_list_page_module
 import pytest
 
 from hhru_platform.application.commands.process_list_page import (
@@ -75,6 +76,19 @@ class StaticVacancySearchApiClient:
         assert params_json["per_page"] == 2
         assert params_json["text"] == "pytest list search"
         return self._response
+
+
+class SequentialVacancySearchApiClient:
+    def __init__(self, responses: list[VacancySearchResponse]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+
+    def search_vacancies(self, params_json: dict[str, object]) -> VacancySearchResponse:
+        assert params_json["page"] == 0
+        assert params_json["per_page"] == 2
+        assert params_json["text"] == "pytest list search"
+        self.calls += 1
+        return self._responses.pop(0)
 
 
 class InvalidUserAgentVacancySearchApiClient:
@@ -353,3 +367,180 @@ def test_process_list_page_marks_partition_failed_when_live_search_user_agent_is
     assert result.error_message is not None
     assert "Invalid HH API User-Agent for live vacancy search" in result.error_message
     assert partition.last_error_message == result.error_message
+
+
+def test_process_list_page_retries_transport_failures_and_succeeds(monkeypatch) -> None:
+    partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=uuid4(),
+        partition_key="pytest-list-partition",
+        params_json={"params": {"text": "pytest list search", "per_page": 2}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+    )
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    vacancy_repository = RecordingVacancyRepository()
+    vacancy_seen_event_repository = RecordingVacancySeenEventRepository()
+    vacancy_current_state_repository = RecordingVacancyCurrentStateRepository()
+    vacancy_snapshot_repository = InMemoryVacancySnapshotRepository()
+    api_client = SequentialVacancySearchApiClient(
+        [
+            _build_transport_search_response(),
+            _build_transport_search_response(),
+            _build_successful_search_response(),
+        ]
+    )
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(process_list_page_module, "_sleep", sleep_calls.append)
+
+    result = process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository(partition),
+        api_client=api_client,
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        vacancy_repository=vacancy_repository,
+        vacancy_seen_event_repository=vacancy_seen_event_repository,
+        vacancy_current_state_repository=vacancy_current_state_repository,
+        vacancy_snapshot_repository=vacancy_snapshot_repository,
+    )
+
+    assert result.partition_status == "done"
+    assert result.request_log_id == 3
+    assert result.raw_payload_id == 1
+    assert api_client.calls == 3
+    assert len(api_request_log_repository.records) == 3
+    assert len(raw_api_payload_repository.records) == 1
+    assert sleep_calls == [5.0, 30.0]
+
+
+def test_process_list_page_does_not_retry_captcha_response(monkeypatch) -> None:
+    partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=uuid4(),
+        partition_key="pytest-list-partition",
+        params_json={"params": {"text": "pytest list search", "per_page": 2}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+    )
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    api_client = SequentialVacancySearchApiClient([_build_captcha_search_response()])
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(process_list_page_module, "_sleep", sleep_calls.append)
+
+    result = process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository(partition),
+        api_client=api_client,
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        vacancy_repository=RecordingVacancyRepository(),
+        vacancy_seen_event_repository=RecordingVacancySeenEventRepository(),
+        vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(),
+        vacancy_snapshot_repository=InMemoryVacancySnapshotRepository(),
+    )
+
+    assert result.partition_status == "failed"
+    assert result.request_log_id == 1
+    assert result.raw_payload_id == 1
+    assert result.error_message == "captcha_required: https://captcha.hh.ru"
+    assert api_client.calls == 1
+    assert len(api_request_log_repository.records) == 1
+    assert len(raw_api_payload_repository.records) == 1
+    assert sleep_calls == []
+
+
+def _build_transport_search_response() -> VacancySearchResponse:
+    return VacancySearchResponse(
+        endpoint="/vacancies",
+        method="GET",
+        params_json={"page": 0, "per_page": 2, "text": "pytest list search"},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=0,
+        headers={},
+        latency_ms=250,
+        requested_at=datetime(2026, 3, 12, 12, 1, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 1, 1, tzinfo=UTC),
+        payload_json=None,
+        error_type="ConnectionResetError",
+        error_message="Connection reset by peer",
+    )
+
+
+def _build_captcha_search_response() -> VacancySearchResponse:
+    return VacancySearchResponse(
+        endpoint="/vacancies",
+        method="GET",
+        params_json={"page": 0, "per_page": 2, "text": "pytest list search"},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=403,
+        headers={},
+        latency_ms=300,
+        requested_at=datetime(2026, 3, 12, 12, 1, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 1, 1, tzinfo=UTC),
+        payload_json={
+            "errors": [
+                {"type": "captcha_required", "captcha_url": "https://captcha.hh.ru"}
+            ]
+        },
+        error_type="captcha_required",
+        error_message="https://captcha.hh.ru",
+    )
+
+
+def _build_successful_search_response() -> VacancySearchResponse:
+    return VacancySearchResponse(
+        endpoint="/vacancies",
+        method="GET",
+        params_json={"page": 0, "per_page": 2, "text": "pytest list search"},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=200,
+        headers={},
+        latency_ms=25,
+        requested_at=datetime(2026, 3, 12, 12, 1, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 1, 1, tzinfo=UTC),
+        payload_json={
+            "items": [
+                {
+                    "id": "pytest-vacancy-1",
+                    "name": "Python Engineer",
+                    "area": {"id": "pytest-area", "name": "Test Area"},
+                    "created_at": "2026-03-12T09:30:00+0300",
+                    "published_at": "2026-03-12T10:00:00+0300",
+                    "alternate_url": "https://hh.ru/vacancy/pytest-vacancy-1",
+                    "employer": {
+                        "id": "pytest-employer-1",
+                        "name": "Pytest Employer One",
+                        "alternate_url": "https://hh.ru/employer/pytest-employer-1",
+                        "trusted": True,
+                    },
+                    "employment": {"id": "full", "name": "Full"},
+                    "schedule": {"id": "remote", "name": "Remote"},
+                    "experience": {"id": "between1And3", "name": "1-3 years"},
+                    "professional_roles": [
+                        {"id": "pytest-role-python", "name": "Python Developer"}
+                    ],
+                }
+            ],
+            "found": 11,
+            "page": 0,
+            "pages": 6,
+            "per_page": 2,
+        },
+    )

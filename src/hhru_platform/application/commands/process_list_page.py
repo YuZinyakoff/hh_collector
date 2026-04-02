@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -16,6 +17,11 @@ from hhru_platform.application.dto import (
 )
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.value_objects.enums import CrawlPartitionStatus, VacancySnapshotType
+from hhru_platform.infrastructure.hh_api.response_classification import (
+    build_response_error_message,
+    is_captcha_response,
+    is_transport_response,
+)
 from hhru_platform.infrastructure.hh_api.user_agent import (
     HHApiUserAgentValidationError,
 )
@@ -48,6 +54,7 @@ SUPPORTED_LIST_SEARCH_PARAMS = {
 }
 
 LOGGER = logging.getLogger(__name__)
+SEARCH_TRANSPORT_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 30.0)
 
 
 class CrawlPartitionNotFoundError(LookupError):
@@ -79,6 +86,8 @@ class ProcessListPageResult:
     raw_payload_id: int | None
     processed_vacancies: list[StoredVacancyReference]
     error_message: str | None
+    status_code: int | None = None
+    error_type: str | None = None
 
 
 class CrawlPartitionRepository(Protocol):
@@ -221,7 +230,13 @@ def process_list_page(
             raise TypeError("search parameter page must be an integer")
 
         try:
-            response = api_client.search_vacancies(search_params)
+            response, request_log_id, raw_payload_id = _request_search_page(
+                partition=partition,
+                search_params=search_params,
+                api_client=api_client,
+                api_request_log_repository=api_request_log_repository,
+                raw_api_payload_repository=raw_api_payload_repository,
+            )
         except HHApiUserAgentValidationError as error:
             failed_partition = crawl_partition_repository.mark_failed(
                 partition_id=partition.id,
@@ -239,6 +254,8 @@ def process_list_page(
                 raw_payload_id=None,
                 processed_vacancies=[],
                 error_message=str(error),
+                status_code=None,
+                error_type=error.__class__.__name__,
             )
             record_operation_failed(
                 LOGGER,
@@ -252,32 +269,6 @@ def process_list_page(
                 page=page_number,
             )
             return result
-
-        request_log_id = api_request_log_repository.add(
-            crawl_run_id=partition.crawl_run_id,
-            crawl_partition_id=partition.id,
-            requested_at=response.requested_at,
-            request_type="vacancy_search",
-            endpoint=response.endpoint,
-            method=response.method,
-            params_json=dict(response.params_json),
-            request_headers_json=dict(response.request_headers_json),
-            status_code=response.status_code,
-            latency_ms=response.latency_ms,
-            response_received_at=response.response_received_at,
-            error_type=response.error_type,
-            error_message=response.error_message,
-        )
-
-        raw_payload_id: int | None = None
-        if _payload_is_present(response.payload_json):
-            raw_payload_id = raw_api_payload_repository.add(
-                api_request_log_id=request_log_id,
-                received_at=response.response_received_at or response.requested_at,
-                endpoint_type="vacancies.search",
-                entity_hh_id=None,
-                payload_json=response.payload_json,
-            )
 
         try:
             normalized_page = _normalize_response(response)
@@ -298,6 +289,8 @@ def process_list_page(
                 raw_payload_id=raw_payload_id,
                 processed_vacancies=[],
                 error_message=str(error),
+                status_code=response.status_code,
+                error_type=response.error_type,
             )
             record_operation_failed(
                 LOGGER,
@@ -373,6 +366,8 @@ def process_list_page(
         raw_payload_id=raw_payload_id,
         processed_vacancies=upsert_result.vacancies,
         error_message=None,
+        status_code=response.status_code,
+        error_type=response.error_type,
     )
     record_operation_succeeded(
         LOGGER,
@@ -428,6 +423,24 @@ def _build_search_params(
 
 
 def _normalize_response(response: VacancySearchResponse) -> NormalizedVacancySearchPage:
+    if is_captcha_response(status_code=response.status_code, error_type=response.error_type):
+        raise VacancySearchNormalizationError(
+            build_response_error_message(
+                error_type=response.error_type,
+                error_message=response.error_message,
+                default_message="vacancy search request blocked by captcha",
+            )
+        )
+
+    if is_transport_response(status_code=response.status_code, error_type=response.error_type):
+        raise VacancySearchNormalizationError(
+            build_response_error_message(
+                error_type=response.error_type,
+                error_message=response.error_message,
+                default_message="vacancy search transport request failed",
+            )
+        )
+
     if response.status_code != 200:
         raise VacancySearchNormalizationError(f"Unexpected status code: {response.status_code}")
 
@@ -460,8 +473,64 @@ def _build_observed_records(
     ]
 
 
+def _request_search_page(
+    *,
+    partition: CrawlPartition,
+    search_params: dict[str, object],
+    api_client: VacancySearchApiClient,
+    api_request_log_repository: ApiRequestLogRepository,
+    raw_api_payload_repository: RawApiPayloadRepository,
+) -> tuple[VacancySearchResponse, int, int | None]:
+    attempts_total = len(SEARCH_TRANSPORT_RETRY_BACKOFF_SECONDS) + 1
+
+    for attempt_index in range(attempts_total):
+        response = api_client.search_vacancies(search_params)
+        request_log_id = api_request_log_repository.add(
+            crawl_run_id=partition.crawl_run_id,
+            crawl_partition_id=partition.id,
+            requested_at=response.requested_at,
+            request_type="vacancy_search",
+            endpoint=response.endpoint,
+            method=response.method,
+            params_json=dict(response.params_json),
+            request_headers_json=dict(response.request_headers_json),
+            status_code=response.status_code,
+            latency_ms=response.latency_ms,
+            response_received_at=response.response_received_at,
+            error_type=response.error_type,
+            error_message=response.error_message,
+        )
+
+        raw_payload_id: int | None = None
+        if _payload_is_present(response.payload_json):
+            raw_payload_id = raw_api_payload_repository.add(
+                api_request_log_id=request_log_id,
+                received_at=response.response_received_at or response.requested_at,
+                endpoint_type="vacancies.search",
+                entity_hh_id=None,
+                payload_json=response.payload_json,
+            )
+
+        if not is_transport_response(
+            status_code=response.status_code,
+            error_type=response.error_type,
+        ):
+            return response, request_log_id, raw_payload_id
+
+        if attempt_index >= len(SEARCH_TRANSPORT_RETRY_BACKOFF_SECONDS):
+            return response, request_log_id, raw_payload_id
+
+        _sleep(SEARCH_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt_index])
+
+    raise AssertionError("search request attempts exhausted unexpectedly")
+
+
 def _payload_is_present(payload_json: object | None) -> bool:
     return isinstance(payload_json, dict | list)
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 def _create_short_snapshots(

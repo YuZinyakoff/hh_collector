@@ -14,6 +14,11 @@ from hhru_platform.application.commands.split_partition import (
     SplitPartitionCommand,
     split_partition,
 )
+from hhru_platform.application.policies.planner import (
+    TIME_WINDOW_FALLBACK_START,
+    build_time_window_partition_definition,
+    serialize_split_datetime,
+)
 from hhru_platform.domain.entities.area import Area
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.entities.crawl_run import CrawlRun
@@ -294,9 +299,9 @@ def test_split_partition_creates_child_area_partitions_and_is_idempotent() -> No
     assert len(second_split_result.children) == 2
 
 
-def test_split_partition_marks_parent_unresolved_when_area_split_has_no_children() -> None:
+def test_split_partition_falls_back_to_time_window_when_area_split_has_no_children() -> None:
     crawl_run = _build_crawl_run()
-    root_area = _build_area(hh_area_id="113", name="Russia", level=0, path_text="Russia")
+    root_area = _build_area(hh_area_id="1", name="Moscow", level=1, path_text="Russia / Moscow")
     run_repository = InMemoryCrawlRunRepository(crawl_run)
     partition_repository = InMemoryCrawlPartitionRepository()
     area_repository = InMemoryAreaRepository(root_areas=[root_area], children_by_hh_parent_id={})
@@ -315,10 +320,133 @@ def test_split_partition_marks_parent_unresolved_when_area_split_has_no_children
         area_repository=area_repository,
     )
 
+    assert result.parent_partition.status == CrawlPartitionStatus.SPLIT_DONE.value
+    assert result.parent_partition.coverage_status == CrawlPartitionCoverageStatus.SPLIT.value
+    assert result.parent_partition.is_terminal is False
+    assert result.parent_partition.is_saturated is True
+    assert result.resolution_message is None
+    assert len(result.created_children) == 2
+    assert len(result.children) == 2
+    assert all(child.parent_partition_id == parent_partition.id for child in result.children)
+    assert all(child.depth == 1 for child in result.children)
+    assert all(child.split_dimension == "time_window" for child in result.children)
+    assert all(child.partition_key.startswith("time_window:1:") for child in result.children)
+    assert {
+        child.params_json["params"]["date_from"]  # type: ignore[index]
+        for child in result.children
+    } == {
+        serialize_split_datetime(TIME_WINDOW_FALLBACK_START),
+        serialize_split_datetime(
+            TIME_WINDOW_FALLBACK_START
+            + (crawl_run.started_at - TIME_WINDOW_FALLBACK_START) / 2
+        ),
+    }
+    assert {
+        child.params_json["params"]["date_to"]  # type: ignore[index]
+        for child in result.children
+    } == {
+        serialize_split_datetime(
+            TIME_WINDOW_FALLBACK_START
+            + (crawl_run.started_at - TIME_WINDOW_FALLBACK_START) / 2
+        ),
+        serialize_split_datetime(crawl_run.started_at),
+    }
+
+
+def test_split_partition_recursively_bisects_existing_time_window_partition() -> None:
+    crawl_run = _build_crawl_run()
+    run_repository = InMemoryCrawlRunRepository(crawl_run)
+    partition_repository = InMemoryCrawlPartitionRepository()
+    area_repository = InMemoryAreaRepository(root_areas=[], children_by_hh_parent_id={})
+    parent_definition = build_time_window_partition_definition(
+        area_hh_id="1",
+        date_from=datetime(2026, 3, 1, 0, 0, tzinfo=UTC),
+        date_to=datetime(2026, 3, 2, 0, 0, tzinfo=UTC),
+        crawl_run=crawl_run,
+        area_name="Moscow",
+        path_text="Russia / Moscow",
+    )
+    parent_partition = partition_repository.add(
+        crawl_run_id=crawl_run.id,
+        partition_key=parent_definition.partition_key,
+        status=CrawlPartitionStatus.PENDING.value,
+        params_json=dict(parent_definition.params_json),
+        parent_partition_id=parent_definition.parent_partition_id,
+        depth=parent_definition.depth,
+        split_dimension=parent_definition.split_dimension,
+        split_value=parent_definition.split_value,
+        scope_key=parent_definition.scope_key,
+        planner_policy_version=parent_definition.planner_policy_version,
+        is_terminal=parent_definition.is_terminal,
+        is_saturated=True,
+        coverage_status=parent_definition.coverage_status,
+    )
+
+    result = split_partition(
+        SplitPartitionCommand(partition_id=parent_partition.id),
+        crawl_partition_repository=partition_repository,
+        crawl_run_repository=run_repository,
+        area_repository=area_repository,
+    )
+
+    assert result.parent_partition.status == CrawlPartitionStatus.SPLIT_DONE.value
+    assert len(result.created_children) == 2
+    assert all(child.split_dimension == "time_window" for child in result.children)
+    assert all(child.parent_partition_id == parent_partition.id for child in result.children)
+    assert all(child.depth == 1 for child in result.children)
+    child_ranges = sorted(
+        (
+            child.params_json["params"]["date_from"],  # type: ignore[index]
+            child.params_json["params"]["date_to"],  # type: ignore[index]
+        )
+        for child in result.children
+    )
+    assert child_ranges == [
+        ("2026-03-01T00:00:00+00:00", "2026-03-01T12:00:00+00:00"),
+        ("2026-03-01T12:00:00+00:00", "2026-03-02T00:00:00+00:00"),
+    ]
+
+
+def test_split_partition_marks_parent_unresolved_when_time_window_cannot_be_refined() -> None:
+    crawl_run = _build_crawl_run()
+    run_repository = InMemoryCrawlRunRepository(crawl_run)
+    partition_repository = InMemoryCrawlPartitionRepository()
+    area_repository = InMemoryAreaRepository(root_areas=[], children_by_hh_parent_id={})
+    parent_definition = build_time_window_partition_definition(
+        area_hh_id="1",
+        date_from=datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC),
+        date_to=datetime(2026, 3, 1, 0, 0, 1, tzinfo=UTC),
+        crawl_run=crawl_run,
+        area_name="Moscow",
+        path_text="Russia / Moscow",
+    )
+    parent_partition = partition_repository.add(
+        crawl_run_id=crawl_run.id,
+        partition_key=parent_definition.partition_key,
+        status=CrawlPartitionStatus.PENDING.value,
+        params_json=dict(parent_definition.params_json),
+        parent_partition_id=parent_definition.parent_partition_id,
+        depth=parent_definition.depth,
+        split_dimension=parent_definition.split_dimension,
+        split_value=parent_definition.split_value,
+        scope_key=parent_definition.scope_key,
+        planner_policy_version=parent_definition.planner_policy_version,
+        is_terminal=parent_definition.is_terminal,
+        is_saturated=True,
+        coverage_status=parent_definition.coverage_status,
+    )
+
+    result = split_partition(
+        SplitPartitionCommand(partition_id=parent_partition.id),
+        crawl_partition_repository=partition_repository,
+        crawl_run_repository=run_repository,
+        area_repository=area_repository,
+    )
+
     assert result.parent_partition.status == CrawlPartitionStatus.UNRESOLVED.value
     assert result.parent_partition.coverage_status == CrawlPartitionCoverageStatus.UNRESOLVED.value
     assert result.parent_partition.is_terminal is True
     assert result.parent_partition.is_saturated is True
     assert result.children == ()
     assert result.resolution_message is not None
-    assert "active child areas not found" in result.resolution_message
+    assert "time-window split cannot refine" in result.resolution_message

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -9,6 +10,11 @@ from uuid import UUID
 from hhru_platform.application.dto import NormalizedVacancyDetail, VacancyDetailResponse
 from hhru_platform.domain.entities.vacancy import Vacancy
 from hhru_platform.domain.value_objects.enums import DetailFetchStatus, VacancySnapshotType
+from hhru_platform.infrastructure.hh_api.response_classification import (
+    build_response_error_message,
+    is_captcha_response,
+    is_transport_response,
+)
 from hhru_platform.infrastructure.normalization.vacancy_detail_normalizer import (
     VacancyDetailNormalizationError,
     normalize_vacancy_detail,
@@ -20,6 +26,7 @@ from hhru_platform.infrastructure.observability.operations import (
 )
 
 LOGGER = logging.getLogger(__name__)
+DETAIL_TRANSPORT_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (5.0,)
 
 
 class VacancyNotFoundError(LookupError):
@@ -195,32 +202,13 @@ def fetch_vacancy_detail(
             requested_at=attempt_requested_at,
             status=DetailFetchStatus.RUNNING.value,
         )
-        response = api_client.fetch_vacancy_detail(vacancy.hh_vacancy_id)
-        request_log_id = api_request_log_repository.add(
+        response, request_log_id, raw_payload_id = _request_vacancy_detail(
             crawl_run_id=command.crawl_run_id,
-            crawl_partition_id=None,
-            requested_at=response.requested_at,
-            request_type="vacancy_detail",
-            endpoint=response.endpoint,
-            method=response.method,
-            params_json=dict(response.params_json),
-            request_headers_json=dict(response.request_headers_json),
-            status_code=response.status_code,
-            latency_ms=response.latency_ms,
-            response_received_at=response.response_received_at,
-            error_type=response.error_type,
-            error_message=response.error_message,
+            hh_vacancy_id=vacancy.hh_vacancy_id,
+            api_client=api_client,
+            api_request_log_repository=api_request_log_repository,
+            raw_api_payload_repository=raw_api_payload_repository,
         )
-
-        raw_payload_id: int | None = None
-        if _payload_is_present(response.payload_json):
-            raw_payload_id = raw_api_payload_repository.add(
-                api_request_log_id=request_log_id,
-                received_at=response.response_received_at or response.requested_at,
-                endpoint_type="vacancies.detail",
-                entity_hh_id=vacancy.hh_vacancy_id,
-                payload_json=response.payload_json,
-            )
 
         try:
             normalized_detail = _normalize_response(response)
@@ -335,6 +323,24 @@ def fetch_vacancy_detail(
 
 
 def _normalize_response(response: VacancyDetailResponse) -> NormalizedVacancyDetail:
+    if is_captcha_response(status_code=response.status_code, error_type=response.error_type):
+        raise VacancyDetailNormalizationError(
+            build_response_error_message(
+                error_type=response.error_type,
+                error_message=response.error_message,
+                default_message="vacancy detail request blocked by captcha",
+            )
+        )
+
+    if is_transport_response(status_code=response.status_code, error_type=response.error_type):
+        raise VacancyDetailNormalizationError(
+            build_response_error_message(
+                error_type=response.error_type,
+                error_message=response.error_message,
+                default_message="vacancy detail transport request failed",
+            )
+        )
+
     if response.status_code != 200:
         raise VacancyDetailNormalizationError(f"Unexpected status code: {response.status_code}")
 
@@ -351,3 +357,59 @@ def _normalize_response(response: VacancyDetailResponse) -> NormalizedVacancyDet
 
 def _payload_is_present(payload_json: object | None) -> bool:
     return isinstance(payload_json, dict | list)
+
+
+def _request_vacancy_detail(
+    *,
+    crawl_run_id: UUID | None,
+    hh_vacancy_id: str,
+    api_client: VacancyDetailApiClient,
+    api_request_log_repository: ApiRequestLogRepository,
+    raw_api_payload_repository: RawApiPayloadRepository,
+) -> tuple[VacancyDetailResponse, int, int | None]:
+    attempts_total = len(DETAIL_TRANSPORT_RETRY_BACKOFF_SECONDS) + 1
+
+    for attempt_index in range(attempts_total):
+        response = api_client.fetch_vacancy_detail(hh_vacancy_id)
+        request_log_id = api_request_log_repository.add(
+            crawl_run_id=crawl_run_id,
+            crawl_partition_id=None,
+            requested_at=response.requested_at,
+            request_type="vacancy_detail",
+            endpoint=response.endpoint,
+            method=response.method,
+            params_json=dict(response.params_json),
+            request_headers_json=dict(response.request_headers_json),
+            status_code=response.status_code,
+            latency_ms=response.latency_ms,
+            response_received_at=response.response_received_at,
+            error_type=response.error_type,
+            error_message=response.error_message,
+        )
+
+        raw_payload_id: int | None = None
+        if _payload_is_present(response.payload_json):
+            raw_payload_id = raw_api_payload_repository.add(
+                api_request_log_id=request_log_id,
+                received_at=response.response_received_at or response.requested_at,
+                endpoint_type="vacancies.detail",
+                entity_hh_id=hh_vacancy_id,
+                payload_json=response.payload_json,
+            )
+
+        if not is_transport_response(
+            status_code=response.status_code,
+            error_type=response.error_type,
+        ):
+            return response, request_log_id, raw_payload_id
+
+        if attempt_index >= len(DETAIL_TRANSPORT_RETRY_BACKOFF_SECONDS):
+            return response, request_log_id, raw_payload_id
+
+        _sleep(DETAIL_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt_index])
+
+    raise AssertionError("detail request attempts exhausted unexpectedly")
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)

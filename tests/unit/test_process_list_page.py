@@ -120,19 +120,28 @@ class InMemoryRawApiPayloadRepository:
 class RecordingVacancyRepository:
     def __init__(self) -> None:
         self.records: list[object] = []
+        self.vacancy_ids_by_hh_id: dict[str, UUID] = {}
 
     def upsert_many(self, records: list[object]) -> VacancyUpsertResult:
         self.records = list(records)
-        return VacancyUpsertResult(
-            created_count=len(records),
-            vacancies=[
+        created_count = 0
+        vacancies: list[StoredVacancyReference] = []
+        for record in records:
+            vacancy_id = self.vacancy_ids_by_hh_id.get(record.hh_vacancy_id)
+            if vacancy_id is None:
+                vacancy_id = uuid4()
+                self.vacancy_ids_by_hh_id[record.hh_vacancy_id] = vacancy_id
+                created_count += 1
+            vacancies.append(
                 StoredVacancyReference(
-                    id=uuid4(),
+                    id=vacancy_id,
                     hh_vacancy_id=record.hh_vacancy_id,
                     name_current=record.name_current,
                 )
-                for record in records
-            ],
+            )
+        return VacancyUpsertResult(
+            created_count=created_count,
+            vacancies=vacancies,
         )
 
 
@@ -146,8 +155,16 @@ class RecordingVacancySeenEventRepository:
 
 
 class RecordingVacancyCurrentStateRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, previous_short_hashes: dict[UUID, str] | None = None) -> None:
         self.observations: list[ObservedVacancyRecord] = []
+        self.previous_short_hashes = previous_short_hashes or {}
+
+    def list_last_short_hashes(self, *, vacancy_ids: list[UUID]) -> dict[UUID, str]:
+        return {
+            vacancy_id: self.previous_short_hashes[vacancy_id]
+            for vacancy_id in vacancy_ids
+            if vacancy_id in self.previous_short_hashes
+        }
 
     def observe_many(self, **kwargs: object) -> int:
         self.observations = list(kwargs["observations"])
@@ -299,6 +316,87 @@ def test_process_list_page_persists_request_raw_and_observations() -> None:
     assert partition.pages_processed == 1
     assert partition.items_seen == 2
     assert partition.pages_total_expected == 6
+    assert vacancy_snapshot_repository.records[0]["change_reason"] == "first_seen"
+    assert vacancy_snapshot_repository.records[1]["change_reason"] == "first_seen"
+
+
+def test_process_list_page_creates_short_snapshots_only_for_first_seen_or_changed_hashes() -> None:
+    partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=uuid4(),
+        partition_key="pytest-list-partition",
+        params_json={"params": {"text": "pytest list search", "per_page": 2}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+    )
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    vacancy_repository = RecordingVacancyRepository()
+    vacancy_seen_event_repository = RecordingVacancySeenEventRepository()
+    vacancy_snapshot_repository = InMemoryVacancySnapshotRepository()
+
+    response = _build_successful_search_response()
+
+    first_result = process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository(partition),
+        api_client=StaticVacancySearchApiClient(response),
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        vacancy_repository=vacancy_repository,
+        vacancy_seen_event_repository=vacancy_seen_event_repository,
+        vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(),
+        vacancy_snapshot_repository=vacancy_snapshot_repository,
+    )
+
+    unchanged_previous_hashes = {
+        first_result.processed_vacancies[0].id: vacancy_seen_event_repository.observations[0].short_hash
+    }
+    unchanged_snapshot_repository = InMemoryVacancySnapshotRepository()
+    process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository(partition),
+        api_client=StaticVacancySearchApiClient(response),
+        api_request_log_repository=InMemoryApiRequestLogRepository(),
+        raw_api_payload_repository=InMemoryRawApiPayloadRepository(),
+        vacancy_repository=vacancy_repository,
+        vacancy_seen_event_repository=RecordingVacancySeenEventRepository(),
+        vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(
+            previous_short_hashes=unchanged_previous_hashes
+        ),
+        vacancy_snapshot_repository=unchanged_snapshot_repository,
+    )
+
+    changed_previous_hashes = {
+        first_result.processed_vacancies[0].id: "previous-short-hash"
+    }
+    changed_snapshot_repository = InMemoryVacancySnapshotRepository()
+    process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository(partition),
+        api_client=StaticVacancySearchApiClient(response),
+        api_request_log_repository=InMemoryApiRequestLogRepository(),
+        raw_api_payload_repository=InMemoryRawApiPayloadRepository(),
+        vacancy_repository=vacancy_repository,
+        vacancy_seen_event_repository=RecordingVacancySeenEventRepository(),
+        vacancy_current_state_repository=RecordingVacancyCurrentStateRepository(
+            previous_short_hashes=changed_previous_hashes
+        ),
+        vacancy_snapshot_repository=changed_snapshot_repository,
+    )
+
+    assert len(vacancy_snapshot_repository.records) == 1
+    assert vacancy_snapshot_repository.records[0]["change_reason"] == "first_seen"
+    assert unchanged_snapshot_repository.records == []
+    assert len(changed_snapshot_repository.records) == 1
+    assert changed_snapshot_repository.records[0]["change_reason"] == "short_hash_changed"
 
 
 def test_process_list_page_raises_when_partition_is_missing() -> None:

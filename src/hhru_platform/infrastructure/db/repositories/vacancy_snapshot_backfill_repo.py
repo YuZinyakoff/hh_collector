@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import case, exists, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -80,33 +80,67 @@ class SqlAlchemyVacancySnapshotBackfillRepository:
         *,
         limit: int,
     ) -> list[ShortSnapshotBackfillCandidate]:
+        ranked_seen_events = (
+            select(
+                VacancySeenEventModel.id.label("seen_event_id"),
+                VacancySeenEventModel.vacancy_id.label("vacancy_id"),
+                VacancyModel.hh_vacancy_id.label("hh_vacancy_id"),
+                VacancySeenEventModel.crawl_run_id.label("crawl_run_id"),
+                VacancySeenEventModel.crawl_partition_id.label("crawl_partition_id"),
+                VacancySeenEventModel.seen_at.label("seen_at"),
+                VacancySeenEventModel.list_position.label("list_position"),
+                VacancySeenEventModel.short_hash.label("short_hash"),
+                VacancySeenEventModel.short_payload_ref_id.label("short_payload_ref_id"),
+                func.lag(VacancySeenEventModel.short_hash)
+                .over(
+                    partition_by=VacancySeenEventModel.vacancy_id,
+                    order_by=(
+                        VacancySeenEventModel.seen_at,
+                        VacancySeenEventModel.id,
+                    ),
+                )
+                .label("previous_short_hash"),
+            )
+            .join(VacancyModel, VacancyModel.id == VacancySeenEventModel.vacancy_id)
+            .subquery()
+        )
         existing_short_snapshot = (
             select(VacancySnapshotModel.id)
             .where(
-                VacancySnapshotModel.vacancy_id == VacancySeenEventModel.vacancy_id,
+                VacancySnapshotModel.vacancy_id == ranked_seen_events.c.vacancy_id,
                 VacancySnapshotModel.snapshot_type == VacancySnapshotType.SHORT.value,
-                VacancySnapshotModel.captured_at == VacancySeenEventModel.seen_at,
-                VacancySnapshotModel.short_hash == VacancySeenEventModel.short_hash,
+                VacancySnapshotModel.captured_at == ranked_seen_events.c.seen_at,
+                VacancySnapshotModel.short_hash == ranked_seen_events.c.short_hash,
             )
-            .correlate(VacancySeenEventModel)
+            .correlate(ranked_seen_events)
         )
         statement = (
             select(
-                VacancySeenEventModel.vacancy_id,
-                VacancyModel.hh_vacancy_id,
-                VacancySeenEventModel.crawl_run_id,
-                VacancySeenEventModel.crawl_partition_id,
-                VacancySeenEventModel.seen_at,
-                VacancySeenEventModel.list_position,
-                VacancySeenEventModel.short_hash,
-                VacancySeenEventModel.short_payload_ref_id,
+                ranked_seen_events.c.vacancy_id,
+                ranked_seen_events.c.hh_vacancy_id,
+                ranked_seen_events.c.crawl_run_id,
+                ranked_seen_events.c.crawl_partition_id,
+                ranked_seen_events.c.seen_at,
+                ranked_seen_events.c.list_position,
+                ranked_seen_events.c.short_hash,
+                ranked_seen_events.c.short_payload_ref_id,
+                case(
+                    (
+                        ranked_seen_events.c.previous_short_hash.is_(None),
+                        "first_seen",
+                    ),
+                    else_="short_hash_changed",
+                ).label("change_reason"),
             )
-            .join(VacancyModel, VacancyModel.id == VacancySeenEventModel.vacancy_id)
             .where(
-                VacancySeenEventModel.short_payload_ref_id.is_not(None),
+                ranked_seen_events.c.short_payload_ref_id.is_not(None),
+                or_(
+                    ranked_seen_events.c.previous_short_hash.is_(None),
+                    ranked_seen_events.c.previous_short_hash != ranked_seen_events.c.short_hash,
+                ),
                 ~exists(existing_short_snapshot),
             )
-            .order_by(VacancySeenEventModel.seen_at, VacancySeenEventModel.id)
+            .order_by(ranked_seen_events.c.seen_at, ranked_seen_events.c.seen_event_id)
             .limit(limit)
         )
         rows = self._session.execute(statement)
@@ -120,6 +154,7 @@ class SqlAlchemyVacancySnapshotBackfillRepository:
                 list_position=list_position,
                 short_hash=short_hash,
                 short_payload_ref_id=cast(int, short_payload_ref_id),
+                change_reason=str(change_reason),
             )
             for (
                 vacancy_id,
@@ -130,6 +165,7 @@ class SqlAlchemyVacancySnapshotBackfillRepository:
                 list_position,
                 short_hash,
                 short_payload_ref_id,
+                change_reason,
             ) in rows
         ]
 

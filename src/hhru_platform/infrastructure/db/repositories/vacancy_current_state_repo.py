@@ -26,6 +26,25 @@ class SqlAlchemyVacancyCurrentStateRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def list_last_short_hashes(
+        self,
+        *,
+        vacancy_ids: list[UUID],
+    ) -> dict[UUID, str]:
+        if not vacancy_ids:
+            return {}
+
+        statement = select(
+            VacancyCurrentStateModel.vacancy_id,
+            VacancyCurrentStateModel.last_short_hash,
+        ).where(VacancyCurrentStateModel.vacancy_id.in_(tuple(vacancy_ids)))
+        rows = self._session.execute(statement)
+        return {
+            vacancy_id: last_short_hash
+            for vacancy_id, last_short_hash in rows
+            if last_short_hash is not None
+        }
+
     def observe_many(
         self,
         *,

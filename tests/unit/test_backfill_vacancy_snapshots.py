@@ -30,6 +30,7 @@ class FakeVacancySnapshotBackfillRepository:
                 list_position=3,
                 short_hash="pytest-short-hash",
                 short_payload_ref_id=201,
+                change_reason="first_seen",
             )
         ]
         self.raw_payloads: dict[int, object] = {
@@ -110,6 +111,7 @@ def test_backfill_vacancy_snapshots_updates_legacy_detail_rows_and_creates_short
     assert repository.created_short_snapshots[0]["snapshot_json"]["payload"]["id"] == (
         "pytest-short-vacancy"
     )
+    assert repository.created_short_snapshots[0]["change_reason"] == "first_seen"
     assert repository.synced_vacancy_ids
 
 
@@ -132,6 +134,7 @@ def test_backfill_vacancy_snapshots_reports_missing_raw_and_missing_search_item(
             list_position=0,
             short_hash="pytest-short-hash-missing",
             short_payload_ref_id=201,
+            change_reason="short_hash_changed",
         )
     ]
 

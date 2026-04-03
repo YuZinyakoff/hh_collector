@@ -38,6 +38,7 @@ class ShortSnapshotBackfillCandidate:
     list_position: int | None
     short_hash: str
     short_payload_ref_id: int
+    change_reason: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -290,7 +291,7 @@ def _backfill_short_snapshots(
                     pages=None,
                     search_params={},
                 ),
-                change_reason="backfill_search_observation",
+                change_reason=candidate.change_reason,
             )
             snapshots_created += 1
 

@@ -172,6 +172,13 @@ class VacancySeenEventRepository(Protocol):
 
 
 class VacancyCurrentStateRepository(Protocol):
+    def list_last_short_hashes(
+        self,
+        *,
+        vacancy_ids: list[UUID],
+    ) -> dict[UUID, str]:
+        """Return latest known short hashes for the provided vacancies."""
+
     def observe_many(
         self,
         *,
@@ -310,6 +317,9 @@ def process_list_page(
         upsert_result = vacancy_repository.upsert_many(normalized_page.items)
         observed_at = response.response_received_at or datetime.now(UTC)
         observed_records = _build_observed_records(normalized_page.items, upsert_result)
+        previous_short_hashes = vacancy_current_state_repository.list_last_short_hashes(
+            vacancy_ids=[record.vacancy_id for record in observed_records],
+        )
         seen_events_created = vacancy_seen_event_repository.add_many(
             crawl_run_id=partition.crawl_run_id,
             crawl_partition_id=partition.id,
@@ -329,6 +339,8 @@ def process_list_page(
             captured_at=observed_at,
             raw_payload_id=raw_payload_id,
             normalized_page=normalized_page,
+            observed_records=observed_records,
+            previous_short_hashes=previous_short_hashes,
             upsert_result=upsert_result,
             search_payload_json=response.payload_json,
             search_params=response.params_json,
@@ -541,6 +553,8 @@ def _create_short_snapshots(
     captured_at: datetime,
     raw_payload_id: int | None,
     normalized_page: NormalizedVacancySearchPage,
+    observed_records: list[ObservedVacancyRecord],
+    previous_short_hashes: dict[UUID, str],
     upsert_result: VacancyUpsertResult,
     search_payload_json: object | None,
     search_params: dict[str, object],
@@ -548,12 +562,21 @@ def _create_short_snapshots(
     if not _payload_is_present(search_payload_json):
         return 0
 
-    stored_vacancies_by_hh_id = {
-        vacancy.hh_vacancy_id: vacancy.id for vacancy in upsert_result.vacancies
+    observed_records_by_hh_id = {
+        record.hh_vacancy_id: record for record in observed_records
     }
     created_count = 0
 
     for record in normalized_page.items:
+        observed_record = observed_records_by_hh_id[record.hh_vacancy_id]
+        change_reason = _short_snapshot_change_reason(
+            vacancy_id=observed_record.vacancy_id,
+            short_hash=observed_record.short_hash,
+            previous_short_hashes=previous_short_hashes,
+        )
+        if change_reason is None:
+            continue
+
         item_payload = extract_search_item_payload(
             search_payload_json,
             hh_vacancy_id=record.hh_vacancy_id,
@@ -562,7 +585,7 @@ def _create_short_snapshots(
             continue
 
         vacancy_snapshot_repository.add(
-            vacancy_id=stored_vacancies_by_hh_id[record.hh_vacancy_id],
+            vacancy_id=observed_record.vacancy_id,
             crawl_run_id=crawl_run_id,
             snapshot_type=VacancySnapshotType.SHORT.value,
             captured_at=captured_at,
@@ -581,8 +604,22 @@ def _create_short_snapshots(
                 pages=normalized_page.pages,
                 search_params=search_params,
             ),
-            change_reason="search_observation",
+            change_reason=change_reason,
         )
         created_count += 1
 
     return created_count
+
+
+def _short_snapshot_change_reason(
+    *,
+    vacancy_id: UUID,
+    short_hash: str,
+    previous_short_hashes: dict[UUID, str],
+) -> str | None:
+    previous_short_hash = previous_short_hashes.get(vacancy_id)
+    if previous_short_hash is None:
+        return "first_seen"
+    if previous_short_hash != short_hash:
+        return "short_hash_changed"
+    return None

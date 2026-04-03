@@ -79,6 +79,7 @@ def handle_health_check(_: argparse.Namespace) -> int:
         "housekeeping_report_artifact_dir="
         f"{settings.housekeeping_report_artifact_dir}"
     )
+    print(f"housekeeping_archive_dir={settings.housekeeping_archive_dir}")
     print(
         "housekeeping_delete_limit_per_target="
         f"{settings.housekeeping_delete_limit_per_target}"

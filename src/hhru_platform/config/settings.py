@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     housekeeping_detail_fetch_attempt_retention_days: int = 180
     housekeeping_report_artifact_retention_days: int = 30
     housekeeping_report_artifact_dir: str = ".state/reports/detail-payload-study"
+    housekeeping_archive_dir: str = ".state/archive/retention"
     housekeeping_delete_limit_per_target: int = 10_000
 
     @property

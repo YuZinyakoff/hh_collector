@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -29,6 +30,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "run-restore-drill" in captured.out
     assert "health-check" in captured.out
     assert "run-housekeeping" in captured.out
+    assert "export-retention-archive" in captured.out
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "run-once-v2" in captured.out
@@ -82,6 +84,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             housekeeping_detail_fetch_attempt_retention_days=180,
             housekeeping_report_artifact_retention_days=21,
             housekeeping_report_artifact_dir=".state/reports/detail-payload-study",
+            housekeeping_archive_dir=".state/archive/retention",
             housekeeping_delete_limit_per_target=5000,
         ),
     )
@@ -111,6 +114,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "housekeeping_detail_fetch_attempt_retention_days=180" in captured.out
     assert "housekeeping_report_artifact_retention_days=21" in captured.out
     assert "housekeeping_report_artifact_dir=.state/reports/detail-payload-study" in captured.out
+    assert "housekeeping_archive_dir=.state/archive/retention" in captured.out
     assert "housekeeping_delete_limit_per_target=5000" in captured.out
 
 
@@ -1880,6 +1884,7 @@ def test_run_housekeeping_cli_prints_dry_run_summary(monkeypatch, capsys) -> Non
             housekeeping_detail_fetch_attempt_retention_days=180,
             housekeeping_report_artifact_retention_days=21,
             housekeeping_report_artifact_dir=".state/reports/detail-payload-study",
+            housekeeping_archive_dir=".state/archive/retention",
             housekeeping_delete_limit_per_target=5000,
         ),
     )
@@ -1940,6 +1945,106 @@ def test_run_housekeeping_cli_prints_dry_run_summary(monkeypatch, capsys) -> Non
     assert "total_candidates=9" in captured.out
     assert "target=raw_api_payload item_type=rows enabled=yes" in captured.out
     assert "target=detail_payload_study_artifact item_type=files enabled=yes" in captured.out
+
+
+def test_export_retention_archive_cli_prints_summary(monkeypatch, capsys) -> None:
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    class FakeHousekeepingRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeRetentionArchiveStore:
+        pass
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.SqlAlchemyHousekeepingRepository",
+        FakeHousekeepingRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.LocalRetentionArchiveStore",
+        FakeRetentionArchiveStore,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.get_settings",
+        lambda: Settings(
+            housekeeping_raw_api_payload_retention_days=90,
+            housekeeping_vacancy_snapshot_retention_days=365,
+            housekeeping_finished_crawl_run_retention_days=60,
+            housekeeping_detail_fetch_attempt_retention_days=180,
+            housekeeping_report_artifact_retention_days=21,
+            housekeeping_report_artifact_dir=".state/reports/detail-payload-study",
+            housekeeping_archive_dir=".state/archive/retention",
+            housekeeping_delete_limit_per_target=5000,
+        ),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.export_retention_archive",
+        lambda command, **kwargs: SimpleNamespace(
+            status="succeeded",
+            triggered_by=command.triggered_by,
+            evaluated_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+            archive_dir=command.archive_dir,
+            total_candidates=4,
+            total_exported=3,
+            summaries=(
+                SimpleNamespace(
+                    target="raw_api_payload",
+                    enabled=True,
+                    retention_days=90,
+                    cutoff=datetime(2026, 1, 3, 12, 0, tzinfo=UTC),
+                    candidate_count=3,
+                    exported_count=2,
+                    archive_size_bytes=512,
+                    archive_sha256="abc123",
+                    archive_file=Path(".state/archive/retention/raw_api_payload/chunk.jsonl.gz"),
+                    manifest_file=Path(".state/archive/retention/raw_api_payload/chunk.manifest.json"),
+                    limited=True,
+                ),
+                SimpleNamespace(
+                    target="vacancy_snapshot",
+                    enabled=True,
+                    retention_days=365,
+                    cutoff=datetime(2025, 4, 3, 12, 0, tzinfo=UTC),
+                    candidate_count=1,
+                    exported_count=1,
+                    archive_size_bytes=256,
+                    archive_sha256="def456",
+                    archive_file=Path(".state/archive/retention/vacancy_snapshot/chunk.jsonl.gz"),
+                    manifest_file=Path(".state/archive/retention/vacancy_snapshot/chunk.manifest.json"),
+                    limited=False,
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "export-retention-archive",
+            "--triggered-by",
+            "cli-archive",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed retention archive export" in captured.out
+    assert "status=succeeded" in captured.out
+    assert "archive_dir=.state/archive/retention" in captured.out
+    assert "total_candidates=4" in captured.out
+    assert "total_exported=3" in captured.out
+    assert "target=raw_api_payload enabled=yes retention_days=90" in captured.out
+    assert "archive_sha256=abc123" in captured.out
+    assert "target=vacancy_snapshot enabled=yes retention_days=365" in captured.out
 
 
 def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) -> None:

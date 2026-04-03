@@ -84,6 +84,35 @@ class SqlAlchemyHousekeepingRepository:
         )
         return int(result.rowcount or 0)
 
+    def list_raw_api_payload_rows_for_archive(
+        self,
+        *,
+        payload_ids: Sequence[int],
+    ) -> list[dict[str, object]]:
+        if not payload_ids:
+            return []
+        statement = (
+            select(RawApiPayloadModel, ApiRequestLog.crawl_run_id.label("crawl_run_id"))
+            .join(ApiRequestLog, RawApiPayloadModel.api_request_log_id == ApiRequestLog.id)
+            .where(RawApiPayloadModel.id.in_(tuple(payload_ids)))
+            .order_by(RawApiPayloadModel.received_at, RawApiPayloadModel.id)
+        )
+        rows: list[dict[str, object]] = []
+        for raw_payload, crawl_run_id in self._session.execute(statement):
+            rows.append(
+                {
+                    "id": raw_payload.id,
+                    "api_request_log_id": raw_payload.api_request_log_id,
+                    "crawl_run_id": crawl_run_id,
+                    "endpoint_type": raw_payload.endpoint_type,
+                    "entity_hh_id": raw_payload.entity_hh_id,
+                    "payload_json": raw_payload.payload_json,
+                    "payload_hash": raw_payload.payload_hash,
+                    "received_at": raw_payload.received_at,
+                }
+            )
+        return rows
+
     def count_vacancy_snapshot_candidates(self, *, cutoff: datetime) -> int:
         statement = (
             select(func.count())
@@ -132,6 +161,35 @@ class SqlAlchemyHousekeepingRepository:
             ),
         )
         return int(result.rowcount or 0)
+
+    def list_vacancy_snapshot_rows_for_archive(
+        self,
+        *,
+        snapshot_ids: Sequence[int],
+    ) -> list[dict[str, object]]:
+        if not snapshot_ids:
+            return []
+        statement = (
+            select(VacancySnapshotModel)
+            .where(VacancySnapshotModel.id.in_(tuple(snapshot_ids)))
+            .order_by(VacancySnapshotModel.captured_at, VacancySnapshotModel.id)
+        )
+        return [
+            {
+                "id": snapshot.id,
+                "vacancy_id": snapshot.vacancy_id,
+                "snapshot_type": snapshot.snapshot_type,
+                "captured_at": snapshot.captured_at,
+                "crawl_run_id": snapshot.crawl_run_id,
+                "short_hash": snapshot.short_hash,
+                "detail_hash": snapshot.detail_hash,
+                "short_payload_ref_id": snapshot.short_payload_ref_id,
+                "detail_payload_ref_id": snapshot.detail_payload_ref_id,
+                "normalized_json": snapshot.normalized_json,
+                "change_reason": snapshot.change_reason,
+            }
+            for snapshot in self._session.scalars(statement)
+        ]
 
     def count_detail_fetch_attempt_candidates(self, *, cutoff: datetime) -> int:
         statement = (

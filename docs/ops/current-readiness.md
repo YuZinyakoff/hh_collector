@@ -24,6 +24,10 @@
 - Runtime больше не упирается в прежний локальный memory wall при длинном `search-only` run.
 - Текущий корпус уже имеет правильный порядок величины для HH search snapshot-like сбора.
 - `resume-run-v2` теперь умеет переочередить `failed` terminal search partitions из `failed` run, то есть единичный transport leaf failure больше не обязан обнулять почти готовый baseline.
+- Начат storage-tiering contour:
+  - short snapshot churn снижен до `first_seen/hash_changed`
+  - появился local retention archive export
+  - housekeeping умеет `archive-before-delete` для `raw_api_payload` и `vacancy_snapshot`
 
 ## Что ещё не доказано
 
@@ -40,7 +44,8 @@
 1. VPS pilot на более стабильном хосте.
 2. Ещё один полный `search-only` baseline уже на VPS.
 3. Transport/resume hardening, чтобы не терять почти завершённый run из-за единичного outage.
-4. Затем persistent `first-detail` backlog и steady-state completeness contour.
+4. Archive manifest/upload/off-host copy policy для cold history layer.
+5. Затем persistent `first-detail` backlog и steady-state completeness contour.
 
 ## Практический вывод
 

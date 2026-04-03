@@ -1898,6 +1898,7 @@ def test_run_housekeeping_cli_prints_dry_run_summary(monkeypatch, capsys) -> Non
             total_candidates=9,
             total_action_count=5,
             total_deleted=0,
+            total_archived=0,
             summaries=(
                 SimpleNamespace(
                     target="raw_api_payload",
@@ -1908,6 +1909,11 @@ def test_run_housekeeping_cli_prints_dry_run_summary(monkeypatch, capsys) -> Non
                     candidate_count=3,
                     action_count=2,
                     deleted_count=0,
+                    archived_count=0,
+                    archive_file=None,
+                    manifest_file=None,
+                    archive_sha256=None,
+                    archive_size_bytes=0,
                     limited=True,
                 ),
                 SimpleNamespace(
@@ -1919,6 +1925,11 @@ def test_run_housekeeping_cli_prints_dry_run_summary(monkeypatch, capsys) -> Non
                     candidate_count=2,
                     action_count=2,
                     deleted_count=0,
+                    archived_count=0,
+                    archive_file=None,
+                    manifest_file=None,
+                    archive_sha256=None,
+                    archive_size_bytes=0,
                     limited=False,
                 ),
             ),
@@ -1943,8 +1954,119 @@ def test_run_housekeeping_cli_prints_dry_run_summary(monkeypatch, capsys) -> Non
     assert "mode=dry_run" in captured.out
     assert "triggered_by=pytest-housekeeping" in captured.out
     assert "total_candidates=9" in captured.out
+    assert "total_archived=0" in captured.out
     assert "target=raw_api_payload item_type=rows enabled=yes" in captured.out
     assert "target=detail_payload_study_artifact item_type=files enabled=yes" in captured.out
+
+
+def test_run_housekeeping_cli_passes_archive_before_delete(monkeypatch, capsys) -> None:
+    @contextmanager
+    def fake_session_scope():
+        yield object()
+
+    captured_command = {}
+
+    class FakeHousekeepingRepository:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+    class FakeReportArtifactStore:
+        pass
+
+    class FakeRetentionArchiveStore:
+        pass
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.SqlAlchemyHousekeepingRepository",
+        FakeHousekeepingRepository,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.LocalReportArtifactStore",
+        FakeReportArtifactStore,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.LocalRetentionArchiveStore",
+        FakeRetentionArchiveStore,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.get_metrics_registry",
+        lambda: SimpleNamespace(name="fake-metrics"),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.get_settings",
+        lambda: Settings(
+            housekeeping_raw_api_payload_retention_days=90,
+            housekeeping_vacancy_snapshot_retention_days=365,
+            housekeeping_finished_crawl_run_retention_days=60,
+            housekeeping_detail_fetch_attempt_retention_days=180,
+            housekeeping_report_artifact_retention_days=21,
+            housekeeping_report_artifact_dir=".state/reports/detail-payload-study",
+            housekeeping_archive_dir=".state/archive/retention",
+            housekeeping_delete_limit_per_target=5000,
+        ),
+    )
+
+    def fake_run_housekeeping(command, **kwargs):
+        captured_command["command"] = command
+        return SimpleNamespace(
+            status="succeeded",
+            mode=command.mode,
+            triggered_by=command.triggered_by,
+            evaluated_at=datetime(2026, 3, 21, 15, 0, tzinfo=UTC),
+            total_candidates=1,
+            total_action_count=1,
+            total_deleted=1,
+            total_archived=1,
+            summaries=(
+                SimpleNamespace(
+                    target="raw_api_payload",
+                    item_type="rows",
+                    enabled=True,
+                    retention_days=90,
+                    cutoff=datetime(2025, 12, 21, 15, 0, tzinfo=UTC),
+                    candidate_count=1,
+                    action_count=1,
+                    deleted_count=1,
+                    archived_count=1,
+                    archive_file=Path(".state/archive/retention/raw_api_payload/chunk.jsonl.gz"),
+                    manifest_file=Path(
+                        ".state/archive/retention/raw_api_payload/chunk.manifest.json"
+                    ),
+                    archive_sha256="abc123",
+                    archive_size_bytes=512,
+                    limited=False,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.run_housekeeping",
+        fake_run_housekeeping,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "run-housekeeping",
+            "--execute",
+            "--archive-before-delete",
+            "--triggered-by",
+            "pytest-housekeeping-archive",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured_command["command"].archive_before_delete is True
+    assert captured_command["command"].archive_dir == Path(".state/archive/retention")
+    assert "total_archived=1" in captured.out
+    assert "archive_sha256=abc123" in captured.out
 
 
 def test_export_retention_archive_cli_prints_summary(monkeypatch, capsys) -> None:

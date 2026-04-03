@@ -91,6 +91,20 @@ class FakeHousekeepingRepository:
         self.delete_calls.append(("raw_api_payload", tuple(payload_ids)))
         return len(tuple(payload_ids))
 
+    def list_raw_api_payload_rows_for_archive(
+        self,
+        *,
+        payload_ids,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "id": payload_id,
+                "payload_hash": f"raw-{payload_id}",
+                "received_at": datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+            }
+            for payload_id in payload_ids
+        ]
+
     def count_vacancy_snapshot_candidates(self, *, cutoff: datetime) -> int:
         return 1
 
@@ -105,6 +119,20 @@ class FakeHousekeepingRepository:
     def delete_vacancy_snapshots(self, snapshot_ids) -> int:
         self.delete_calls.append(("vacancy_snapshot", tuple(snapshot_ids)))
         return len(tuple(snapshot_ids))
+
+    def list_vacancy_snapshot_rows_for_archive(
+        self,
+        *,
+        snapshot_ids,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "id": snapshot_id,
+                "snapshot_type": "short",
+                "captured_at": datetime(2025, 1, 1, 10, 0, tzinfo=UTC),
+            }
+            for snapshot_id in snapshot_ids
+        ]
 
     def count_detail_fetch_attempt_candidates(self, *, cutoff: datetime) -> int:
         return 4
@@ -168,6 +196,41 @@ class FakeReportArtifactStore:
         return len(paths)
 
 
+class FakeRetentionArchiveStore:
+    def __init__(self) -> None:
+        self.write_calls: list[dict[str, object]] = []
+
+    def write_records(
+        self,
+        *,
+        archive_dir: Path,
+        target: str,
+        evaluated_at: datetime,
+        records,
+        metadata,
+    ):
+        self.write_calls.append(
+            {
+                "archive_dir": archive_dir,
+                "target": target,
+                "evaluated_at": evaluated_at,
+                "records": tuple(records),
+                "metadata": dict(metadata),
+            }
+        )
+        return type(
+            "ArchiveSummary",
+            (),
+            {
+                "archive_file": archive_dir / target / "chunk.jsonl.gz",
+                "manifest_file": archive_dir / target / "chunk.manifest.json",
+                "archive_size_bytes": 256,
+                "archive_sha256": f"sha-{target}",
+                "record_count": len(tuple(records)),
+            },
+        )()
+
+
 def test_run_housekeeping_dry_run_plans_candidates_without_deleting() -> None:
     repository = FakeHousekeepingRepository()
     artifact_store = FakeReportArtifactStore([Path("old-report-a"), Path("old-report-b")])
@@ -198,6 +261,7 @@ def test_run_housekeeping_dry_run_plans_candidates_without_deleting() -> None:
     assert result.total_candidates == 20
     assert result.total_action_count == 12
     assert result.total_deleted == 0
+    assert result.total_archived == 0
     assert repository.delete_calls == []
     assert artifact_store.delete_calls == []
     assert metrics_recorder.runs == [
@@ -252,6 +316,7 @@ def test_run_housekeeping_execute_deletes_selected_rows_and_files() -> None:
 
     assert result.mode == HOUSEKEEPING_MODE_EXECUTE
     assert result.total_deleted == 11
+    assert result.total_archived == 0
     assert repository.delete_calls == [
         ("raw_api_payload", (1, 2)),
         ("vacancy_snapshot", (10,)),
@@ -278,6 +343,53 @@ def test_run_housekeeping_execute_deletes_selected_rows_and_files() -> None:
         summary for summary in result.summaries if summary.target == "crawl_partition"
     )
     assert partition_summary.deleted_count == 4
+
+
+def test_run_housekeeping_execute_archives_raw_and_snapshot_before_delete() -> None:
+    repository = FakeHousekeepingRepository()
+    artifact_store = FakeReportArtifactStore([Path("old-report-a")])
+    archive_store = FakeRetentionArchiveStore()
+    evaluated_at = datetime(2026, 3, 21, 15, 0, tzinfo=UTC)
+
+    result = run_housekeeping(
+        RunHousekeepingCommand(
+            retention_policy=HousekeepingRetentionPolicy(
+                raw_api_payload_retention_days=90,
+                vacancy_snapshot_retention_days=365,
+                finished_crawl_run_retention_days=30,
+                detail_fetch_attempt_retention_days=180,
+                report_artifact_retention_days=14,
+                delete_limit_per_target=2,
+            ),
+            execute=True,
+            archive_before_delete=True,
+            archive_dir=Path(".state/archive/retention"),
+            triggered_by="pytest-housekeeping-archive-execute",
+            evaluated_at=evaluated_at,
+        ),
+        housekeeping_repository=repository,
+        report_artifact_store=artifact_store,
+        retention_archive_store=archive_store,
+    )
+
+    assert result.total_deleted == 11
+    assert result.total_archived == 3
+    assert [call["target"] for call in archive_store.write_calls] == [
+        "raw_api_payload",
+        "vacancy_snapshot",
+    ]
+    assert archive_store.write_calls[0]["metadata"]["selected_ids"] == (1, 2)
+    assert archive_store.write_calls[1]["metadata"]["selected_ids"] == (10,)
+    raw_summary = next(
+        summary for summary in result.summaries if summary.target == "raw_api_payload"
+    )
+    snapshot_summary = next(
+        summary for summary in result.summaries if summary.target == "vacancy_snapshot"
+    )
+    assert raw_summary.archived_count == 2
+    assert raw_summary.archive_sha256 == "sha-raw_api_payload"
+    assert snapshot_summary.archived_count == 1
+    assert snapshot_summary.archive_sha256 == "sha-vacancy_snapshot"
 
 
 def test_local_report_artifact_store_lists_and_deletes_old_children_only(

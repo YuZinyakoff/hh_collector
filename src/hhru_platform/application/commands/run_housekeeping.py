@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from hhru_platform.infrastructure.observability.operations import (
@@ -59,6 +59,8 @@ class HousekeepingRetentionPolicy:
 class RunHousekeepingCommand:
     retention_policy: HousekeepingRetentionPolicy
     execute: bool = False
+    archive_before_delete: bool = False
+    archive_dir: Path = Path(".state/archive/retention")
     triggered_by: str = "run-housekeeping"
     evaluated_at: datetime | None = None
 
@@ -67,6 +69,7 @@ class RunHousekeepingCommand:
         if not normalized_triggered_by:
             raise ValueError("triggered_by must not be empty")
         object.__setattr__(self, "triggered_by", normalized_triggered_by)
+        object.__setattr__(self, "archive_dir", Path(self.archive_dir))
 
     @property
     def mode(self) -> str:
@@ -85,6 +88,11 @@ class HousekeepingTargetSummary:
     action_count: int
     deleted_count: int
     enabled: bool
+    archived_count: int = 0
+    archive_file: Path | None = None
+    manifest_file: Path | None = None
+    archive_sha256: str | None = None
+    archive_size_bytes: int = 0
 
     @property
     def limited(self) -> bool:
@@ -111,6 +119,10 @@ class RunHousekeepingResult:
     def total_deleted(self) -> int:
         return sum(summary.deleted_count for summary in self.summaries)
 
+    @property
+    def total_archived(self) -> int:
+        return sum(summary.archived_count for summary in self.summaries)
+
 
 class HousekeepingRepository(Protocol):
     def count_raw_api_payload_candidates(self, *, cutoff: datetime) -> int:
@@ -127,6 +139,13 @@ class HousekeepingRepository(Protocol):
     def delete_raw_api_payloads(self, payload_ids: Sequence[int]) -> int:
         """Delete raw_api_payload rows by id."""
 
+    def list_raw_api_payload_rows_for_archive(
+        self,
+        *,
+        payload_ids: Sequence[int],
+    ) -> list[dict[str, object]]:
+        """Return raw_api_payload rows for archive-before-delete export."""
+
     def count_vacancy_snapshot_candidates(self, *, cutoff: datetime) -> int:
         """Count vacancy_snapshot rows eligible for retention cleanup."""
 
@@ -140,6 +159,13 @@ class HousekeepingRepository(Protocol):
 
     def delete_vacancy_snapshots(self, snapshot_ids: Sequence[int]) -> int:
         """Delete vacancy_snapshot rows by id."""
+
+    def list_vacancy_snapshot_rows_for_archive(
+        self,
+        *,
+        snapshot_ids: Sequence[int],
+    ) -> list[dict[str, object]]:
+        """Return vacancy_snapshot rows for archive-before-delete export."""
 
     def count_detail_fetch_attempt_candidates(self, *, cutoff: datetime) -> int:
         """Count detail_fetch_attempt rows eligible for retention cleanup."""
@@ -221,6 +247,27 @@ class HousekeepingMetricsRecorder(Protocol):
         """Persist cumulative housekeeping deletions for a target."""
 
 
+class RetentionArchiveFileSummary(Protocol):
+    archive_file: Path
+    manifest_file: Path
+    archive_size_bytes: int
+    archive_sha256: str
+    record_count: int
+
+
+class RetentionArchiveStore(Protocol):
+    def write_records(
+        self,
+        *,
+        archive_dir: Path,
+        target: str,
+        evaluated_at: datetime,
+        records: Sequence[Mapping[str, Any]],
+        metadata: Mapping[str, Any],
+    ) -> RetentionArchiveFileSummary:
+        """Persist one compressed archive chunk plus sidecar manifest."""
+
+
 CountRetentionCandidatesStep = Callable[..., int]
 ListRetentionIdentifiersStep = Callable[..., Sequence[int | UUID | Path]]
 DeleteRetentionIdentifiersStep = Callable[..., int]
@@ -246,6 +293,7 @@ def run_housekeeping(
     *,
     housekeeping_repository: HousekeepingRepository,
     report_artifact_store: ReportArtifactStore,
+    retention_archive_store: RetentionArchiveStore | None = None,
     metrics_recorder: HousekeepingMetricsRecorder | None = None,
 ) -> RunHousekeepingResult:
     started_at = log_operation_started(
@@ -255,8 +303,14 @@ def run_housekeeping(
         triggered_by=command.triggered_by,
         execute=command.execute,
         delete_limit_per_target=command.retention_policy.delete_limit_per_target,
+        archive_before_delete=command.archive_before_delete,
+        archive_dir=str(command.archive_dir),
     )
     evaluated_at = command.evaluated_at or datetime.now(UTC)
+    if command.execute and command.archive_before_delete and retention_archive_store is None:
+        raise ValueError(
+            "retention_archive_store is required when execute=True and archive_before_delete=True"
+        )
 
     try:
         plans = (
@@ -289,22 +343,38 @@ def run_housekeeping(
 
         raw_summary = _execute_simple_plan(
             plan=plans[0],
+            command=command,
+            evaluated_at=evaluated_at,
             execute=command.execute,
+            housekeeping_repository=housekeeping_repository,
+            retention_archive_store=retention_archive_store,
             delete_step=housekeeping_repository.delete_raw_api_payloads,
         )
         snapshot_summary = _execute_simple_plan(
             plan=plans[1],
+            command=command,
+            evaluated_at=evaluated_at,
             execute=command.execute,
+            housekeeping_repository=housekeeping_repository,
+            retention_archive_store=retention_archive_store,
             delete_step=housekeeping_repository.delete_vacancy_snapshots,
         )
         detail_attempt_summary = _execute_simple_plan(
             plan=plans[2],
+            command=command,
+            evaluated_at=evaluated_at,
             execute=command.execute,
+            housekeeping_repository=housekeeping_repository,
+            retention_archive_store=retention_archive_store,
             delete_step=housekeeping_repository.delete_detail_fetch_attempts,
         )
         run_summary = _execute_simple_plan(
             plan=plans[3],
+            command=command,
+            evaluated_at=evaluated_at,
             execute=command.execute,
+            housekeeping_repository=housekeeping_repository,
+            retention_archive_store=retention_archive_store,
             delete_step=housekeeping_repository.delete_finished_crawl_runs,
         )
         partition_summary = _execute_partition_plan(
@@ -317,7 +387,11 @@ def run_housekeeping(
         )
         artifact_summary = _execute_simple_plan(
             plan=plans[5],
+            command=command,
+            evaluated_at=evaluated_at,
             execute=command.execute,
+            housekeeping_repository=housekeeping_repository,
+            retention_archive_store=retention_archive_store,
             delete_step=report_artifact_store.delete_candidates,
         )
         summaries = (
@@ -386,6 +460,7 @@ def run_housekeeping(
         total_candidates=result.total_candidates,
         total_action_count=result.total_action_count,
         total_deleted=result.total_deleted,
+        total_archived=result.total_archived,
         summary_fields=_summary_fields(result.summaries),
     )
     return result
@@ -582,10 +657,33 @@ def _plan_sequence_target(
 def _execute_simple_plan(
     *,
     plan: _RetentionPlan,
+    command: RunHousekeepingCommand,
+    evaluated_at: datetime,
     execute: bool,
+    housekeeping_repository: HousekeepingRepository,
+    retention_archive_store: RetentionArchiveStore | None,
     delete_step: DeleteRetentionIdentifiersStep,
 ) -> HousekeepingTargetSummary:
+    archived_count = 0
+    archive_file: Path | None = None
+    manifest_file: Path | None = None
+    archive_sha256: str | None = None
+    archive_size_bytes = 0
     deleted_count = 0
+    if execute and command.archive_before_delete:
+        archive_result = _archive_plan_before_delete(
+            plan=plan,
+            command=command,
+            evaluated_at=evaluated_at,
+            housekeeping_repository=housekeeping_repository,
+            retention_archive_store=retention_archive_store,
+        )
+        if archive_result is not None:
+            archived_count = archive_result.record_count
+            archive_file = archive_result.archive_file
+            manifest_file = archive_result.manifest_file
+            archive_sha256 = archive_result.archive_sha256
+            archive_size_bytes = archive_result.archive_size_bytes
     if execute and plan.enabled and plan.identifiers:
         deleted_count = int(delete_step(plan.identifiers))
     return HousekeepingTargetSummary(
@@ -596,6 +694,11 @@ def _execute_simple_plan(
         candidate_count=plan.candidate_count,
         action_count=plan.action_count,
         deleted_count=deleted_count,
+        archived_count=archived_count,
+        archive_file=archive_file,
+        manifest_file=manifest_file,
+        archive_sha256=archive_sha256,
+        archive_size_bytes=archive_size_bytes,
         enabled=plan.enabled,
     )
 
@@ -613,8 +716,75 @@ def _execute_partition_plan(
         candidate_count=plan.candidate_count,
         action_count=plan.action_count,
         deleted_count=deleted_count,
+        archived_count=0,
+        archive_file=None,
+        manifest_file=None,
+        archive_sha256=None,
+        archive_size_bytes=0,
         enabled=plan.enabled,
     )
+
+
+def _archive_plan_before_delete(
+    *,
+    plan: _RetentionPlan,
+    command: RunHousekeepingCommand,
+    evaluated_at: datetime,
+    housekeeping_repository: HousekeepingRepository,
+    retention_archive_store: RetentionArchiveStore | None,
+) -> RetentionArchiveFileSummary | None:
+    if (
+        not command.execute
+        or not command.archive_before_delete
+        or not plan.enabled
+        or not plan.identifiers
+        or plan.target not in (TARGET_RAW_API_PAYLOAD, TARGET_VACANCY_SNAPSHOT)
+    ):
+        return None
+    if retention_archive_store is None:
+        raise ValueError("retention_archive_store is required for archive-before-delete")
+
+    selected_ids = _selected_archive_ids(plan.identifiers)
+    if plan.target == TARGET_RAW_API_PAYLOAD:
+        rows = housekeeping_repository.list_raw_api_payload_rows_for_archive(
+            payload_ids=selected_ids
+        )
+    else:
+        rows = housekeeping_repository.list_vacancy_snapshot_rows_for_archive(
+            snapshot_ids=selected_ids
+        )
+    if len(rows) != len(selected_ids):
+        raise ValueError(
+            f"archive-before-delete expected {len(selected_ids)} rows for {plan.target}, "
+            f"got {len(rows)}"
+        )
+
+    archive_result = retention_archive_store.write_records(
+        archive_dir=command.archive_dir,
+        target=plan.target,
+        evaluated_at=evaluated_at,
+        records=tuple(rows),
+        metadata={
+            "triggered_by": command.triggered_by,
+            "mode": command.mode,
+            "cutoff": plan.cutoff,
+            "retention_days": plan.retention_days,
+            "candidate_count": plan.candidate_count,
+            "selected_ids": selected_ids,
+        },
+    )
+    if archive_result.record_count != len(selected_ids):
+        raise ValueError(
+            f"archive-before-delete wrote {archive_result.record_count} rows for "
+            f"{plan.target}, expected {len(selected_ids)}"
+        )
+    return archive_result
+
+
+def _selected_archive_ids(
+    identifiers: Sequence[int | UUID | Path],
+) -> tuple[int, ...]:
+    return tuple(int(identifier) for identifier in identifiers)
 
 
 def _summary_fields(
@@ -625,6 +795,7 @@ def _summary_fields(
         fields[f"{summary.target}_candidate_count"] = summary.candidate_count
         fields[f"{summary.target}_action_count"] = summary.action_count
         fields[f"{summary.target}_deleted_count"] = summary.deleted_count
+        fields[f"{summary.target}_archived_count"] = summary.archived_count
         fields[f"{summary.target}_retention_days"] = summary.retention_days
         fields[f"{summary.target}_enabled"] = summary.enabled
     return fields

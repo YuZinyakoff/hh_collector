@@ -45,6 +45,14 @@ def register_housekeeping_commands(
         default="run-housekeeping",
         help="Actor or subsystem that initiated housekeeping. Defaults to run-housekeeping.",
     )
+    parser.add_argument(
+        "--archive-before-delete",
+        action="store_true",
+        help=(
+            "For raw_api_payload and vacancy_snapshot, export the selected retention rows "
+            "into the local archive directory before deleting them."
+        ),
+    )
     parser.set_defaults(handler=handle_run_housekeeping)
 
     archive_parser = subparsers.add_parser(
@@ -70,6 +78,8 @@ def handle_run_housekeeping(args: argparse.Namespace) -> int:
     command = RunHousekeepingCommand(
         retention_policy=_build_housekeeping_retention_policy(settings),
         execute=bool(args.execute),
+        archive_before_delete=bool(args.archive_before_delete),
+        archive_dir=Path(settings.housekeeping_archive_dir),
         triggered_by=str(args.triggered_by),
     )
 
@@ -79,6 +89,7 @@ def handle_run_housekeeping(args: argparse.Namespace) -> int:
                 command,
                 housekeeping_repository=SqlAlchemyHousekeepingRepository(session),
                 report_artifact_store=LocalReportArtifactStore(),
+                retention_archive_store=LocalRetentionArchiveStore(),
                 metrics_recorder=get_metrics_registry(),
             )
     except Exception as error:
@@ -124,6 +135,7 @@ def _print_run_housekeeping_summary(result: RunHousekeepingResult) -> None:
     print(f"total_candidates={result.total_candidates}")
     print(f"total_action_count={result.total_action_count}")
     print(f"total_deleted={result.total_deleted}")
+    print(f"total_archived={result.total_archived}")
     for summary in result.summaries:
         print(
             "target="
@@ -135,6 +147,11 @@ def _print_run_housekeeping_summary(result: RunHousekeepingResult) -> None:
             f"candidate_count={summary.candidate_count} "
             f"action_count={summary.action_count} "
             f"deleted_count={summary.deleted_count} "
+            f"archived_count={summary.archived_count} "
+            f"archive_file={summary.archive_file or '-'} "
+            f"manifest_file={summary.manifest_file or '-'} "
+            f"archive_sha256={summary.archive_sha256 or '-'} "
+            f"archive_size_bytes={summary.archive_size_bytes} "
             f"limited={'yes' if summary.limited else 'no'}"
         )
 

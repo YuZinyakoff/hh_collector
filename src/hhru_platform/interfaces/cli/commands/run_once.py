@@ -669,6 +669,7 @@ def _print_resume_run_v2_summary(result: ResumeRunV2Result) -> None:
     print(f"covered_before_resume={result.covered_before_resume}")
     print(f"coverage_ratio_before_resume={result.coverage_ratio_before_resume:.4f}")
     print(f"resumed_unresolved_partitions={result.resumed_unresolved_partitions}")
+    print(f"resumed_failed_partitions={result.resumed_failed_partitions}")
     print(f"list_engine_iterations={result.list_engine_iterations}")
     print(f"total_partitions={result.total_partitions}")
     print(f"covered_terminal_partitions={result.covered_terminal_partitions}")
@@ -725,5 +726,11 @@ class _SessionlessCrawlPartitionRepository:
     def requeue_unresolved_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
         with session_scope() as session:
             return SqlAlchemyCrawlPartitionRepository(session).requeue_unresolved_by_run_id(
+                run_id
+            )
+
+    def requeue_failed_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
+        with session_scope() as session:
+            return SqlAlchemyCrawlPartitionRepository(session).requeue_failed_by_run_id(
                 run_id
             )

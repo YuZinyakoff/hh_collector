@@ -23,11 +23,13 @@
 - `run-once-v2` с planner v2 способен пройти почти весь live search tree без `unresolved` веток как системного blocker-а.
 - Runtime больше не упирается в прежний локальный memory wall при длинном `search-only` run.
 - Текущий корпус уже имеет правильный порядок величины для HH search snapshot-like сбора.
+- `resume-run-v2` теперь умеет переочередить `failed` terminal search partitions из `failed` run, то есть единичный transport leaf failure больше не обязан обнулять почти готовый baseline.
 
 ## Что ещё не доказано
 
 - Полностью успешный terminal `search-only` baseline без внешнего обрыва.
 - Run-level resilience к transient transport/DNS outage без потери почти готового baseline.
+- Автоматический bounded run-level retry budget для repeated transport failures; сейчас есть operator recovery path, но не полный self-healing contour.
 - Persistent `first-detail` backlog contour для полной research completeness, а не только `search` coverage.
 - Многодневная unattended production stability.
 

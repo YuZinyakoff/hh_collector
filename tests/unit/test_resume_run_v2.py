@@ -51,17 +51,32 @@ class InMemoryCrawlRunRepository:
 class RecordingCrawlPartitionRepository:
     def __init__(self, partitions: list[CrawlPartition]) -> None:
         self.partitions = partitions
-        self.calls: list[UUID] = []
+        self.unresolved_calls: list[UUID] = []
+        self.failed_calls: list[UUID] = []
 
     def requeue_unresolved_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
-        self.calls.append(run_id)
+        self.unresolved_calls.append(run_id)
         for partition in self.partitions:
+            if partition.status != "unresolved":
+                continue
             partition.status = "pending"
             partition.coverage_status = "unassessed"
             partition.finished_at = None
             partition.last_error_message = None
             partition.retry_count += 1
-        return list(self.partitions)
+        return [partition for partition in self.partitions if partition.status == "pending"]
+
+    def requeue_failed_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
+        self.failed_calls.append(run_id)
+        for partition in self.partitions:
+            if partition.status != "failed":
+                continue
+            partition.status = "pending"
+            partition.coverage_status = "unassessed"
+            partition.finished_at = None
+            partition.last_error_message = None
+            partition.retry_count += 1
+        return [partition for partition in self.partitions if partition.status == "pending"]
 
 
 class RecordingResumeMetricsRecorder:
@@ -204,6 +219,7 @@ def test_resume_run_v2_requeues_unresolved_branches_and_reconciles_run() -> None
     assert result.initial_run_status == "completed_with_unresolved"
     assert result.unresolved_before_resume == 1
     assert result.resumed_unresolved_partitions == 1
+    assert result.resumed_failed_partitions == 0
     assert result.covered_terminal_partitions == 1
     assert result.coverage_ratio == 1.0
     assert result.list_stage_status == "completed"
@@ -356,6 +372,7 @@ def test_resume_run_v2_returns_completed_with_unresolved_when_tree_is_still_unre
     assert result.initial_run_status == "completed_with_unresolved"
     assert result.unresolved_before_resume == 1
     assert result.resumed_unresolved_partitions == 1
+    assert result.resumed_failed_partitions == 0
     assert result.reconciliation_status == "skipped"
     assert result.completed_steps == (
         "requeue_unresolved_partitions",
@@ -370,11 +387,164 @@ def test_resume_run_v2_returns_completed_with_unresolved_when_tree_is_still_unre
     assert metrics_recorder.backlog_updates == []
 
 
-def test_resume_run_v2_rejects_failed_runs() -> None:
+def test_resume_run_v2_requeues_failed_branches_from_failed_run() -> None:
     run_id = uuid4()
-    crawl_run = _build_crawl_run(run_id=run_id, run_type="weekly_sweep", status="failed")
+    partition_id = uuid4()
+    events: list[tuple[object, ...]] = []
+    crawl_run = _build_crawl_run(
+        run_id=run_id,
+        run_type="weekly_sweep",
+        status="failed",
+    )
+    crawl_run.finished_at = datetime(2026, 3, 20, 10, 30, tzinfo=UTC)
+    failed_partition = _build_partition(
+        crawl_run_id=run_id,
+        partition_id=partition_id,
+        partition_key="area:113",
+        status="failed",
+        coverage_status="unassessed",
+    )
+    coverage_reports = iter(
+        (
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                failed_partitions=1,
+                run_status="failed",
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=1,
+                pending_terminal_partitions=1,
+                run_status="created",
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=1,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                coverage_ratio=1.0,
+                run_status="created",
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=1,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                coverage_ratio=1.0,
+                run_status="succeeded",
+            ),
+        )
+    )
 
-    with pytest.raises(ResumeRunV2NotAllowedError, match="status=failed"):
+    def report_run_coverage_step(command) -> RunCoverageReport:
+        events.append(("coverage", command.crawl_run_id))
+        return next(coverage_reports)
+
+    def run_list_engine_v2_step(command) -> RunListEngineV2Result:
+        events.append(("list_engine", command.crawl_run_id))
+        return RunListEngineV2Result(
+            status="succeeded",
+            crawl_run_id=command.crawl_run_id,
+            partition_results=(
+                _build_partition_result(
+                    crawl_run_id=command.crawl_run_id,
+                    partition_id=partition_id,
+                    final_partition_status="done",
+                    final_coverage_status="covered",
+                ),
+            ),
+            remaining_pending_terminal_count=0,
+        )
+
+    def reconcile_run_step(command) -> ReconcileRunResult:
+        events.append(("reconcile", command.crawl_run_id, command.final_run_status))
+        assert command.final_run_status == "succeeded"
+        return ReconcileRunResult(
+            crawl_run_id=command.crawl_run_id,
+            observed_in_run_count=0,
+            missing_updated_count=0,
+            marked_inactive_count=0,
+            run_status="succeeded",
+        )
+
+    metrics_recorder = RecordingResumeMetricsRecorder()
+    result = resume_run_v2(
+        ResumeRunV2Command(
+            crawl_run_id=run_id,
+            detail_limit=0,
+            triggered_by="cli",
+        ),
+        crawl_run_repository=InMemoryCrawlRunRepository(crawl_run),
+        crawl_partition_repository=RecordingCrawlPartitionRepository([failed_partition]),
+        run_list_engine_v2_step=run_list_engine_v2_step,
+        report_run_coverage_step=report_run_coverage_step,
+        select_detail_candidates_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected detail selection {command.crawl_run_id}")
+        ),
+        fetch_vacancy_detail_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected detail fetch {command.vacancy_id}")
+        ),
+        reconcile_run_step=reconcile_run_step,
+        finalize_crawl_run_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected finalize {command.crawl_run_id}")
+        ),
+        metrics_recorder=metrics_recorder,
+    )
+
+    assert events == [
+        ("coverage", run_id),
+        ("coverage", run_id),
+        ("list_engine", run_id),
+        ("coverage", run_id),
+        ("reconcile", run_id, "succeeded"),
+        ("coverage", run_id),
+    ]
+    assert result.status == "succeeded"
+    assert result.initial_run_status == "failed"
+    assert result.unresolved_before_resume == 0
+    assert result.resumed_unresolved_partitions == 0
+    assert result.resumed_failed_partitions == 1
+    assert result.covered_terminal_partitions == 1
+    assert result.coverage_ratio == 1.0
+    assert result.list_stage_status == "completed"
+    assert result.detail_stage_status == "skipped"
+    assert result.reconciliation_status == "succeeded"
+    assert result.completed_steps == (
+        "requeue_failed_partitions",
+        "reopen_crawl_run",
+        "run_list_engine_v2",
+        "reconcile_run",
+    )
+    assert result.skipped_steps == ()
+    assert metrics_recorder.resume_attempts == [
+        {"run_type": "weekly_sweep", "outcome": "succeeded"}
+    ]
+    assert metrics_recorder.backlog_updates == [
+        {
+            "run_id": str(run_id),
+            "run_type": "weekly_sweep",
+            "backlog_size": 0,
+        }
+    ]
+
+
+def test_resume_run_v2_rejects_succeeded_runs() -> None:
+    run_id = uuid4()
+    crawl_run = _build_crawl_run(run_id=run_id, run_type="weekly_sweep", status="succeeded")
+
+    with pytest.raises(ResumeRunV2NotAllowedError, match="status=succeeded"):
         resume_run_v2(
             ResumeRunV2Command(crawl_run_id=run_id),
             crawl_run_repository=InMemoryCrawlRunRepository(crawl_run),
@@ -386,11 +556,11 @@ def test_resume_run_v2_rejects_failed_runs() -> None:
                 run_id=command.crawl_run_id,
                 total_partitions=1,
                 terminal_partitions=1,
-                covered_terminal_partitions=0,
+                covered_terminal_partitions=1,
                 pending_partitions=0,
                 pending_terminal_partitions=0,
-                failed_partitions=1,
-                run_status="failed",
+                coverage_ratio=1.0,
+                run_status="succeeded",
             ),
             select_detail_candidates_step=lambda command: (_ for _ in ()).throw(
                 AssertionError(f"unexpected detail selection {command.crawl_run_id}")
@@ -555,6 +725,7 @@ def test_resume_run_v2_surfaces_transport_failure_in_list_stage() -> None:
     assert result.status == "failed"
     assert result.failed_step == "run_list_engine_v2"
     assert "transport" in (result.error_message or "")
+    assert result.resumed_failed_partitions == 0
     assert metrics_recorder.resume_attempts == [
         {"run_type": "weekly_sweep", "outcome": "failed"}
     ]

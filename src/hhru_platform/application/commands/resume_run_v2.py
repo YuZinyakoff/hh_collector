@@ -61,6 +61,7 @@ RESUME_RUN_V2_STATUS_FAILED = CrawlRunStatus.FAILED.value
 RESUMABLE_RUN_STATUSES = {
     CrawlRunStatus.CREATED.value,
     CrawlRunStatus.COMPLETED_WITH_UNRESOLVED.value,
+    CrawlRunStatus.FAILED.value,
 }
 
 
@@ -134,6 +135,8 @@ class ResumeRunV2Result:
     error_message: str | None = None
     completed_steps: tuple[str, ...] = ()
     skipped_steps: tuple[str, ...] = ()
+    resumed_unresolved_partitions_count: int = 0
+    resumed_failed_partitions_count: int = 0
 
     @property
     def unresolved_before_resume(self) -> int:
@@ -153,7 +156,17 @@ class ResumeRunV2Result:
 
     @property
     def resumed_unresolved_partitions(self) -> int:
-        return len(self.resumed_partitions)
+        return self.resumed_unresolved_partitions_count
+
+    @property
+    def resumed_failed_partitions(self) -> int:
+        return self.resumed_failed_partitions_count
+
+    @property
+    def resumed_terminal_partitions(self) -> int:
+        return (
+            self.resumed_unresolved_partitions_count + self.resumed_failed_partitions_count
+        )
 
     @property
     def list_engine_iterations(self) -> int:
@@ -237,6 +250,9 @@ class CrawlRunRepository(Protocol):
 class CrawlPartitionRepository(Protocol):
     def requeue_unresolved_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
         """Reset unresolved terminal partitions back to pending."""
+
+    def requeue_failed_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
+        """Reset failed terminal partitions back to pending."""
 
 
 ReportRunCoverageStep = Callable[[ReportRunCoverageCommand], RunCoverageReport]
@@ -343,10 +359,16 @@ def resume_run_v2(
             run_id=crawl_run.id,
         )
         raise ResumeRunV2NotAllowedError(crawl_run.id, message)
-    if initial_coverage_report.summary.failed_partitions > 0:
+    if (
+        crawl_run.status == CrawlRunStatus.FAILED.value
+        and initial_coverage_report.summary.failed_partitions == 0
+        and initial_coverage_report.summary.unresolved_partitions == 0
+        and initial_coverage_report.summary.pending_terminal_partitions == 0
+        and initial_coverage_report.summary.running_partitions == 0
+        and not initial_coverage_report.summary.is_fully_covered
+    ):
         message = (
-            f"failed_partitions={initial_coverage_report.summary.failed_partitions}; "
-            "resume-run-v2 only supports pending or unresolved branches"
+            "status=failed without resumable terminal branches or completed search coverage"
         )
         if metrics_recorder is not None:
             metrics_recorder.record_resume_attempt(
@@ -373,18 +395,38 @@ def resume_run_v2(
     reconciliation_result: ReconcileRunResult | None = None
     completed_steps: list[str] = []
     run_finalized = False
+    resumed_unresolved_partitions_count = 0
+    resumed_failed_partitions_count = 0
+    should_requeue_unresolved = initial_coverage_report.summary.unresolved_partitions > 0
+    should_requeue_failed = initial_coverage_report.summary.failed_partitions > 0
+    should_reopen_run = (
+        crawl_run.status != CrawlRunStatus.CREATED.value or crawl_run.finished_at is not None
+    )
+    expected_steps = _expected_steps(
+        command,
+        include_requeue_unresolved=should_requeue_unresolved,
+        include_requeue_failed=should_requeue_failed,
+        reopen_required=should_reopen_run,
+    )
 
     try:
-        if initial_coverage_report.summary.unresolved_partitions > 0:
-            resumed_partitions = tuple(
+        if should_requeue_unresolved:
+            resumed_unresolved_partitions = tuple(
                 crawl_partition_repository.requeue_unresolved_by_run_id(crawl_run.id)
             )
+            resumed_partitions = resumed_partitions + resumed_unresolved_partitions
+            resumed_unresolved_partitions_count = len(resumed_unresolved_partitions)
             completed_steps.append("requeue_unresolved_partitions")
 
-        if (
-            crawl_run.status != CrawlRunStatus.CREATED.value
-            or crawl_run.finished_at is not None
-        ):
+        if should_requeue_failed:
+            resumed_failed_partitions = tuple(
+                crawl_partition_repository.requeue_failed_by_run_id(crawl_run.id)
+            )
+            resumed_partitions = resumed_partitions + resumed_failed_partitions
+            resumed_failed_partitions_count = len(resumed_failed_partitions)
+            completed_steps.append("requeue_failed_partitions")
+
+        if should_reopen_run:
             crawl_run = crawl_run_repository.reopen(run_id=crawl_run.id)
             completed_steps.append("reopen_crawl_run")
 
@@ -441,6 +483,9 @@ def resume_run_v2(
                 failed_step=None,
                 error_message=list_stage_error_message,
                 completed_steps=tuple(completed_steps),
+                expected_steps=expected_steps,
+                resumed_unresolved_partitions_count=resumed_unresolved_partitions_count,
+                resumed_failed_partitions_count=resumed_failed_partitions_count,
             )
             if metrics_recorder is not None:
                 metrics_recorder.record_resume_attempt(
@@ -459,6 +504,7 @@ def resume_run_v2(
                 initial_run_status=result.initial_run_status,
                 unresolved_before_resume=result.unresolved_before_resume,
                 resumed_unresolved_partitions=result.resumed_unresolved_partitions,
+                resumed_failed_partitions=result.resumed_failed_partitions,
                 covered_before_resume=result.covered_before_resume,
                 covered_terminal_partitions=result.covered_terminal_partitions,
                 pending_terminal_partitions=result.pending_terminal_partitions,
@@ -592,6 +638,9 @@ def resume_run_v2(
             failed_step=error.step,
             error_message=str(error),
             completed_steps=tuple(completed_steps),
+            expected_steps=expected_steps,
+            resumed_unresolved_partitions_count=resumed_unresolved_partitions_count,
+            resumed_failed_partitions_count=resumed_failed_partitions_count,
         )
         if metrics_recorder is not None:
             metrics_recorder.record_resume_attempt(
@@ -611,6 +660,7 @@ def resume_run_v2(
             failed_step=result.failed_step,
             unresolved_before_resume=result.unresolved_before_resume,
             resumed_unresolved_partitions=result.resumed_unresolved_partitions,
+            resumed_failed_partitions=result.resumed_failed_partitions,
             covered_before_resume=result.covered_before_resume,
             covered_terminal_partitions=result.covered_terminal_partitions,
             pending_terminal_partitions=result.pending_terminal_partitions,
@@ -667,6 +717,9 @@ def resume_run_v2(
         failed_step=None,
         error_message=error_message,
         completed_steps=tuple(completed_steps),
+        expected_steps=expected_steps,
+        resumed_unresolved_partitions_count=resumed_unresolved_partitions_count,
+        resumed_failed_partitions_count=resumed_failed_partitions_count,
     )
     if metrics_recorder is not None:
         metrics_recorder.record_resume_attempt(
@@ -690,6 +743,7 @@ def resume_run_v2(
         pending_before_resume=result.pending_before_resume,
         covered_before_resume=result.covered_before_resume,
         resumed_unresolved_partitions=result.resumed_unresolved_partitions,
+        resumed_failed_partitions=result.resumed_failed_partitions,
         list_engine_iterations=result.list_engine_iterations,
         total_partitions=result.total_partitions,
         covered_terminal_partitions=result.covered_terminal_partitions,
@@ -728,6 +782,9 @@ def _build_resume_result(
     failed_step: str | None,
     error_message: str | None,
     completed_steps: tuple[str, ...],
+    expected_steps: tuple[str, ...],
+    resumed_unresolved_partitions_count: int,
+    resumed_failed_partitions_count: int,
 ) -> ResumeRunV2Result:
     return ResumeRunV2Result(
         status=status,
@@ -749,18 +806,29 @@ def _build_resume_result(
         completed_steps=completed_steps,
         skipped_steps=tuple(
             step
-            for step in _expected_steps(command)
+            for step in expected_steps
             if step not in completed_steps and step != failed_step
         ),
+        resumed_unresolved_partitions_count=resumed_unresolved_partitions_count,
+        resumed_failed_partitions_count=resumed_failed_partitions_count,
     )
 
 
-def _expected_steps(command: ResumeRunV2Command) -> tuple[str, ...]:
-    steps: list[str] = [
-        "requeue_unresolved_partitions",
-        "reopen_crawl_run",
-        "run_list_engine_v2",
-    ]
+def _expected_steps(
+    command: ResumeRunV2Command,
+    *,
+    include_requeue_unresolved: bool,
+    include_requeue_failed: bool,
+    reopen_required: bool,
+) -> tuple[str, ...]:
+    steps: list[str] = []
+    if include_requeue_unresolved:
+        steps.append("requeue_unresolved_partitions")
+    if include_requeue_failed:
+        steps.append("requeue_failed_partitions")
+    if reopen_required:
+        steps.append("reopen_crawl_run")
+    steps.append("run_list_engine_v2")
     if command.detail_limit > 0:
         steps.append("fetch_vacancy_detail")
     steps.append("reconcile_run")

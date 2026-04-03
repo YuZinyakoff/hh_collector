@@ -227,6 +227,29 @@ class SqlAlchemyCrawlPartitionRepository:
             requeued.append(self._to_entity(crawl_partition))
         return requeued
 
+    def requeue_failed_by_run_id(self, run_id: UUID) -> list[CrawlPartition]:
+        statement = (
+            select(CrawlPartitionModel)
+            .where(
+                CrawlPartitionModel.crawl_run_id == run_id,
+                CrawlPartitionModel.is_terminal.is_(True),
+                CrawlPartitionModel.status == CrawlPartitionStatus.FAILED.value,
+            )
+            .order_by(CrawlPartitionModel.depth, CrawlPartitionModel.partition_key)
+        )
+        requeued: list[CrawlPartition] = []
+        for crawl_partition in self._session.scalars(statement):
+            crawl_partition.status = CrawlPartitionStatus.PENDING.value
+            crawl_partition.coverage_status = CrawlPartitionCoverageStatus.UNASSESSED.value
+            crawl_partition.finished_at = None
+            crawl_partition.last_error_message = None
+            crawl_partition.retry_count += 1
+            self._session.add(crawl_partition)
+            self._session.flush()
+            self._session.refresh(crawl_partition)
+            requeued.append(self._to_entity(crawl_partition))
+        return requeued
+
     def mark_failed(self, *, partition_id: UUID, error_message: str) -> CrawlPartition:
         crawl_partition = self._get_model(partition_id)
         if crawl_partition.started_at is None:

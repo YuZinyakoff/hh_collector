@@ -129,6 +129,7 @@ Tree outcome:
 - memory blocker реально снят;
 - текущий search contour уже выдерживает `~13.5h` живого baseline run;
 - новый blocker теперь не baseline viability, а resilience к transient transport/outage и ability either to resume or to avoid losing near-complete run.
+- minimal failed-run recovery slice уже реализован: `resume-run-v2` теперь requeue-ит failed terminal search branches и может продолжить `failed` run, если search tree сам по себе ещё resumable.
 
 ## 2. Execution Order
 
@@ -154,7 +155,8 @@ Tree outcome:
 Scope:
 
 1. `search` transport circuit breaker
-2. terminal status integration
+2. failed-run recovery for terminal search branches
+3. terminal status integration
 
 Источник:
 
@@ -163,6 +165,7 @@ Scope:
 Acceptance criteria:
 
 - runtime больше не продолжает blind list execution после первого hard failed search partition;
+- operator может возобновить near-complete `failed` search run без ручного SQL reset failed leaves;
 - terminal status честно различает `failed`, `completed_with_unresolved`, `completed_with_detail_errors`;
 - tests green на targeted slices;
 - docs/runbook синхронизированы.

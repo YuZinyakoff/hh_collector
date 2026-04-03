@@ -511,6 +511,7 @@ def test_resume_run_v2_cli_prints_resume_summary(monkeypatch, capsys) -> None:
             covered_before_resume=3,
             coverage_ratio_before_resume=0.6,
             resumed_unresolved_partitions=2,
+            resumed_failed_partitions=0,
             list_engine_iterations=1,
             total_partitions=5,
             covered_terminal_partitions=5,
@@ -560,6 +561,7 @@ def test_resume_run_v2_cli_prints_resume_summary(monkeypatch, capsys) -> None:
     assert "initial_run_status=completed_with_unresolved" in captured.out
     assert "unresolved_before_resume=2" in captured.out
     assert "resumed_unresolved_partitions=2" in captured.out
+    assert "resumed_failed_partitions=0" in captured.out
     assert "coverage_ratio_before_resume=0.6000" in captured.out
     assert "coverage_ratio=1.0000" in captured.out
     assert "reconciliation_status=succeeded" in captured.out

@@ -28,6 +28,7 @@
   - short snapshot churn снижен до `first_seen/hash_changed`
   - появился local retention archive export
   - housekeeping умеет `archive-before-delete` для `raw_api_payload` и `vacancy_snapshot`
+  - появился off-host sync contour для готовых archive chunks через WebDAV + local upload receipts
 
 ## Что ещё не доказано
 
@@ -44,7 +45,7 @@
 1. VPS pilot на более стабильном хосте.
 2. Ещё один полный `search-only` baseline уже на VPS.
 3. Transport/resume hardening, чтобы не терять почти завершённый run из-за единичного outage.
-4. Archive manifest/upload/off-host copy policy для cold history layer.
+4. Real provider config + регулярный off-host archive/backup copy contour.
 5. Затем persistent `first-detail` backlog и steady-state completeness contour.
 
 ## Практический вывод

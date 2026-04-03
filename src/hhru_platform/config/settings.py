@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     housekeeping_report_artifact_retention_days: int = 30
     housekeeping_report_artifact_dir: str = ".state/reports/detail-payload-study"
     housekeeping_archive_dir: str = ".state/archive/retention"
+    housekeeping_archive_offsite_url: str = ""
+    housekeeping_archive_offsite_root: str = "/hhru-platform"
+    housekeeping_archive_offsite_username: str | None = None
+    housekeeping_archive_offsite_password: str | None = Field(default=None, repr=False)
+    housekeeping_archive_offsite_bearer_token: str | None = Field(default=None, repr=False)
+    housekeeping_archive_offsite_timeout_seconds: float = 60.0
     housekeeping_delete_limit_per_target: int = 10_000
 
     @property

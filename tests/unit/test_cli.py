@@ -31,6 +31,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "health-check" in captured.out
     assert "run-housekeeping" in captured.out
     assert "export-retention-archive" in captured.out
+    assert "sync-retention-archive-offsite" in captured.out
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "run-once-v2" in captured.out
@@ -85,6 +86,11 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             housekeeping_report_artifact_retention_days=21,
             housekeeping_report_artifact_dir=".state/reports/detail-payload-study",
             housekeeping_archive_dir=".state/archive/retention",
+            housekeeping_archive_offsite_url="https://webdav.example.test",
+            housekeeping_archive_offsite_root="/hhru-platform",
+            housekeeping_archive_offsite_username="user",
+            housekeeping_archive_offsite_password="secret",
+            housekeeping_archive_offsite_timeout_seconds=90.0,
             housekeeping_delete_limit_per_target=5000,
         ),
     )
@@ -115,6 +121,11 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "housekeeping_report_artifact_retention_days=21" in captured.out
     assert "housekeeping_report_artifact_dir=.state/reports/detail-payload-study" in captured.out
     assert "housekeeping_archive_dir=.state/archive/retention" in captured.out
+    assert "housekeeping_archive_offsite_configured=yes" in captured.out
+    assert "housekeeping_archive_offsite_url=https://webdav.example.test" in captured.out
+    assert "housekeeping_archive_offsite_root=/hhru-platform" in captured.out
+    assert "housekeeping_archive_offsite_auth_mode=basic" in captured.out
+    assert "housekeeping_archive_offsite_timeout_seconds=90.0" in captured.out
     assert "housekeeping_delete_limit_per_target=5000" in captured.out
 
 
@@ -2167,6 +2178,89 @@ def test_export_retention_archive_cli_prints_summary(monkeypatch, capsys) -> Non
     assert "target=raw_api_payload enabled=yes retention_days=90" in captured.out
     assert "archive_sha256=abc123" in captured.out
     assert "target=vacancy_snapshot enabled=yes retention_days=365" in captured.out
+
+
+def test_sync_retention_archive_offsite_cli_prints_summary(monkeypatch, capsys) -> None:
+    class FakeReceiptStore:
+        pass
+
+    class FakeUploader:
+        pass
+
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.LocalRetentionArchiveUploadReceiptStore",
+        FakeReceiptStore,
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.WebDavArchiveUploader.with_basic_auth",
+        lambda **kwargs: FakeUploader(),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.get_settings",
+        lambda: Settings(
+            housekeeping_archive_dir=".state/archive/retention",
+            housekeeping_archive_offsite_url="https://webdav.example.test",
+            housekeeping_archive_offsite_root="/hhru-platform",
+            housekeeping_archive_offsite_username="user",
+            housekeeping_archive_offsite_password="secret",
+            housekeeping_archive_offsite_timeout_seconds=60.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "hhru_platform.interfaces.cli.commands.housekeeping.sync_retention_archive_offsite",
+        lambda command, **kwargs: SimpleNamespace(
+            status="succeeded",
+            triggered_by=command.triggered_by,
+            synced_at=datetime(2026, 4, 3, 16, 0, tzinfo=UTC),
+            archive_dir=Path(".state/archive/retention"),
+            offsite_url=command.offsite_url,
+            offsite_root=command.offsite_root,
+            auth_mode=command.auth_mode,
+            limit=command.limit,
+            scanned_manifest_count=2,
+            candidate_bundle_count=1,
+            uploaded_bundle_count=1,
+            skipped_bundle_count=1,
+            summaries=(
+                SimpleNamespace(
+                    manifest_file=Path(".state/archive/retention/raw/one.manifest.json"),
+                    archive_file=Path(".state/archive/retention/raw/one.jsonl.gz"),
+                    uploaded=True,
+                    skipped=False,
+                    remote_archive_path="/hhru-platform/raw/one.jsonl.gz",
+                    remote_manifest_path="/hhru-platform/raw/one.manifest.json",
+                    archive_sha256="abc123",
+                    manifest_sha256="def456",
+                    receipt_file=Path(
+                        ".state/archive/retention/raw/one.manifest.json.uploaded.json"
+                    ),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hhru-platform",
+            "sync-retention-archive-offsite",
+            "--limit",
+            "5",
+            "--triggered-by",
+            "cli-offsite-sync",
+        ],
+    )
+
+    exit_code = main()
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "completed retention archive offsite sync" in captured.out
+    assert "status=succeeded" in captured.out
+    assert "offsite_url=https://webdav.example.test" in captured.out
+    assert "auth_mode=basic" in captured.out
+    assert "uploaded_bundle_count=1" in captured.out
+    assert "skipped_bundle_count=1" in captured.out
+    assert "archive_sha256=abc123" in captured.out
 
 
 def test_reconcile_run_cli_prints_reconciliation_summary(monkeypatch, capsys) -> None:

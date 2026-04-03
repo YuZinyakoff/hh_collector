@@ -80,8 +80,31 @@ def handle_health_check(_: argparse.Namespace) -> int:
         f"{settings.housekeeping_report_artifact_dir}"
     )
     print(f"housekeeping_archive_dir={settings.housekeeping_archive_dir}")
+    auth_mode = "none"
+    if settings.housekeeping_archive_offsite_bearer_token:
+        auth_mode = "bearer"
+    elif (
+        settings.housekeeping_archive_offsite_username
+        and settings.housekeeping_archive_offsite_password
+    ):
+        auth_mode = "basic"
+    print(
+        "housekeeping_archive_offsite_configured="
+        f"{'yes' if _is_archive_offsite_configured(settings, auth_mode) else 'no'}"
+    )
+    print(f"housekeeping_archive_offsite_url={settings.housekeeping_archive_offsite_url or '-'}")
+    print(f"housekeeping_archive_offsite_root={settings.housekeeping_archive_offsite_root}")
+    print(f"housekeeping_archive_offsite_auth_mode={auth_mode}")
+    print(
+        "housekeeping_archive_offsite_timeout_seconds="
+        f"{settings.housekeeping_archive_offsite_timeout_seconds}"
+    )
     print(
         "housekeeping_delete_limit_per_target="
         f"{settings.housekeeping_delete_limit_per_target}"
     )
     return 0
+
+
+def _is_archive_offsite_configured(settings, auth_mode: str) -> bool:
+    return bool(settings.housekeeping_archive_offsite_url) and auth_mode != "none"

@@ -200,6 +200,19 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main export-re
 - `total_exported>=0`
 - per-target summary печатает `archive_file`, `manifest_file`, `archive_sha256`, `archive_size_bytes`
 
+Если нужен off-host copy уже созданных archive chunks, используй:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main sync-retention-archive-offsite --triggered-by cli-retention-offsite
+```
+
+Ожидаемо:
+- `status=succeeded`
+- `uploaded_bundle_count>=0`
+- `skipped_bundle_count>=0`
+- summary по каждому bundle печатает `remote_archive_path`, `remote_manifest_path` и `receipt_file`
+- повторный run не должен заново грузить уже подтверждённые bundles, если manifest/hash не изменились
+
 Что делает housekeeping:
 
 - удаляет только старые `raw_api_payload`, которые старше TTL, не относятся к active run и не защищены snapshot references;
@@ -210,6 +223,13 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main export-re
 - не трогает `vacancy_current_state`, справочники и актуальные `vacancy` rows;
 - не трогает `crawl_run` со статусом `created` и связанные с ними live artifacts.
 - при `--archive-before-delete` сначала пишет сжатые локальные archive chunks в `HHRU_HOUSEKEEPING_ARCHIVE_DIR`, и только потом удаляет `raw_api_payload`/`vacancy_snapshot`.
+
+Для off-host upload path нужны runtime settings:
+
+- `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_URL`
+- `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_ROOT`
+- либо `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_USERNAME` + `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_PASSWORD`,
+- либо `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_BEARER_TOKEN`
 
 ## Backup / Restore Drill
 

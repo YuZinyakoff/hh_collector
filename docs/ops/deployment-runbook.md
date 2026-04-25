@@ -2,6 +2,10 @@
 
 Практичный baseline для развёртывания текущего MVP collector на одной VPS через Docker Compose.
 
+Для первого supervised VPS baseline используй более конкретный чеклист:
+
+- [vps-pilot-checklist.md](/home/yurizinyakov/projects/hh_collector/docs/ops/vps-pilot-checklist.md)
+
 ## 1. Подготовка VPS
 
 - Установить Docker Engine и Compose plugin.

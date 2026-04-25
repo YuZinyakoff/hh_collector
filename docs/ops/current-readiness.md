@@ -56,6 +56,7 @@
 
 ## Смежные документы
 
+- [vps-pilot-checklist.md](/home/yurizinyakov/projects/hh_collector/docs/ops/vps-pilot-checklist.md)
 - [hh-api-completeness-implementation-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-completeness-implementation-plan.md)
 - [hh-api-search-baseline-blocker-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-search-baseline-blocker-plan.md)
 - [testing-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/testing-plan.md)

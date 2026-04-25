@@ -125,19 +125,25 @@ class WebDavArchiveUploader:
             )
 
     def _ensure_remote_directory(self, relative_dir_parts: tuple[str, ...]) -> None:
-        full_parts = self._with_remote_root(())
+        full_parts: tuple[str, ...] = ()
+        for root_part in self._remote_root_parts():
+            full_parts = (*full_parts, root_part)
+            self._mkcol(full_parts)
         for part in relative_dir_parts:
             full_parts = (*full_parts, part)
-            status = self.transport.request(
-                method="MKCOL",
-                url=self._url_for_parts(full_parts),
-                headers=self._headers(),
-                body=None,
+            self._mkcol(full_parts)
+
+    def _mkcol(self, parts: tuple[str, ...]) -> None:
+        status = self.transport.request(
+            method="MKCOL",
+            url=self._url_for_parts(parts),
+            headers=self._headers(),
+            body=None,
+        )
+        if status not in (201, 405):
+            raise RuntimeError(
+                f"webdav MKCOL failed for {self._joined_path(parts)}: status={status}"
             )
-            if status not in (201, 405):
-                raise RuntimeError(
-                    f"webdav MKCOL failed for {self._joined_path(full_parts)}: status={status}"
-                )
 
     def _url_for_parts(self, parts: tuple[str, ...]) -> str:
         encoded_path = "/".join(quote(part, safe="") for part in parts)
@@ -157,7 +163,10 @@ class WebDavArchiveUploader:
     def _with_remote_root(self, parts: tuple[str, ...]) -> tuple[str, ...]:
         if not self.remote_root:
             return parts
-        return (*tuple(part for part in self.remote_root.split("/") if part), *parts)
+        return (*self._remote_root_parts(), *parts)
+
+    def _remote_root_parts(self) -> tuple[str, ...]:
+        return tuple(part for part in self.remote_root.split("/") if part)
 
 
 def _normalize_remote_root(remote_root: str) -> str:

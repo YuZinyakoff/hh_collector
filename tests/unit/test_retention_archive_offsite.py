@@ -135,19 +135,29 @@ def test_webdav_archive_uploader_creates_directories_and_puts_file(tmp_path: Pat
         remote_path="raw_api_payload/2026/04/chunk.jsonl.gz",
     )
 
-    assert [call["method"] for call in transport.calls] == ["MKCOL", "MKCOL", "MKCOL", "PUT"]
-    assert transport.calls[0]["url"] == "https://webdav.example.test/hhru-platform/raw_api_payload"
+    assert [call["method"] for call in transport.calls] == [
+        "MKCOL",
+        "MKCOL",
+        "MKCOL",
+        "MKCOL",
+        "PUT",
+    ]
+    assert transport.calls[0]["url"] == "https://webdav.example.test/hhru-platform"
     assert (
         transport.calls[1]["url"]
-        == "https://webdav.example.test/hhru-platform/raw_api_payload/2026"
+        == "https://webdav.example.test/hhru-platform/raw_api_payload"
     )
     assert (
         transport.calls[2]["url"]
-        == "https://webdav.example.test/hhru-platform/raw_api_payload/2026/04"
+        == "https://webdav.example.test/hhru-platform/raw_api_payload/2026"
     )
     assert (
         transport.calls[3]["url"]
+        == "https://webdav.example.test/hhru-platform/raw_api_payload/2026/04"
+    )
+    assert (
+        transport.calls[4]["url"]
         == "https://webdav.example.test/hhru-platform/raw_api_payload/2026/04/chunk.jsonl.gz"
     )
-    assert transport.calls[3]["headers"]["Authorization"].startswith("Basic ")
-    assert transport.calls[3]["body"] == b"payload"
+    assert transport.calls[4]["headers"]["Authorization"].startswith("Basic ")
+    assert transport.calls[4]["body"] == b"payload"

@@ -31,6 +31,8 @@ Stateful платформа длительного накопления данн
 
 ## Основные документы
 
+- `docs/ops/project-status-roadmap.md`
+- `docs/ops/current-readiness.md`
 - `docs/architecture/hld.md`
 - `docs/architecture/lld.md`
 - `docs/data/logical-data-model.md`
@@ -61,37 +63,38 @@ Stateful платформа длительного накопления данн
 
 ```bash
 cp .env.example .env
-````
+```
 
 Заполнить переменные:
 
-* `DB_DSN`
-* `REDIS_DSN`
-* `HH_API_BASE_URL`
-* `HH_USER_AGENT`
+* `HHRU_DB_*`
+* `HHRU_REDIS_*`
+* `HHRU_HH_API_BASE_URL`
+* `HHRU_HH_API_USER_AGENT`
+* `HHRU_HH_API_APPLICATION_TOKEN`, если нужен token contour
 
 ### 2. Поднять инфраструктуру
 
 ```bash
-docker compose up -d postgres redis
+make up
 ```
 
 ### 3. Применить миграции
 
 ```bash
-make migrate
+make migrate-compose
 ```
 
 ### 4. Запустить dictionary sync
 
 ```bash
-make sync-dictionaries
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main sync-dictionaries --name areas
 ```
 
-### 5. Запустить тестовый sweep
+### 5. Запустить короткий guarded sweep
 
 ```bash
-make run-local-sweep
+make run-once-v2 ARGS="--sync-dictionaries no --detail-limit 0 --detail-refresh-ttl-days 30 --triggered-by local-smoke"
 ```
 
 ---
@@ -101,17 +104,18 @@ make run-local-sweep
 ```bash
 make up
 make down
-make migrate
+make migrate-compose
 make test
 make lint
 make format
-make create-run
-make sync-dictionaries
-make run-local-sweep
+make compose-health
+make run-once-v2
 make drain-first-detail-backlog
-make worker-list
 make worker-detail
-make scheduler
+make scheduler-loop
+make backup
+make verify-backup
+make restore-drill
 ```
 
 ---

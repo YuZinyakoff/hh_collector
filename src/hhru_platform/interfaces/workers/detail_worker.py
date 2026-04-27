@@ -39,6 +39,8 @@ def main() -> int:
         default_interval_seconds=settings.detail_worker_interval_seconds,
         default_include_inactive=settings.detail_worker_include_inactive,
         default_triggered_by=settings.detail_worker_triggered_by,
+        default_retry_cooldown_seconds=settings.detail_worker_retry_cooldown_seconds,
+        default_max_retry_cooldown_seconds=settings.detail_worker_max_retry_cooldown_seconds,
     )
     args = parser.parse_args()
     return _run_loop(args)
@@ -50,6 +52,8 @@ def _build_parser(
     default_interval_seconds: float,
     default_include_inactive: bool,
     default_triggered_by: str,
+    default_retry_cooldown_seconds: int,
+    default_max_retry_cooldown_seconds: int,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hhru-detail-worker",
@@ -92,6 +96,25 @@ def _build_parser(
         default=default_triggered_by,
         help=f"Actor name recorded in logs. Defaults to {default_triggered_by}.",
     )
+    parser.add_argument(
+        "--retry-cooldown-seconds",
+        type=int,
+        default=default_retry_cooldown_seconds,
+        help=(
+            "Base cooldown after a retryable detail failure. "
+            "Each repeated failed attempt doubles this value. "
+            f"Defaults to {default_retry_cooldown_seconds}."
+        ),
+    )
+    parser.add_argument(
+        "--max-retry-cooldown-seconds",
+        type=int,
+        default=default_max_retry_cooldown_seconds,
+        help=(
+            "Maximum cooldown cap for repeated retryable detail failures. "
+            f"Defaults to {default_max_retry_cooldown_seconds}."
+        ),
+    )
     return parser
 
 
@@ -101,6 +124,8 @@ def _run_loop(args: argparse.Namespace) -> int:
     max_ticks = 1 if bool(args.once) else args.max_ticks
     include_inactive = _parse_yes_no(str(args.include_inactive))
     triggered_by = str(args.triggered_by)
+    retry_cooldown_seconds = int(args.retry_cooldown_seconds)
+    max_retry_cooldown_seconds = int(args.max_retry_cooldown_seconds)
     api_client = HHApiClient.from_settings()
 
     tick = 0
@@ -110,6 +135,8 @@ def _run_loop(args: argparse.Namespace) -> int:
             batch_size=batch_size,
             include_inactive=include_inactive,
             triggered_by=triggered_by,
+            retry_cooldown_seconds=retry_cooldown_seconds,
+            max_retry_cooldown_seconds=max_retry_cooldown_seconds,
             api_client=api_client,
         )
         _print_tick_summary(tick=tick, result=result)
@@ -126,6 +153,8 @@ def _drain_once(
     batch_size: int,
     include_inactive: bool,
     triggered_by: str,
+    retry_cooldown_seconds: int,
+    max_retry_cooldown_seconds: int,
     api_client: HHApiClient,
 ) -> DrainFirstDetailBacklogResult:
     with session_scope() as session:
@@ -134,6 +163,8 @@ def _drain_once(
                 limit=batch_size,
                 include_inactive=include_inactive,
                 triggered_by=triggered_by,
+                retry_cooldown_seconds=retry_cooldown_seconds,
+                max_retry_cooldown_seconds=max_retry_cooldown_seconds,
             ),
             vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
             detail_fetch_attempt_repository=SqlAlchemyDetailFetchAttemptRepository(session),
@@ -169,11 +200,15 @@ def _print_tick_summary(*, tick: int, result: DrainFirstDetailBacklogResult) -> 
         f"tick={tick} "
         f"status={result.status} "
         f"backlog_size_before={result.backlog_size_before} "
+        f"ready_backlog_size_before={result.ready_backlog_size_before} "
+        f"cooldown_skipped_before={result.cooldown_skipped_before} "
         f"selected_count={result.selected_count} "
         f"detail_fetch_succeeded={result.detail_fetch_succeeded} "
         f"detail_fetch_terminal={result.detail_fetch_terminal} "
         f"detail_fetch_failed={result.detail_fetch_failed} "
-        f"backlog_size_after={result.backlog_size_after}",
+        f"backlog_size_after={result.backlog_size_after} "
+        f"ready_backlog_size_after={result.ready_backlog_size_after} "
+        f"cooldown_skipped_after={result.cooldown_skipped_after}",
         flush=True,
     )
     LOGGER.info(
@@ -182,11 +217,17 @@ def _print_tick_summary(*, tick: int, result: DrainFirstDetailBacklogResult) -> 
             "tick": tick,
             "status": result.status,
             "backlog_size_before": result.backlog_size_before,
+            "ready_backlog_size_before": result.ready_backlog_size_before,
+            "cooldown_skipped_before": result.cooldown_skipped_before,
             "selected_count": result.selected_count,
             "detail_fetch_succeeded": result.detail_fetch_succeeded,
             "detail_fetch_terminal": result.detail_fetch_terminal,
             "detail_fetch_failed": result.detail_fetch_failed,
             "backlog_size_after": result.backlog_size_after,
+            "ready_backlog_size_after": result.ready_backlog_size_after,
+            "cooldown_skipped_after": result.cooldown_skipped_after,
+            "retry_cooldown_seconds": result.retry_cooldown_seconds,
+            "max_retry_cooldown_seconds": result.max_retry_cooldown_seconds,
         },
     )
 

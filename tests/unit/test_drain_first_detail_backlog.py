@@ -17,8 +17,14 @@ from hhru_platform.domain.value_objects.enums import DetailFetchStatus
 
 
 class InMemoryVacancyCurrentStateRepository:
-    def __init__(self, states: list[VacancyCurrentState]) -> None:
+    def __init__(
+        self,
+        states: list[VacancyCurrentState],
+        *,
+        cooling_down_vacancy_ids: set[UUID] | None = None,
+    ) -> None:
         self._states = list(states)
+        self._cooling_down_vacancy_ids = cooling_down_vacancy_ids or set()
 
     def count_first_detail_backlog(self, *, include_inactive: bool) -> int:
         return len(
@@ -32,11 +38,32 @@ class InMemoryVacancyCurrentStateRepository:
             ]
         )
 
+    def count_first_detail_backlog_ready(
+        self,
+        *,
+        include_inactive: bool,
+        retry_cooldown_seconds: int,
+        max_retry_cooldown_seconds: int,
+        now: datetime,
+    ) -> int:
+        return len(
+            self.list_first_detail_backlog(
+                limit=len(self._states),
+                include_inactive=include_inactive,
+                retry_cooldown_seconds=retry_cooldown_seconds,
+                max_retry_cooldown_seconds=max_retry_cooldown_seconds,
+                now=now,
+            )
+        )
+
     def list_first_detail_backlog(
         self,
         *,
         limit: int,
         include_inactive: bool,
+        retry_cooldown_seconds: int,
+        max_retry_cooldown_seconds: int,
+        now: datetime,
     ) -> list[VacancyCurrentState]:
         candidates = [
             state
@@ -44,6 +71,10 @@ class InMemoryVacancyCurrentStateRepository:
             if _is_first_detail_backlog_item(
                 state,
                 include_inactive=include_inactive,
+            )
+            and (
+                retry_cooldown_seconds <= 0
+                or state.vacancy_id not in self._cooling_down_vacancy_ids
             )
         ]
         candidates.sort(key=lambda state: (state.first_seen_at, str(state.vacancy_id)))
@@ -115,7 +146,10 @@ def test_drain_first_detail_backlog_fetches_limited_batch_and_recounts() -> None
     assert result.detail_fetch_attempted == 2
     assert result.detail_fetch_succeeded == 2
     assert result.detail_fetch_failed == 0
+    assert result.ready_backlog_size_before == 3
+    assert result.cooldown_skipped_before == 0
     assert result.backlog_size_after == 1
+    assert result.ready_backlog_size_after == 1
     assert [
         (
             command.vacancy_id,
@@ -196,6 +230,47 @@ def test_drain_first_detail_backlog_treats_terminal_404_as_resolved() -> None:
     assert result.detail_fetch_failed == 0
     assert result.backlog_size_after == 0
     assert result.item_results[0].terminal is True
+
+
+def test_drain_first_detail_backlog_skips_recent_failed_items_in_cooldown() -> None:
+    now = datetime(2026, 4, 25, 12, 0, tzinfo=UTC)
+    cooling_down_vacancy = uuid4()
+    ready_vacancy = uuid4()
+    current_state_repository = InMemoryVacancyCurrentStateRepository(
+        [
+            _build_state(vacancy_id=cooling_down_vacancy, first_seen_at=now - timedelta(days=2)),
+            _build_state(vacancy_id=ready_vacancy, first_seen_at=now - timedelta(days=1)),
+        ],
+        cooling_down_vacancy_ids={cooling_down_vacancy},
+    )
+    commands: list[FetchVacancyDetailCommand] = []
+
+    def fetch_step(command: FetchVacancyDetailCommand) -> FetchVacancyDetailResult:
+        commands.append(command)
+        current_state_repository.mark_detail_succeeded(command.vacancy_id, now)
+        return _build_detail_result(command.vacancy_id)
+
+    result = drain_first_detail_backlog(
+        DrainFirstDetailBacklogCommand(
+            limit=10,
+            triggered_by="pytest",
+            retry_cooldown_seconds=3600,
+            max_retry_cooldown_seconds=86400,
+        ),
+        vacancy_current_state_repository=current_state_repository,
+        detail_fetch_attempt_repository=InMemoryDetailFetchAttemptRepository(),
+        fetch_vacancy_detail_step=fetch_step,
+    )
+
+    assert result.status == "succeeded"
+    assert result.backlog_size_before == 2
+    assert result.ready_backlog_size_before == 1
+    assert result.cooldown_skipped_before == 1
+    assert result.selected_count == 1
+    assert result.backlog_size_after == 1
+    assert result.ready_backlog_size_after == 0
+    assert result.cooldown_skipped_after == 1
+    assert [command.vacancy_id for command in commands] == [ready_vacancy]
 
 
 def _is_first_detail_backlog_item(

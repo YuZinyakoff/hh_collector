@@ -13,6 +13,10 @@ groups:
         expr: sum(hhru_detail_repair_backlog_size)
       - record: hhru:first_detail_backlog_active_open
         expr: sum(hhru_first_detail_backlog_size{scope="active"})
+      - record: hhru:first_detail_backlog_active_ready
+        expr: sum(hhru_first_detail_ready_backlog_size{scope="active"})
+      - record: hhru:first_detail_backlog_active_cooldown
+        expr: sum(hhru_first_detail_cooldown_backlog_size{scope="active"})
       - record: hhru:housekeeping_last_run_age_seconds
         expr: clamp_min(time() - max(hhru_housekeeping_last_run_timestamp_seconds), 0)
       - record: hhru:backup_last_success_age_seconds
@@ -100,7 +104,7 @@ groups:
           description: First-detail backlog drain produced retryable non-terminal failures in the last 30 minutes.
           action: Inspect detail-worker logs and separate transient transport/API failures from expected terminal_404 outcomes.
       - alert: HHRUPlatformFirstDetailBacklogNotDraining
-        expr: hhru:first_detail_backlog_active_open > 0 unless increase(hhru_first_detail_drain_selected_total{scope="active"}[6h]) > 0
+        expr: hhru:first_detail_backlog_active_ready > 0 unless increase(hhru_first_detail_drain_selected_total{scope="active"}[6h]) > 0
         for: 6h
         labels:
           severity: warning

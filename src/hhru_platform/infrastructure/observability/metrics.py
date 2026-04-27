@@ -51,6 +51,8 @@ class MetricsState(TypedDict):
     detail_repair_gauge: dict[str, float]
     detail_repair_total: dict[str, int]
     first_detail_backlog_gauge: dict[str, float]
+    first_detail_ready_backlog_gauge: dict[str, float]
+    first_detail_cooldown_backlog_gauge: dict[str, float]
     first_detail_drain_attempt_total: dict[str, int]
     first_detail_drain_total: dict[str, int]
     housekeeping_run_total: dict[str, int]
@@ -116,6 +118,10 @@ SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC: Final[str] = (
 )
 DETAIL_REPAIR_BACKLOG_METRIC: Final[str] = "hhru_detail_repair_backlog_size"
 FIRST_DETAIL_BACKLOG_METRIC: Final[str] = "hhru_first_detail_backlog_size"
+FIRST_DETAIL_READY_BACKLOG_METRIC: Final[str] = "hhru_first_detail_ready_backlog_size"
+FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC: Final[str] = (
+    "hhru_first_detail_cooldown_backlog_size"
+)
 HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC: Final[str] = (
     "hhru_housekeeping_last_run_timestamp_seconds"
 )
@@ -420,11 +426,19 @@ class FileBackedMetricsRegistry:
         *,
         include_inactive: bool,
         backlog_size: int,
+        ready_backlog_size: int,
+        cooldown_backlog_size: int,
     ) -> None:
         scope = _first_detail_scope(include_inactive=include_inactive)
         try:
             with self._mutating_state() as state:
                 state["first_detail_backlog_gauge"][scope] = float(max(backlog_size, 0))
+                state["first_detail_ready_backlog_gauge"][scope] = float(
+                    max(ready_backlog_size, 0)
+                )
+                state["first_detail_cooldown_backlog_gauge"][scope] = float(
+                    max(cooldown_backlog_size, 0)
+                )
         except Exception as error:
             LOGGER.warning("metrics first detail backlog update failed: %s", error)
 
@@ -833,6 +847,36 @@ class FileBackedMetricsRegistry:
                 f"{FIRST_DETAIL_BACKLOG_METRIC}"
                 f'{{scope="{_label_value(scope)}"}} {gauge_value:.6f}'
             )
+        lines.extend(
+            [
+                (
+                    f"# HELP {FIRST_DETAIL_READY_BACKLOG_METRIC} "
+                    "Current size of the first-detail backlog ready for immediate drain."
+                ),
+                f"# TYPE {FIRST_DETAIL_READY_BACKLOG_METRIC} gauge",
+            ]
+        )
+        for scope, gauge_value in sorted(state["first_detail_ready_backlog_gauge"].items()):
+            lines.append(
+                f"{FIRST_DETAIL_READY_BACKLOG_METRIC}"
+                f'{{scope="{_label_value(scope)}"}} {gauge_value:.6f}'
+            )
+        lines.extend(
+            [
+                (
+                    f"# HELP {FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC} "
+                    "Current size of the first-detail backlog skipped by retry cooldown."
+                ),
+                f"# TYPE {FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC} gauge",
+            ]
+        )
+        for scope, gauge_value in sorted(
+            state["first_detail_cooldown_backlog_gauge"].items()
+        ):
+            lines.append(
+                f"{FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC}"
+                f'{{scope="{_label_value(scope)}"}} {gauge_value:.6f}'
+            )
 
         lines.extend(
             [
@@ -1156,6 +1200,8 @@ def _empty_state() -> MetricsState:
         detail_repair_gauge={},
         detail_repair_total={},
         first_detail_backlog_gauge={},
+        first_detail_ready_backlog_gauge={},
+        first_detail_cooldown_backlog_gauge={},
         first_detail_drain_attempt_total={},
         first_detail_drain_total={},
         housekeeping_run_total={},
@@ -1213,6 +1259,12 @@ def _deserialize_state(raw_state: str) -> MetricsState:
         detail_repair_total=_coerce_int_map(loaded.get("detail_repair_total")),
         first_detail_backlog_gauge=_coerce_float_map(
             loaded.get("first_detail_backlog_gauge")
+        ),
+        first_detail_ready_backlog_gauge=_coerce_float_map(
+            loaded.get("first_detail_ready_backlog_gauge")
+        ),
+        first_detail_cooldown_backlog_gauge=_coerce_float_map(
+            loaded.get("first_detail_cooldown_backlog_gauge")
         ),
         first_detail_drain_attempt_total=_coerce_int_map(
             loaded.get("first_detail_drain_attempt_total")

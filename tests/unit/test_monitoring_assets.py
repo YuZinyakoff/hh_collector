@@ -219,6 +219,41 @@ def test_grafana_recovery_panels_use_lifecycle_metrics() -> None:
     )
     assert repair_attempts_panel["targets"][0]["instant"] is True
 
+    first_detail_backlog_panel = _find_panel(collector_dashboard, "First Detail Backlog")
+    assert first_detail_backlog_panel["targets"][0]["expr"] == (
+        'sum(hhru_first_detail_backlog_size{scope="active"})'
+    )
+    assert first_detail_backlog_panel["targets"][0]["instant"] is True
+
+    first_detail_ready_panel = _find_panel(collector_dashboard, "First Detail Ready Backlog")
+    assert first_detail_ready_panel["targets"][0]["expr"] == (
+        'sum(hhru_first_detail_ready_backlog_size{scope="active"})'
+    )
+
+    first_detail_cooldown_panel = _find_panel(
+        collector_dashboard,
+        "First Detail Cooldown Backlog",
+    )
+    assert first_detail_cooldown_panel["targets"][0]["expr"] == (
+        'sum(hhru_first_detail_cooldown_backlog_size{scope="active"})'
+    )
+
+    first_detail_failed_panel = _find_panel(collector_dashboard, "First Detail Failed In Range")
+    assert first_detail_failed_panel["targets"][0]["expr"] == (
+        'sum(increase(hhru_first_detail_drain_failed_total{scope="active"}[$__range]))'
+    )
+    assert first_detail_failed_panel["targets"][0]["instant"] is True
+
+    first_detail_outcomes_panel = _find_panel(
+        collector_dashboard,
+        "First Detail Drain Outcomes In Range",
+    )
+    assert first_detail_outcomes_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (outcome) "
+        '(increase(hhru_first_detail_drain_attempt_total{scope="active"}[$__range])))'
+    )
+    assert first_detail_outcomes_panel["targets"][0]["format"] == "table"
+
 
 def test_scheduler_recovery_dashboard_uses_recording_rules_and_debt_tables() -> None:
     dashboard = _load_dashboard("scheduler-recovery-health.json")
@@ -241,6 +276,26 @@ def test_scheduler_recovery_dashboard_uses_recording_rules_and_debt_tables() -> 
 
     backlog_panel = _find_panel(dashboard, "Open Detail Repair Backlog")
     assert backlog_panel["targets"][0]["expr"] == "hhru:detail_repair_backlog_open"
+
+    first_detail_backlog_panel = _find_panel(dashboard, "Open First Detail Backlog")
+    assert first_detail_backlog_panel["targets"][0]["expr"] == (
+        "hhru:first_detail_backlog_active_open"
+    )
+
+    first_detail_ready_panel = _find_panel(dashboard, "Ready First Detail Backlog")
+    assert first_detail_ready_panel["targets"][0]["expr"] == (
+        "hhru:first_detail_backlog_active_ready"
+    )
+
+    first_detail_cooldown_panel = _find_panel(dashboard, "Cooldown First Detail Backlog")
+    assert first_detail_cooldown_panel["targets"][0]["expr"] == (
+        "hhru:first_detail_backlog_active_cooldown"
+    )
+
+    first_detail_failures_panel = _find_panel(dashboard, "First Detail Failures In Range")
+    assert first_detail_failures_panel["targets"][0]["expr"] == (
+        'sum(increase(hhru_first_detail_drain_failed_total{scope="active"}[$__range]))'
+    )
 
     resume_again_panel = _find_panel(dashboard, "Resume Unresolved Again In 12h")
     assert resume_again_panel["targets"][0]["expr"] == (
@@ -271,6 +326,17 @@ def test_scheduler_recovery_dashboard_uses_recording_rules_and_debt_tables() -> 
     repair_outcomes_panel = _find_panel(dashboard, "Detail Repair Outcomes In Range")
     assert repair_outcomes_panel["targets"][0]["expr"] == (
         "sort_desc(sum by (outcome) (increase(hhru_detail_repair_attempt_total[$__range])))"
+    )
+
+    first_detail_outcomes_panel = _find_panel(dashboard, "First Detail Drain Outcomes In Range")
+    assert first_detail_outcomes_panel["targets"][0]["expr"] == (
+        "sort_desc(sum by (outcome) "
+        '(increase(hhru_first_detail_drain_attempt_total{scope="active"}[$__range])))'
+    )
+
+    first_detail_scope_panel = _find_panel(dashboard, "First Detail Backlog By Scope")
+    assert first_detail_scope_panel["targets"][0]["expr"] == (
+        "sort_desc(hhru_first_detail_backlog_size)"
     )
 
     housekeeping_age_panel = _find_panel(dashboard, "Housekeeping Last Run Age")
@@ -326,6 +392,8 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
     assert "record: hhru:coverage_unresolved_partitions_open" in rules_text
     assert "record: hhru:detail_repair_backlog_open" in rules_text
     assert "record: hhru:first_detail_backlog_active_open" in rules_text
+    assert "record: hhru:first_detail_backlog_active_ready" in rules_text
+    assert "record: hhru:first_detail_backlog_active_cooldown" in rules_text
     assert "record: hhru:housekeeping_last_run_age_seconds" in rules_text
     assert "record: hhru:backup_last_success_age_seconds" in rules_text
     assert "record: hhru:restore_drill_last_success_age_seconds" in rules_text
@@ -353,12 +421,14 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
     assert "expr: hhru:coverage_unresolved_partitions_open > 0" in rules_text
     assert "expr: hhru:detail_repair_backlog_open > 0" in rules_text
     assert 'expr: sum(hhru_first_detail_backlog_size{scope="active"})' in rules_text
+    assert 'expr: sum(hhru_first_detail_ready_backlog_size{scope="active"})' in rules_text
+    assert 'expr: sum(hhru_first_detail_cooldown_backlog_size{scope="active"})' in rules_text
     assert (
         'expr: increase(hhru_first_detail_drain_failed_total{scope="active"}[30m]) > 0'
         in rules_text
     )
     assert (
-        'expr: hhru:first_detail_backlog_active_open > 0 unless '
+        'expr: hhru:first_detail_backlog_active_ready > 0 unless '
         'increase(hhru_first_detail_drain_selected_total{scope="active"}[6h]) > 0'
         in rules_text
     )

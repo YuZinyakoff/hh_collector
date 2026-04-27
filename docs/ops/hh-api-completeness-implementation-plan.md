@@ -300,7 +300,7 @@ Go / no-go interpretation:
 
 ## 6. Phase D: Persistent First-Detail Backlog MVP
 
-Это следующий обязательный implementation slice после чистого search baseline.
+Status на 2026-04-27: MVP реализован локально. Остались scale validation полного backlog drain и production alert delivery.
 
 ### 6.1. Product semantics
 
@@ -357,7 +357,7 @@ Need:
 Suggested command shape:
 
 ```bash
-PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main drain-first-details \
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main drain-first-detail-backlog \
   --limit <N> \
   --triggered-by first-detail-drain
 ```
@@ -365,10 +365,11 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main drain-fir
 Command semantics:
 
 - берёт верхушку backlog;
+- пропускает retryable failures, которые ещё находятся в exponential cooldown;
 - делает detail fetch;
 - обновляет `vacancy_current_state`;
 - пишет attempts/metrics;
-- печатает backlog_before / attempted / succeeded / terminal_not_found / retryable_failed / backlog_after.
+- печатает backlog_before / ready_backlog_before / cooldown_skipped / attempted / succeeded / terminal_not_found / retryable_failed / backlog_after.
 
 4. Add backlog metrics.
 

@@ -188,6 +188,119 @@ def test_first_detail_backlog_repository_lists_active_missing_detail_rows() -> N
         engine.dispose()
 
 
+def test_first_detail_backlog_repository_skips_recent_retryable_failures() -> None:
+    engine = create_engine_from_settings()
+    session_factory = create_session_factory(engine)
+    now = datetime(2000, 1, 2, 12, 0, tzinfo=UTC)
+    no_attempt_id = uuid4()
+    recent_failed_id = uuid4()
+    old_failed_id = uuid4()
+    vacancy_ids = (no_attempt_id, recent_failed_id, old_failed_id)
+
+    try:
+        with engine.begin() as connection:
+            for vacancy_id in vacancy_ids:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO vacancy (
+                            id,
+                            hh_vacancy_id,
+                            name_current,
+                            source_type
+                        )
+                        VALUES (
+                            :vacancy_id,
+                            :hh_vacancy_id,
+                            'Pytest first detail cooldown vacancy',
+                            'hh_api'
+                        )
+                        """
+                    ),
+                    {
+                        "vacancy_id": vacancy_id,
+                        "hh_vacancy_id": f"pytest-first-detail-cooldown-{vacancy_id}",
+                    },
+                )
+
+            _insert_current_state(
+                connection,
+                vacancy_id=no_attempt_id,
+                first_seen_at=now - timedelta(days=3),
+                detail_fetch_status="not_requested",
+                last_detail_fetched_at=None,
+                is_probably_inactive=False,
+            )
+            _insert_current_state(
+                connection,
+                vacancy_id=recent_failed_id,
+                first_seen_at=now - timedelta(days=2),
+                detail_fetch_status="failed",
+                last_detail_fetched_at=None,
+                is_probably_inactive=False,
+            )
+            _insert_current_state(
+                connection,
+                vacancy_id=old_failed_id,
+                first_seen_at=now - timedelta(days=1),
+                detail_fetch_status="failed",
+                last_detail_fetched_at=None,
+                is_probably_inactive=False,
+            )
+            _insert_attempt(
+                connection,
+                vacancy_id=recent_failed_id,
+                attempt=1,
+                requested_at=now - timedelta(minutes=30),
+            )
+            _insert_attempt(
+                connection,
+                vacancy_id=old_failed_id,
+                attempt=2,
+                requested_at=now - timedelta(hours=3),
+            )
+
+        with session_scope(session_factory) as session:
+            state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
+
+            assert (
+                state_repository.count_first_detail_backlog_ready(
+                    include_inactive=False,
+                    retry_cooldown_seconds=3600,
+                    max_retry_cooldown_seconds=86400,
+                    now=now,
+                )
+                >= 2
+            )
+            ready_ids = [
+                state.vacancy_id
+                for state in state_repository.list_first_detail_backlog(
+                    limit=10,
+                    include_inactive=False,
+                    retry_cooldown_seconds=3600,
+                    max_retry_cooldown_seconds=86400,
+                    now=now,
+                )
+                if state.vacancy_id in vacancy_ids
+            ]
+            assert ready_ids == [no_attempt_id, old_failed_id]
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM detail_fetch_attempt WHERE vacancy_id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+            connection.execute(
+                text("DELETE FROM vacancy_current_state WHERE vacancy_id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+            connection.execute(
+                text("DELETE FROM vacancy WHERE id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+        engine.dispose()
+
+
 def _insert_current_state(
     connection,
     *,

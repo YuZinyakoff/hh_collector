@@ -25,6 +25,7 @@ from hhru_platform.application.commands.retry_failed_details import (
     RetryFailedDetailsResult,
     retry_failed_details,
 )
+from hhru_platform.config.settings import get_settings
 from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyApiRequestLogRepository,
     SqlAlchemyCrawlRunRepository,
@@ -100,6 +101,28 @@ def register_detail_commands(
         "--triggered-by",
         default="drain-first-detail-backlog",
         help="Actor or subsystem that initiated the backlog drain.",
+    )
+    settings = get_settings()
+    retry_cooldown_seconds = settings.detail_worker_retry_cooldown_seconds
+    max_retry_cooldown_seconds = settings.detail_worker_max_retry_cooldown_seconds
+    drain_parser.add_argument(
+        "--retry-cooldown-seconds",
+        type=int,
+        default=retry_cooldown_seconds,
+        help=(
+            "Base cooldown after a retryable detail failure. "
+            "Each repeated failed attempt doubles this value. "
+            f"Defaults to {retry_cooldown_seconds}."
+        ),
+    )
+    drain_parser.add_argument(
+        "--max-retry-cooldown-seconds",
+        type=int,
+        default=max_retry_cooldown_seconds,
+        help=(
+            "Maximum cooldown cap for repeated retryable detail failures. "
+            f"Defaults to {max_retry_cooldown_seconds}."
+        ),
     )
     drain_parser.set_defaults(handler=handle_drain_first_detail_backlog)
 
@@ -197,6 +220,8 @@ def handle_drain_first_detail_backlog(args: argparse.Namespace) -> int:
         limit=int(args.limit),
         include_inactive=_parse_yes_no(str(args.include_inactive)),
         triggered_by=str(args.triggered_by),
+        retry_cooldown_seconds=int(args.retry_cooldown_seconds),
+        max_retry_cooldown_seconds=int(args.max_retry_cooldown_seconds),
     )
     api_client = HHApiClient.from_settings()
 
@@ -307,13 +332,19 @@ def _print_drain_first_detail_backlog_summary(
     print(f"triggered_by={result.triggered_by}")
     print(f"include_inactive={'yes' if result.include_inactive else 'no'}")
     print(f"limit={result.limit}")
+    print(f"retry_cooldown_seconds={result.retry_cooldown_seconds}")
+    print(f"max_retry_cooldown_seconds={result.max_retry_cooldown_seconds}")
     print(f"backlog_size_before={result.backlog_size_before}")
+    print(f"ready_backlog_size_before={result.ready_backlog_size_before}")
+    print(f"cooldown_skipped_before={result.cooldown_skipped_before}")
     print(f"selected_count={result.selected_count}")
     print(f"detail_fetch_attempted={result.detail_fetch_attempted}")
     print(f"detail_fetch_succeeded={result.detail_fetch_succeeded}")
     print(f"detail_fetch_terminal={result.detail_fetch_terminal}")
     print(f"detail_fetch_failed={result.detail_fetch_failed}")
     print(f"backlog_size_after={result.backlog_size_after}")
+    print(f"ready_backlog_size_after={result.ready_backlog_size_after}")
+    print(f"cooldown_skipped_after={result.cooldown_skipped_after}")
     for item in result.item_results:
         print(
             "vacancy="

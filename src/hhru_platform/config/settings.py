@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     detail_worker_interval_seconds: float = 300.0
     detail_worker_include_inactive: bool = False
     detail_worker_triggered_by: str = "detail-worker"
+    detail_worker_retry_cooldown_seconds: int = 3600
+    detail_worker_max_retry_cooldown_seconds: int = 86400
 
     @property
     def database_url(self) -> str:

@@ -36,6 +36,9 @@
   - локальный batch `1000` доказал рабочий путь `backlog -> hh detail API -> raw payload/snapshot/state`
   - HTTP 404 detail responses закрываются как `terminal_404`, чтобы не ретраить протухшие вакансии бесконечно
   - добавлены first-detail backlog metrics и alert rules
+  - repeated non-terminal detail failures проходят через exponential cooldown перед следующим retry
+  - добавлены Grafana panels для open/ready/cooldown backlog и drain outcome mix
+  - controlled `detail-worker --once --batch-size 25` после dashboard-слайса прошёл успешно: `24` detail snapshots, `1` terminal_404, `0` retryable failures, `~1.88 req/s`, DB delta `270336 bytes`
 
 ## Что ещё не доказано
 
@@ -43,16 +46,14 @@
 - Run-level resilience к transient transport/DNS outage без потери почти готового baseline.
 - Автоматический bounded run-level retry budget для repeated transport failures; сейчас есть operator recovery path, но не полный self-healing contour.
 - `first-detail` backlog на масштабе полного baseline: bounded batch доказан, но полный drain ещё не завершён.
-- Dashboard panels для first-detail backlog metrics.
-- Cooldown/backoff для repeated non-terminal detail failures.
 - Многодневная unattended production stability.
 
 ## Текущий practical reading
 
-На 2026-04-03 система уже выглядит готовой не к "первой попытке baseline", а к следующему operational этапу:
+На 2026-04-27 система уже выглядит готовой не к "первой попытке baseline", а к следующему operational этапу:
 
-1. Довести локальный first-detail contour до наблюдаемого `detail-worker` run с понятной скоростью и storage growth.
-2. Добавить dashboard panels для first-detail backlog.
+1. Провести более длинный supervised `detail-worker` run для уточнения throughput и storage growth.
+2. Оформить production alert delivery.
 3. Transport/resume hardening, чтобы не терять почти завершённый run из-за единичного outage.
 4. Затем VPS pilot на более стабильном хосте и полный `search-only` baseline.
 5. После baseline включить supervised `search + detail drain` contour.

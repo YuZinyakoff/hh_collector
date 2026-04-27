@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -22,6 +23,8 @@ LOGGER = logging.getLogger(__name__)
 FIRST_DETAIL_BACKLOG_REASON = "first_detail_backlog"
 DRAIN_FIRST_DETAIL_BACKLOG_STATUS_SUCCEEDED = "succeeded"
 DRAIN_FIRST_DETAIL_BACKLOG_STATUS_COMPLETED_WITH_FAILURES = "completed_with_failures"
+DEFAULT_FIRST_DETAIL_RETRY_COOLDOWN_SECONDS = 3600
+DEFAULT_FIRST_DETAIL_MAX_RETRY_COOLDOWN_SECONDS = 86400
 
 
 @dataclass(slots=True, frozen=True)
@@ -29,6 +32,8 @@ class DrainFirstDetailBacklogCommand:
     limit: int = 100
     triggered_by: str = "drain-first-detail-backlog"
     include_inactive: bool = False
+    retry_cooldown_seconds: int = DEFAULT_FIRST_DETAIL_RETRY_COOLDOWN_SECONDS
+    max_retry_cooldown_seconds: int = DEFAULT_FIRST_DETAIL_MAX_RETRY_COOLDOWN_SECONDS
 
     def __post_init__(self) -> None:
         normalized_triggered_by = self.triggered_by.strip()
@@ -36,6 +41,18 @@ class DrainFirstDetailBacklogCommand:
             raise ValueError("limit must be greater than or equal to zero")
         if not normalized_triggered_by:
             raise ValueError("triggered_by must not be empty")
+        if self.retry_cooldown_seconds < 0:
+            raise ValueError("retry_cooldown_seconds must be greater than or equal to zero")
+        if self.max_retry_cooldown_seconds < 0:
+            raise ValueError("max_retry_cooldown_seconds must be greater than or equal to zero")
+        if (
+            self.retry_cooldown_seconds > 0
+            and self.max_retry_cooldown_seconds < self.retry_cooldown_seconds
+        ):
+            raise ValueError(
+                "max_retry_cooldown_seconds must be greater than or equal to "
+                "retry_cooldown_seconds"
+            )
 
         object.__setattr__(self, "triggered_by", normalized_triggered_by)
 
@@ -77,8 +94,12 @@ class DrainFirstDetailBacklogResult:
     triggered_by: str
     include_inactive: bool
     limit: int
+    retry_cooldown_seconds: int
+    max_retry_cooldown_seconds: int
     backlog_size_before: int
+    ready_backlog_size_before: int
     backlog_size_after: int
+    ready_backlog_size_after: int
     item_results: tuple[FirstDetailBacklogItemResult, ...]
 
     @property
@@ -105,18 +126,39 @@ class DrainFirstDetailBacklogResult:
             - self.detail_fetch_terminal
         )
 
+    @property
+    def cooldown_skipped_before(self) -> int:
+        return max(self.backlog_size_before - self.ready_backlog_size_before, 0)
+
+    @property
+    def cooldown_skipped_after(self) -> int:
+        return max(self.backlog_size_after - self.ready_backlog_size_after, 0)
+
 
 class VacancyCurrentStateRepository(Protocol):
     def count_first_detail_backlog(self, *, include_inactive: bool) -> int:
         """Return current vacancies that still have no successful detail payload."""
+
+    def count_first_detail_backlog_ready(
+        self,
+        *,
+        include_inactive: bool,
+        retry_cooldown_seconds: int,
+        max_retry_cooldown_seconds: int,
+        now: datetime,
+    ) -> int:
+        """Return first-detail backlog rows that are not currently cooling down."""
 
     def list_first_detail_backlog(
         self,
         *,
         limit: int,
         include_inactive: bool,
+        retry_cooldown_seconds: int,
+        max_retry_cooldown_seconds: int,
+        now: datetime,
     ) -> list[VacancyCurrentState]:
-        """Return a bounded deterministic first-detail backlog batch."""
+        """Return a bounded deterministic first-detail backlog batch ready to fetch."""
 
 
 class DetailFetchAttemptRepository(Protocol):
@@ -138,6 +180,8 @@ class FirstDetailBacklogMetricsRecorder(Protocol):
         *,
         include_inactive: bool,
         backlog_size: int,
+        ready_backlog_size: int,
+        cooldown_backlog_size: int,
     ) -> None:
         """Persist current global first-detail backlog size."""
 
@@ -162,20 +206,34 @@ def drain_first_detail_backlog(
     fetch_vacancy_detail_step: FetchVacancyDetailStep,
     metrics_recorder: FirstDetailBacklogMetricsRecorder | None = None,
 ) -> DrainFirstDetailBacklogResult:
+    now = datetime.now(UTC)
     started_at = log_operation_started(
         LOGGER,
         operation="drain_first_detail_backlog",
         limit=command.limit,
         include_inactive=command.include_inactive,
+        retry_cooldown_seconds=command.retry_cooldown_seconds,
+        max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
         triggered_by=command.triggered_by,
     )
     try:
         backlog_size_before = vacancy_current_state_repository.count_first_detail_backlog(
             include_inactive=command.include_inactive
         )
+        ready_backlog_size_before = (
+            vacancy_current_state_repository.count_first_detail_backlog_ready(
+                include_inactive=command.include_inactive,
+                retry_cooldown_seconds=command.retry_cooldown_seconds,
+                max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
+                now=now,
+            )
+        )
         candidate_states = vacancy_current_state_repository.list_first_detail_backlog(
             limit=command.limit,
             include_inactive=command.include_inactive,
+            retry_cooldown_seconds=command.retry_cooldown_seconds,
+            max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
+            now=now,
         )
         latest_attempt_numbers = (
             detail_fetch_attempt_repository.latest_attempt_numbers_by_vacancy_ids(
@@ -196,6 +254,14 @@ def drain_first_detail_backlog(
         backlog_size_after = vacancy_current_state_repository.count_first_detail_backlog(
             include_inactive=command.include_inactive
         )
+        ready_backlog_size_after = (
+            vacancy_current_state_repository.count_first_detail_backlog_ready(
+                include_inactive=command.include_inactive,
+                retry_cooldown_seconds=command.retry_cooldown_seconds,
+                max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
+                now=now,
+            )
+        )
     except Exception as error:
         record_operation_failed(
             LOGGER,
@@ -205,6 +271,8 @@ def drain_first_detail_backlog(
             error_message=str(error),
             limit=command.limit,
             include_inactive=command.include_inactive,
+            retry_cooldown_seconds=command.retry_cooldown_seconds,
+            max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
             triggered_by=command.triggered_by,
         )
         raise
@@ -219,14 +287,20 @@ def drain_first_detail_backlog(
         triggered_by=command.triggered_by,
         include_inactive=command.include_inactive,
         limit=command.limit,
+        retry_cooldown_seconds=command.retry_cooldown_seconds,
+        max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
         backlog_size_before=backlog_size_before,
+        ready_backlog_size_before=ready_backlog_size_before,
         backlog_size_after=backlog_size_after,
+        ready_backlog_size_after=ready_backlog_size_after,
         item_results=item_results,
     )
     if metrics_recorder is not None:
         metrics_recorder.set_first_detail_backlog(
             include_inactive=result.include_inactive,
             backlog_size=result.backlog_size_after,
+            ready_backlog_size=result.ready_backlog_size_after,
+            cooldown_backlog_size=result.cooldown_skipped_after,
         )
         metrics_recorder.record_first_detail_drain_attempt(
             include_inactive=result.include_inactive,
@@ -249,7 +323,11 @@ def drain_first_detail_backlog(
             include_inactive=result.include_inactive,
             triggered_by=result.triggered_by,
             backlog_size_before=result.backlog_size_before,
+            ready_backlog_size_before=result.ready_backlog_size_before,
+            cooldown_skipped_before=result.cooldown_skipped_before,
             backlog_size_after=result.backlog_size_after,
+            ready_backlog_size_after=result.ready_backlog_size_after,
+            cooldown_skipped_after=result.cooldown_skipped_after,
             selected_count=result.selected_count,
             detail_fetch_succeeded=result.detail_fetch_succeeded,
             detail_fetch_terminal=result.detail_fetch_terminal,
@@ -264,9 +342,15 @@ def drain_first_detail_backlog(
         records_written={"vacancy_detail": result.detail_fetch_succeeded},
         limit=result.limit,
         include_inactive=result.include_inactive,
+        retry_cooldown_seconds=result.retry_cooldown_seconds,
+        max_retry_cooldown_seconds=result.max_retry_cooldown_seconds,
         triggered_by=result.triggered_by,
         backlog_size_before=result.backlog_size_before,
+        ready_backlog_size_before=result.ready_backlog_size_before,
+        cooldown_skipped_before=result.cooldown_skipped_before,
         backlog_size_after=result.backlog_size_after,
+        ready_backlog_size_after=result.ready_backlog_size_after,
+        cooldown_skipped_after=result.cooldown_skipped_after,
         selected_count=result.selected_count,
         detail_fetch_succeeded=result.detail_fetch_succeeded,
         detail_fetch_terminal=result.detail_fetch_terminal,

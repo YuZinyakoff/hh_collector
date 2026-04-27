@@ -24,12 +24,13 @@
 - Локально проверен batch `1000`: `962` detail snapshots, `38` HTTP 404, средняя скорость около `2.9 req/s`.
 - HTTP 404 detail responses закрываются как `terminal_404` и не остаются retryable backlog.
 - Добавлены first-detail backlog metrics и alert rules.
+- Добавлен exponential cooldown для repeated non-terminal detail failures.
+- Добавлены Grafana panels для first-detail open/ready/cooldown backlog и drain outcomes.
+- Controlled local `detail-worker --once --batch-size 25` прошёл успешно: `24` detail snapshots, `1` terminal_404, `0` retryable failures, `~1.88 req/s`, DB delta `270336 bytes`.
 
 ## 2. Что ещё не готово
 
 - `first-detail` backlog ещё не прогнан на масштабе полного baseline.
-- Нет dashboard panels для first-detail backlog metrics.
-- Нет cooldown/backoff для repeated non-terminal detail failures.
 - Нет production alert delivery; dashboards/metrics foundation есть, но уведомления ещё не оформлены.
 - Нет многодневного unattended production signal.
 
@@ -193,7 +194,7 @@ docker compose --profile ops run --rm app sync-retention-archive-offsite --trigg
 
 1. Запустить MVP first-detail drain на bounded batch.
 2. Замерить detail throughput, failure mix и storage growth.
-3. Добавить dashboard panels и cooldown/backoff для repeated non-terminal detail failures.
+3. Оформить alert delivery.
 4. Провести supervised `search + detail drain` week.
 5. Только потом месячное unattended окно.
 

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import and_, func, not_, or_, select
+from sqlalchemy import and_, bindparam, func, not_, or_, select, text, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.selectable import Subquery
 
 from hhru_platform.application.dto import ObservedVacancyRecord
 from hhru_platform.domain.entities.vacancy_current_state import (
@@ -17,6 +18,7 @@ from hhru_platform.domain.entities.vacancy_current_state import (
     VacancyCurrentStateReconciliationUpdate,
 )
 from hhru_platform.domain.value_objects.enums import DetailFetchStatus
+from hhru_platform.infrastructure.db.models.detail_fetch_attempt import DetailFetchAttempt
 from hhru_platform.infrastructure.db.models.vacancy_current_state import (
     VacancyCurrentState as VacancyCurrentStateModel,
 )
@@ -158,18 +160,64 @@ class SqlAlchemyVacancyCurrentStateRepository:
         )
         return int(self._session.scalar(statement) or 0)
 
+    def count_first_detail_backlog_ready(
+        self,
+        *,
+        include_inactive: bool,
+        retry_cooldown_seconds: int = 0,
+        max_retry_cooldown_seconds: int = 0,
+        now: datetime | None = None,
+    ) -> int:
+        latest_failed_attempts = _latest_failed_detail_attempts_subquery()
+        statement = (
+            select(func.count())
+            .select_from(VacancyCurrentStateModel)
+            .outerjoin(
+                latest_failed_attempts,
+                VacancyCurrentStateModel.vacancy_id
+                == latest_failed_attempts.c.vacancy_id,
+            )
+            .where(
+                *_first_detail_backlog_filters(include_inactive=include_inactive),
+                _detail_retry_ready_filter(
+                    latest_failed_attempts=latest_failed_attempts,
+                    retry_cooldown_seconds=retry_cooldown_seconds,
+                    max_retry_cooldown_seconds=max_retry_cooldown_seconds,
+                    now=now or datetime.now(UTC),
+                ),
+            )
+        )
+        return int(self._session.scalar(statement) or 0)
+
     def list_first_detail_backlog(
         self,
         *,
         limit: int,
         include_inactive: bool,
+        retry_cooldown_seconds: int = 0,
+        max_retry_cooldown_seconds: int = 0,
+        now: datetime | None = None,
     ) -> list[VacancyCurrentStateEntity]:
         if limit <= 0:
             return []
 
+        latest_failed_attempts = _latest_failed_detail_attempts_subquery()
         statement = (
             select(VacancyCurrentStateModel)
+            .outerjoin(
+                latest_failed_attempts,
+                VacancyCurrentStateModel.vacancy_id
+                == latest_failed_attempts.c.vacancy_id,
+            )
             .where(*_first_detail_backlog_filters(include_inactive=include_inactive))
+            .where(
+                _detail_retry_ready_filter(
+                    latest_failed_attempts=latest_failed_attempts,
+                    retry_cooldown_seconds=retry_cooldown_seconds,
+                    max_retry_cooldown_seconds=max_retry_cooldown_seconds,
+                    now=now or datetime.now(UTC),
+                )
+            )
             .order_by(
                 VacancyCurrentStateModel.first_seen_at,
                 VacancyCurrentStateModel.last_seen_at.desc(),
@@ -241,3 +289,63 @@ def _first_detail_backlog_filters(*, include_inactive: bool) -> list[ColumnEleme
     if not include_inactive:
         filters.append(VacancyCurrentStateModel.is_probably_inactive.is_(False))
     return filters
+
+
+def _latest_failed_detail_attempts_subquery() -> Subquery:
+    ranked_attempts = (
+        select(
+            DetailFetchAttempt.vacancy_id.label("vacancy_id"),
+            DetailFetchAttempt.attempt.label("attempt"),
+            func.coalesce(
+                DetailFetchAttempt.finished_at,
+                DetailFetchAttempt.requested_at,
+            ).label("attempted_at"),
+            func.row_number()
+            .over(
+                partition_by=DetailFetchAttempt.vacancy_id,
+                order_by=(
+                    DetailFetchAttempt.requested_at.desc(),
+                    DetailFetchAttempt.id.desc(),
+                ),
+            )
+            .label("rank"),
+        )
+        .where(DetailFetchAttempt.status == DetailFetchStatus.FAILED.value)
+        .subquery("latest_detail_attempt_ranked")
+    )
+    return (
+        select(
+            ranked_attempts.c.vacancy_id,
+            ranked_attempts.c.attempt,
+            ranked_attempts.c.attempted_at,
+        )
+        .where(ranked_attempts.c.rank == 1)
+        .subquery("latest_detail_attempt")
+    )
+
+
+def _detail_retry_ready_filter(
+    *,
+    latest_failed_attempts: Subquery,
+    retry_cooldown_seconds: int,
+    max_retry_cooldown_seconds: int,
+    now: datetime,
+) -> ColumnElement[bool]:
+    if retry_cooldown_seconds <= 0:
+        return true()
+
+    capped_retry_exponent = func.least(
+        func.greatest(latest_failed_attempts.c.attempt - 1, 0),
+        16,
+    )
+    cooldown_seconds = func.least(
+        bindparam("max_retry_cooldown_seconds", max_retry_cooldown_seconds),
+        bindparam("retry_cooldown_seconds", retry_cooldown_seconds)
+        * func.power(2, capped_retry_exponent),
+    )
+    return or_(
+        latest_failed_attempts.c.vacancy_id.is_(None),
+        latest_failed_attempts.c.attempted_at
+        <= bindparam("detail_retry_now", now)
+        - (cooldown_seconds * text("INTERVAL '1 second'")),
+    )

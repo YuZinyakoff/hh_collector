@@ -82,6 +82,8 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
     registry.set_first_detail_backlog(
         include_inactive=False,
         backlog_size=42,
+        ready_backlog_size=35,
+        cooldown_backlog_size=7,
     )
     registry.record_first_detail_drain_attempt(
         include_inactive=False,
@@ -163,6 +165,8 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
     assert 'hhru_detail_repair_repaired_total{run_type="weekly_sweep"} 1' in rendered
     assert 'hhru_detail_repair_still_failing_total{run_type="weekly_sweep"} 1' in rendered
     assert 'hhru_first_detail_backlog_size{scope="active"} 42.000000' in rendered
+    assert 'hhru_first_detail_ready_backlog_size{scope="active"} 35.000000' in rendered
+    assert 'hhru_first_detail_cooldown_backlog_size{scope="active"} 7.000000' in rendered
     assert (
         'hhru_first_detail_drain_attempt_total{scope="active",outcome="succeeded"} 1'
         in rendered

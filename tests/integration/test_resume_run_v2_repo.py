@@ -18,24 +18,16 @@ from hhru_platform.application.commands.finalize_crawl_run import (
 from hhru_platform.application.commands.process_partition_v2 import (
     ProcessPartitionV2Result,
 )
-from hhru_platform.application.commands.reconcile_run import (
-    ReconcileRunCommand,
-    reconcile_run,
-)
+from hhru_platform.application.commands.reconcile_run import ReconcileRunResult
 from hhru_platform.application.commands.report_run_coverage import report_run_coverage
 from hhru_platform.application.commands.resume_run_v2 import (
     ResumeRunV2Command,
     resume_run_v2,
 )
 from hhru_platform.application.commands.run_list_engine_v2 import RunListEngineV2Result
-from hhru_platform.application.policies.reconciliation import (
-    MissingRunsReconciliationPolicyV1,
-)
 from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyCrawlPartitionRepository,
     SqlAlchemyCrawlRunRepository,
-    SqlAlchemyVacancyCurrentStateRepository,
-    SqlAlchemyVacancySeenEventRepository,
 )
 from hhru_platform.infrastructure.db.session import (
     create_engine_from_settings,
@@ -75,8 +67,6 @@ def test_resume_run_v2_requeues_unresolved_partition_and_completes_existing_run(
         with session_scope(session_factory) as session:
             crawl_run_repository = SqlAlchemyCrawlRunRepository(session)
             crawl_partition_repository = SqlAlchemyCrawlPartitionRepository(session)
-            vacancy_seen_event_repository = SqlAlchemyVacancySeenEventRepository(session)
-            vacancy_current_state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
             crawl_run = create_crawl_run(
                 CreateCrawlRunCommand(
                     run_type="weekly_sweep",
@@ -154,17 +144,11 @@ def test_resume_run_v2_requeues_unresolved_partition_and_completes_existing_run(
                 fetch_vacancy_detail_step=lambda step_command: (_ for _ in ()).throw(
                     AssertionError(f"unexpected detail fetch {step_command.vacancy_id}")
                 ),
-                reconcile_run_step=lambda step_command: reconcile_run(
-                    ReconcileRunCommand(
-                        crawl_run_id=step_command.crawl_run_id,
-                        final_run_status=step_command.final_run_status,
-                        notes=step_command.notes,
-                    ),
+                reconcile_run_step=lambda step_command: _complete_run_for_resume_test(
                     crawl_run_repository=crawl_run_repository,
-                    crawl_partition_repository=crawl_partition_repository,
-                    vacancy_seen_event_repository=vacancy_seen_event_repository,
-                    vacancy_current_state_repository=vacancy_current_state_repository,
-                    reconciliation_policy=MissingRunsReconciliationPolicyV1(),
+                    crawl_run_id=step_command.crawl_run_id,
+                    final_run_status=step_command.final_run_status,
+                    notes=step_command.notes,
                 ),
                 finalize_crawl_run_step=lambda step_command: finalize_crawl_run(
                     FinalizeCrawlRunCommand(
@@ -242,8 +226,6 @@ def test_resume_run_v2_requeues_failed_partition_from_failed_run() -> None:
         with session_scope(session_factory) as session:
             crawl_run_repository = SqlAlchemyCrawlRunRepository(session)
             crawl_partition_repository = SqlAlchemyCrawlPartitionRepository(session)
-            vacancy_seen_event_repository = SqlAlchemyVacancySeenEventRepository(session)
-            vacancy_current_state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
             crawl_run = create_crawl_run(
                 CreateCrawlRunCommand(
                     run_type="weekly_sweep",
@@ -321,17 +303,11 @@ def test_resume_run_v2_requeues_failed_partition_from_failed_run() -> None:
                 fetch_vacancy_detail_step=lambda step_command: (_ for _ in ()).throw(
                     AssertionError(f"unexpected detail fetch {step_command.vacancy_id}")
                 ),
-                reconcile_run_step=lambda step_command: reconcile_run(
-                    ReconcileRunCommand(
-                        crawl_run_id=step_command.crawl_run_id,
-                        final_run_status=step_command.final_run_status,
-                        notes=step_command.notes,
-                    ),
+                reconcile_run_step=lambda step_command: _complete_run_for_resume_test(
                     crawl_run_repository=crawl_run_repository,
-                    crawl_partition_repository=crawl_partition_repository,
-                    vacancy_seen_event_repository=vacancy_seen_event_repository,
-                    vacancy_current_state_repository=vacancy_current_state_repository,
-                    reconciliation_policy=MissingRunsReconciliationPolicyV1(),
+                    crawl_run_id=step_command.crawl_run_id,
+                    final_run_status=step_command.final_run_status,
+                    notes=step_command.notes,
                 ),
                 finalize_crawl_run_step=lambda step_command: finalize_crawl_run(
                     FinalizeCrawlRunCommand(
@@ -397,3 +373,27 @@ def test_resume_run_v2_requeues_failed_partition_from_failed_run() -> None:
                     {"crawl_run_id": created_run_id},
                 )
         engine.dispose()
+
+
+def _complete_run_for_resume_test(
+    *,
+    crawl_run_repository: SqlAlchemyCrawlRunRepository,
+    crawl_run_id: UUID,
+    final_run_status: str,
+    notes: str | None,
+) -> ReconcileRunResult:
+    completed_run = crawl_run_repository.complete(
+        run_id=crawl_run_id,
+        status=final_run_status,
+        finished_at=datetime(2026, 3, 20, 11, 0, tzinfo=UTC),
+        partitions_done=1,
+        partitions_failed=0,
+        notes=notes,
+    )
+    return ReconcileRunResult(
+        crawl_run_id=completed_run.id,
+        observed_in_run_count=0,
+        missing_updated_count=0,
+        marked_inactive_count=0,
+        run_status=completed_run.status,
+    )

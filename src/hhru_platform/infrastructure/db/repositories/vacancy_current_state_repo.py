@@ -4,9 +4,10 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from hhru_platform.application.dto import ObservedVacancyRecord
 from hhru_platform.domain.entities.vacancy_current_state import (
@@ -15,6 +16,7 @@ from hhru_platform.domain.entities.vacancy_current_state import (
 from hhru_platform.domain.entities.vacancy_current_state import (
     VacancyCurrentStateReconciliationUpdate,
 )
+from hhru_platform.domain.value_objects.enums import DetailFetchStatus
 from hhru_platform.infrastructure.db.models.vacancy_current_state import (
     VacancyCurrentState as VacancyCurrentStateModel,
 )
@@ -96,6 +98,10 @@ class SqlAlchemyVacancyCurrentStateRepository:
         detail_hash: str | None,
         detail_fetch_status: str,
     ) -> None:
+        should_record_fetch_time = (
+            detail_hash is not None
+            or detail_fetch_status == DetailFetchStatus.TERMINAL_404.value
+        )
         insert_statement = insert(VacancyCurrentStateModel).values(
             [
                 {
@@ -106,7 +112,7 @@ class SqlAlchemyVacancyCurrentStateRepository:
                     "consecutive_missing_runs": 0,
                     "is_probably_inactive": False,
                     "last_detail_hash": detail_hash,
-                    "last_detail_fetched_at": recorded_at if detail_hash is not None else None,
+                    "last_detail_fetched_at": recorded_at if should_record_fetch_time else None,
                     "detail_fetch_status": detail_fetch_status,
                     "updated_at": recorded_at,
                 }
@@ -122,7 +128,7 @@ class SqlAlchemyVacancyCurrentStateRepository:
                 ),
                 "last_detail_fetched_at": (
                     insert_statement.excluded.last_detail_fetched_at
-                    if detail_hash is not None
+                    if should_record_fetch_time
                     else VacancyCurrentStateModel.last_detail_fetched_at
                 ),
                 "detail_fetch_status": insert_statement.excluded.detail_fetch_status,
@@ -141,6 +147,35 @@ class SqlAlchemyVacancyCurrentStateRepository:
             select(VacancyCurrentStateModel)
             .where(VacancyCurrentStateModel.last_seen_run_id == crawl_run_id)
             .order_by(VacancyCurrentStateModel.vacancy_id)
+        )
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def count_first_detail_backlog(self, *, include_inactive: bool) -> int:
+        statement = (
+            select(func.count())
+            .select_from(VacancyCurrentStateModel)
+            .where(*_first_detail_backlog_filters(include_inactive=include_inactive))
+        )
+        return int(self._session.scalar(statement) or 0)
+
+    def list_first_detail_backlog(
+        self,
+        *,
+        limit: int,
+        include_inactive: bool,
+    ) -> list[VacancyCurrentStateEntity]:
+        if limit <= 0:
+            return []
+
+        statement = (
+            select(VacancyCurrentStateModel)
+            .where(*_first_detail_backlog_filters(include_inactive=include_inactive))
+            .order_by(
+                VacancyCurrentStateModel.first_seen_at,
+                VacancyCurrentStateModel.last_seen_at.desc(),
+                VacancyCurrentStateModel.vacancy_id,
+            )
+            .limit(limit)
         )
         return [self._to_entity(model) for model in self._session.scalars(statement)]
 
@@ -190,3 +225,19 @@ def _batched(
         observations[index : index + batch_size]
         for index in range(0, len(observations), batch_size)
     ]
+
+
+def _first_detail_backlog_filters(*, include_inactive: bool) -> list[ColumnElement[bool]]:
+    closed_succeeded = and_(
+        VacancyCurrentStateModel.detail_fetch_status == DetailFetchStatus.SUCCEEDED.value,
+        VacancyCurrentStateModel.last_detail_fetched_at.is_not(None),
+    )
+    closed_terminal_404 = (
+        VacancyCurrentStateModel.detail_fetch_status == DetailFetchStatus.TERMINAL_404.value
+    )
+    filters = [
+        not_(or_(closed_succeeded, closed_terminal_404)),
+    ]
+    if not include_inactive:
+        filters.append(VacancyCurrentStateModel.is_probably_inactive.is_(False))
+    return filters

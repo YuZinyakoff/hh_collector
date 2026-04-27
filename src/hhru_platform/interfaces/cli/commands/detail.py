@@ -8,6 +8,12 @@ from hhru_platform.application.commands.backfill_vacancy_snapshots import (
     BackfillVacancySnapshotsCommand,
     backfill_vacancy_snapshots,
 )
+from hhru_platform.application.commands.drain_first_detail_backlog import (
+    DRAIN_FIRST_DETAIL_BACKLOG_STATUS_SUCCEEDED,
+    DrainFirstDetailBacklogCommand,
+    DrainFirstDetailBacklogResult,
+    drain_first_detail_backlog,
+)
 from hhru_platform.application.commands.fetch_vacancy_detail import (
     FetchVacancyDetailCommand,
     FetchVacancyDetailResult,
@@ -73,6 +79,29 @@ def register_detail_commands(
         ),
     )
     retry_parser.set_defaults(handler=handle_retry_failed_details)
+
+    drain_parser = subparsers.add_parser(
+        "drain-first-detail-backlog",
+        help="Fetch details for vacancies that still have no successful detail payload.",
+    )
+    drain_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum number of backlog vacancies to fetch. Defaults to 100.",
+    )
+    drain_parser.add_argument(
+        "--include-inactive",
+        choices=("yes", "no"),
+        default="no",
+        help="Whether to include probably inactive vacancies. Defaults to no.",
+    )
+    drain_parser.add_argument(
+        "--triggered-by",
+        default="drain-first-detail-backlog",
+        help="Actor or subsystem that initiated the backlog drain.",
+    )
+    drain_parser.set_defaults(handler=handle_drain_first_detail_backlog)
 
     backfill_parser = subparsers.add_parser(
         "backfill-vacancy-snapshots",
@@ -163,6 +192,36 @@ def handle_retry_failed_details(args: argparse.Namespace) -> int:
     return 0 if result.status == "succeeded" else 1
 
 
+def handle_drain_first_detail_backlog(args: argparse.Namespace) -> int:
+    command = DrainFirstDetailBacklogCommand(
+        limit=int(args.limit),
+        include_inactive=_parse_yes_no(str(args.include_inactive)),
+        triggered_by=str(args.triggered_by),
+    )
+    api_client = HHApiClient.from_settings()
+
+    try:
+        with session_scope() as session:
+            result = drain_first_detail_backlog(
+                command,
+                vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(
+                    session
+                ),
+                detail_fetch_attempt_repository=SqlAlchemyDetailFetchAttemptRepository(session),
+                fetch_vacancy_detail_step=lambda step_command: _execute_fetch_detail_step(
+                    step_command,
+                    api_client=api_client,
+                ),
+                metrics_recorder=get_metrics_registry(),
+            )
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_drain_first_detail_backlog_summary(result)
+    return 0 if result.status == DRAIN_FIRST_DETAIL_BACKLOG_STATUS_SUCCEEDED else 1
+
+
 def handle_backfill_vacancy_snapshots(args: argparse.Namespace) -> int:
     command = BackfillVacancySnapshotsCommand(
         batch_size=int(args.batch_size),
@@ -235,3 +294,40 @@ def _print_retry_failed_details_summary(result: RetryFailedDetailsResult) -> Non
             f"attempt_id={detail_result.detail_fetch_attempt_id} "
             f"error={detail_result.error_message or '-'}"
         )
+
+
+def _print_drain_first_detail_backlog_summary(
+    result: DrainFirstDetailBacklogResult,
+) -> None:
+    if result.status == DRAIN_FIRST_DETAIL_BACKLOG_STATUS_SUCCEEDED:
+        print("completed drain-first-detail-backlog")
+    else:
+        print("completed drain-first-detail-backlog with failures")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"include_inactive={'yes' if result.include_inactive else 'no'}")
+    print(f"limit={result.limit}")
+    print(f"backlog_size_before={result.backlog_size_before}")
+    print(f"selected_count={result.selected_count}")
+    print(f"detail_fetch_attempted={result.detail_fetch_attempted}")
+    print(f"detail_fetch_succeeded={result.detail_fetch_succeeded}")
+    print(f"detail_fetch_terminal={result.detail_fetch_terminal}")
+    print(f"detail_fetch_failed={result.detail_fetch_failed}")
+    print(f"backlog_size_after={result.backlog_size_after}")
+    for item in result.item_results:
+        print(
+            "vacancy="
+            f"{item.vacancy_id} "
+            f"detail_fetch_status={item.detail_fetch_status} "
+            f"attempt_id={item.detail_fetch_attempt_id or '-'} "
+            f"error={item.error_message or '-'}"
+        )
+
+
+def _parse_yes_no(value: str) -> bool:
+    normalized_value = value.strip().lower()
+    if normalized_value == "yes":
+        return True
+    if normalized_value == "no":
+        return False
+    raise ValueError("value must be either yes or no")

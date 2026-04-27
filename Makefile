@@ -4,7 +4,8 @@ COMPOSE ?= docker compose
 ARGS ?=
 
 .PHONY: up up-observability up-scheduler down migrate migrate-compose test lint format \
-	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop run-housekeeping \
+	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop worker-detail \
+	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill compose-health compose-show-metrics \
 	backup verify-backup restore restore-drill soak-test soak-test-no-build
 
@@ -50,6 +51,12 @@ trigger-run-now:
 
 scheduler-loop:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main scheduler-loop $(ARGS)
+
+drain-first-detail-backlog:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main drain-first-detail-backlog $(ARGS)
+
+worker-detail:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.workers.detail_worker $(ARGS)
 
 run-housekeeping:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-housekeeping $(ARGS)

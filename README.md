@@ -108,6 +108,7 @@ make format
 make create-run
 make sync-dictionaries
 make run-local-sweep
+make drain-first-detail-backlog
 make worker-list
 make worker-detail
 make scheduler

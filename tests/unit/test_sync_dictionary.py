@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import hhru_platform.application.commands.sync_dictionary as sync_dictionary_module
-
 from hhru_platform.application.commands.sync_dictionary import (
     SyncDictionaryCommand,
     sync_dictionary,

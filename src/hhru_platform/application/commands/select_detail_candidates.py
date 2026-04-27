@@ -15,6 +15,10 @@ DETAIL_REASON_PRIORITY = {
     "short_changed": 1,
     "ttl_refresh": 2,
 }
+DETAIL_CLOSED_STATUSES = {
+    DetailFetchStatus.SUCCEEDED.value,
+    DetailFetchStatus.TERMINAL_404.value,
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -135,16 +139,28 @@ def _decide_candidate_reason(
     previous_short_hash: str | None,
     ttl_cutoff: datetime,
 ) -> str | None:
+    if vacancy_state.detail_fetch_status == DetailFetchStatus.TERMINAL_404.value:
+        if _short_hash_changed(
+            previous_short_hash=previous_short_hash,
+            current_short_hash=vacancy_state.last_short_hash,
+        ):
+            return "short_changed"
+        if (
+            vacancy_state.last_detail_fetched_at is not None
+            and vacancy_state.last_detail_fetched_at <= ttl_cutoff
+        ):
+            return "ttl_refresh"
+        return None
+
     if (
         vacancy_state.last_detail_fetched_at is None
-        or vacancy_state.detail_fetch_status != DetailFetchStatus.SUCCEEDED.value
+        or vacancy_state.detail_fetch_status not in DETAIL_CLOSED_STATUSES
     ):
         return "first_seen"
 
-    if (
-        previous_short_hash is not None
-        and vacancy_state.last_short_hash is not None
-        and previous_short_hash != vacancy_state.last_short_hash
+    if _short_hash_changed(
+        previous_short_hash=previous_short_hash,
+        current_short_hash=vacancy_state.last_short_hash,
     ):
         return "short_changed"
 
@@ -152,3 +168,15 @@ def _decide_candidate_reason(
         return "ttl_refresh"
 
     return None
+
+
+def _short_hash_changed(
+    *,
+    previous_short_hash: str | None,
+    current_short_hash: str | None,
+) -> bool:
+    return (
+        previous_short_hash is not None
+        and current_short_hash is not None
+        and previous_short_hash != current_short_hash
+    )

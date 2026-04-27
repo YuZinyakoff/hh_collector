@@ -56,7 +56,7 @@ def test_hh_api_client_includes_bearer_token_when_configured(monkeypatch) -> Non
         def read(self) -> bytes:
             return b'{"items":[],"found":0,"pages":0}'
 
-        def __enter__(self) -> "FakeResponse":
+        def __enter__(self) -> FakeResponse:
             return self
 
         def __exit__(self, exc_type, exc, tb) -> bool:
@@ -119,7 +119,7 @@ def test_hh_api_client_classifies_incomplete_read_as_transport_error(monkeypatch
         def read(self) -> bytes:
             raise IncompleteRead(b'{"items":[]', 32)
 
-        def __enter__(self) -> "FakeResponse":
+        def __enter__(self) -> FakeResponse:
             return self
 
         def __exit__(self, exc_type, exc, tb) -> bool:

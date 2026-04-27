@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import hhru_platform.application.commands.fetch_vacancy_detail as fetch_vacancy_detail_module
-
 from hhru_platform.application.commands.fetch_vacancy_detail import (
     FetchVacancyDetailCommand,
     fetch_vacancy_detail,
 )
 from hhru_platform.application.dto import NormalizedVacancyDetail, VacancyDetailResponse
 from hhru_platform.domain.entities.vacancy import Vacancy
+from hhru_platform.domain.value_objects.enums import DetailFetchStatus
 
 
 class InMemoryVacancyRepository:
@@ -263,6 +263,54 @@ def test_fetch_vacancy_detail_retries_transport_failure_once(monkeypatch) -> Non
     assert sleep_calls == [5.0]
 
 
+def test_fetch_vacancy_detail_marks_404_as_terminal() -> None:
+    vacancy = Vacancy(
+        id=uuid4(),
+        hh_vacancy_id="pytest-detail-vacancy",
+        employer_id=None,
+        area_id=None,
+        name_current="Old vacancy name",
+        published_at=None,
+        created_at_hh=None,
+        archived_at_hh=None,
+        alternate_url=None,
+        employment_type_code=None,
+        schedule_type_code=None,
+        experience_code=None,
+        source_type="hh_api",
+    )
+    detail_fetch_attempt_repository = InMemoryDetailFetchAttemptRepository()
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    vacancy_snapshot_repository = InMemoryVacancySnapshotRepository()
+    vacancy_current_state_repository = RecordingVacancyCurrentStateRepository()
+
+    result = fetch_vacancy_detail(
+        FetchVacancyDetailCommand(vacancy_id=vacancy.id),
+        vacancy_repository=InMemoryVacancyRepository(vacancy),
+        api_client=StaticVacancyDetailApiClient(_build_not_found_detail_response()),
+        detail_fetch_attempt_repository=detail_fetch_attempt_repository,
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        vacancy_snapshot_repository=vacancy_snapshot_repository,
+        vacancy_current_state_repository=vacancy_current_state_repository,
+    )
+
+    assert result.detail_fetch_status == DetailFetchStatus.TERMINAL_404.value
+    assert result.snapshot_id is None
+    assert result.raw_payload_id == 1
+    assert result.error_message == "Unexpected status code: 404"
+    assert vacancy_snapshot_repository.records == []
+    assert (
+        vacancy_current_state_repository.records[0]["detail_fetch_status"]
+        == DetailFetchStatus.TERMINAL_404.value
+    )
+    assert (
+        detail_fetch_attempt_repository.records[1]["status"]
+        == DetailFetchStatus.TERMINAL_404.value
+    )
+
+
 def _build_transport_detail_response() -> VacancyDetailResponse:
     return VacancyDetailResponse(
         endpoint="/vacancies/pytest-detail-vacancy",
@@ -277,6 +325,21 @@ def _build_transport_detail_response() -> VacancyDetailResponse:
         payload_json=None,
         error_type="ConnectionResetError",
         error_message="Connection reset by peer",
+    )
+
+
+def _build_not_found_detail_response() -> VacancyDetailResponse:
+    return VacancyDetailResponse(
+        endpoint="/vacancies/pytest-detail-vacancy",
+        method="GET",
+        params_json={},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=404,
+        headers={},
+        latency_ms=42,
+        requested_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 0, 1, tzinfo=UTC),
+        payload_json={"errors": [{"type": "not_found"}]},
     )
 
 

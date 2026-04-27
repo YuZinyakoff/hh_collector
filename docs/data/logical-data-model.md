@@ -339,6 +339,14 @@ Retention semantics:
 - `detail_fetch_status` text default `'not_requested'`
 - `updated_at` timestamptz default `now()`
 
+Detail fetch status semantics:
+
+- `not_requested`: detail payload has not been requested yet;
+- `running`: detail request is in progress;
+- `succeeded`: a detail payload was fetched and normalized into a detail snapshot;
+- `failed`: latest detail request failed and can be retried;
+- `terminal_404`: detail endpoint returned HTTP 404; this closes first-detail backlog without a detail snapshot.
+
 Индексы:
 - `idx_vacancy_current_state_last_seen_at`
 - `idx_vacancy_current_state_inactive`
@@ -402,6 +410,7 @@ Derived repair backlog semantics:
 - repair backlog не хранится отдельной таблицей;
 - backlog для конкретного `crawl_run` вычисляется как latest `detail_fetch_attempt` per `vacancy_id` внутри этого run, где latest status = `failed`;
 - backlog item считается `repaired`, когда более новая попытка для того же `vacancy_id` в этом же `crawl_run` получает status = `succeeded`;
+- latest status = `terminal_404` не считается repairable backlog item;
 - если после retry latest status снова `failed`, item остаётся в backlog и run сохраняет status `completed_with_detail_errors`;
 - reason `repair_backlog` используется для operator-driven retry path и позволяет отделить post-run repair от обычной selective detail policy.
 

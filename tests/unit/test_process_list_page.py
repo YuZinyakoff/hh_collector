@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-import hhru_platform.application.commands.process_list_page as process_list_page_module
 import pytest
 
+import hhru_platform.application.commands.process_list_page as process_list_page_module
 from hhru_platform.application.commands.process_list_page import (
     CrawlPartitionNotFoundError,
     ProcessListPageCommand,
@@ -356,9 +356,9 @@ def test_process_list_page_creates_short_snapshots_only_for_first_seen_or_change
         vacancy_snapshot_repository=vacancy_snapshot_repository,
     )
 
-    unchanged_previous_hashes = {
-        first_result.processed_vacancies[0].id: vacancy_seen_event_repository.observations[0].short_hash
-    }
+    unchanged_vacancy_id = first_result.processed_vacancies[0].id
+    unchanged_short_hash = vacancy_seen_event_repository.observations[0].short_hash
+    unchanged_previous_hashes = {unchanged_vacancy_id: unchanged_short_hash}
     unchanged_snapshot_repository = InMemoryVacancySnapshotRepository()
     process_list_page(
         ProcessListPageCommand(partition_id=partition.id),

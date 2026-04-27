@@ -50,6 +50,9 @@ class MetricsState(TypedDict):
     detail_repair_attempt_total: dict[str, int]
     detail_repair_gauge: dict[str, float]
     detail_repair_total: dict[str, int]
+    first_detail_backlog_gauge: dict[str, float]
+    first_detail_drain_attempt_total: dict[str, int]
+    first_detail_drain_total: dict[str, int]
     housekeeping_run_total: dict[str, int]
     housekeeping_gauge: dict[str, float]
     housekeeping_status_gauge: dict[str, float]
@@ -112,6 +115,7 @@ SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC: Final[str] = (
     "hhru_scheduler_last_observed_run_status"
 )
 DETAIL_REPAIR_BACKLOG_METRIC: Final[str] = "hhru_detail_repair_backlog_size"
+FIRST_DETAIL_BACKLOG_METRIC: Final[str] = "hhru_first_detail_backlog_size"
 HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC: Final[str] = (
     "hhru_housekeeping_last_run_timestamp_seconds"
 )
@@ -127,6 +131,20 @@ DETAIL_REPAIR_TOTAL_METRIC_HELP: Final[dict[str, str]] = {
     ),
     "hhru_detail_repair_still_failing_total": (
         "Total number of backlog detail fetches still failing after retry."
+    ),
+}
+FIRST_DETAIL_DRAIN_TOTAL_METRIC_HELP: Final[dict[str, str]] = {
+    "hhru_first_detail_drain_selected_total": (
+        "Total number of first-detail backlog items selected for drain."
+    ),
+    "hhru_first_detail_drain_succeeded_total": (
+        "Total number of first-detail backlog items resolved with a detail snapshot."
+    ),
+    "hhru_first_detail_drain_terminal_total": (
+        "Total number of first-detail backlog items resolved by terminal outcome."
+    ),
+    "hhru_first_detail_drain_failed_total": (
+        "Total number of first-detail backlog items still retryable after drain."
     ),
 }
 HOUSEKEEPING_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
@@ -396,6 +414,51 @@ class FileBackedMetricsRegistry:
                     )
         except Exception as error:
             LOGGER.warning("metrics detail repair attempt update failed: %s", error)
+
+    def set_first_detail_backlog(
+        self,
+        *,
+        include_inactive: bool,
+        backlog_size: int,
+    ) -> None:
+        scope = _first_detail_scope(include_inactive=include_inactive)
+        try:
+            with self._mutating_state() as state:
+                state["first_detail_backlog_gauge"][scope] = float(max(backlog_size, 0))
+        except Exception as error:
+            LOGGER.warning("metrics first detail backlog update failed: %s", error)
+
+    def record_first_detail_drain_attempt(
+        self,
+        *,
+        include_inactive: bool,
+        outcome: str,
+        selected_count: int,
+        succeeded_count: int,
+        terminal_count: int,
+        failed_count: int,
+    ) -> None:
+        scope = _first_detail_scope(include_inactive=include_inactive)
+        try:
+            with self._mutating_state() as state:
+                attempt_key = _composite_key(scope, outcome)
+                state["first_detail_drain_attempt_total"][attempt_key] = (
+                    state["first_detail_drain_attempt_total"].get(attempt_key, 0) + 1
+                )
+                for metric_name, count in (
+                    ("hhru_first_detail_drain_selected_total", selected_count),
+                    ("hhru_first_detail_drain_succeeded_total", succeeded_count),
+                    ("hhru_first_detail_drain_terminal_total", terminal_count),
+                    ("hhru_first_detail_drain_failed_total", failed_count),
+                ):
+                    if count <= 0:
+                        continue
+                    total_key = _composite_key(metric_name, scope)
+                    state["first_detail_drain_total"][total_key] = (
+                        state["first_detail_drain_total"].get(total_key, 0) + count
+                    )
+        except Exception as error:
+            LOGGER.warning("metrics first detail drain attempt update failed: %s", error)
 
     def record_housekeeping_run(
         self,
@@ -759,6 +822,55 @@ class FileBackedMetricsRegistry:
         lines.extend(
             [
                 (
+                    f"# HELP {FIRST_DETAIL_BACKLOG_METRIC} "
+                    "Current size of the global first-detail backlog."
+                ),
+                f"# TYPE {FIRST_DETAIL_BACKLOG_METRIC} gauge",
+            ]
+        )
+        for scope, gauge_value in sorted(state["first_detail_backlog_gauge"].items()):
+            lines.append(
+                f"{FIRST_DETAIL_BACKLOG_METRIC}"
+                f'{{scope="{_label_value(scope)}"}} {gauge_value:.6f}'
+            )
+
+        lines.extend(
+            [
+                (
+                    "# HELP hhru_first_detail_drain_attempt_total "
+                    "Total number of first-detail drain attempts by scope and outcome."
+                ),
+                "# TYPE hhru_first_detail_drain_attempt_total counter",
+            ]
+        )
+        for key, value in sorted(state["first_detail_drain_attempt_total"].items()):
+            scope, outcome = _split_composite_key(key)
+            lines.append(
+                "hhru_first_detail_drain_attempt_total"
+                f'{{scope="{_label_value(scope)}",outcome="{_label_value(outcome)}"}} '
+                f"{value}"
+            )
+
+        for metric_name, help_text in FIRST_DETAIL_DRAIN_TOTAL_METRIC_HELP.items():
+            lines.extend(
+                [
+                    f"# HELP {metric_name} {help_text}",
+                    f"# TYPE {metric_name} counter",
+                ]
+            )
+            for key, value in sorted(state["first_detail_drain_total"].items()):
+                recorded_metric_name, scope = _split_composite_key(key)
+                if recorded_metric_name != metric_name:
+                    continue
+                lines.append(
+                    f"{metric_name}"
+                    f'{{scope="{_label_value(scope)}"}} '
+                    f"{value}"
+                )
+
+        lines.extend(
+            [
+                (
                     "# HELP hhru_housekeeping_run_total "
                     "Total number of housekeeping runs by mode and status."
                 ),
@@ -1043,6 +1155,9 @@ def _empty_state() -> MetricsState:
         detail_repair_attempt_total={},
         detail_repair_gauge={},
         detail_repair_total={},
+        first_detail_backlog_gauge={},
+        first_detail_drain_attempt_total={},
+        first_detail_drain_total={},
         housekeeping_run_total={},
         housekeeping_gauge={},
         housekeeping_status_gauge={},
@@ -1057,10 +1172,15 @@ def _empty_state() -> MetricsState:
 
 
 def _deserialize_state(raw_state: str) -> MetricsState:
-    if not raw_state.strip():
+    normalized_state = raw_state.strip()
+    if not normalized_state or not normalized_state.strip("\x00"):
         return _empty_state()
 
-    loaded = json.loads(raw_state)
+    try:
+        loaded = json.loads(normalized_state)
+    except json.JSONDecodeError:
+        return _empty_state()
+
     if not isinstance(loaded, dict):
         return _empty_state()
 
@@ -1091,6 +1211,15 @@ def _deserialize_state(raw_state: str) -> MetricsState:
         ),
         detail_repair_gauge=_coerce_float_map(loaded.get("detail_repair_gauge")),
         detail_repair_total=_coerce_int_map(loaded.get("detail_repair_total")),
+        first_detail_backlog_gauge=_coerce_float_map(
+            loaded.get("first_detail_backlog_gauge")
+        ),
+        first_detail_drain_attempt_total=_coerce_int_map(
+            loaded.get("first_detail_drain_attempt_total")
+        ),
+        first_detail_drain_total=_coerce_int_map(
+            loaded.get("first_detail_drain_total")
+        ),
         housekeeping_run_total=_coerce_int_map(loaded.get("housekeeping_run_total")),
         housekeeping_gauge=_coerce_float_map(loaded.get("housekeeping_gauge")),
         housekeeping_status_gauge=_coerce_float_map(
@@ -1164,6 +1293,10 @@ def _status_class(*, status_code: int, error_type: str | None) -> str:
     if status_code <= 0:
         return "unknown"
     return f"{status_code // 100}xx"
+
+
+def _first_detail_scope(*, include_inactive: bool) -> str:
+    return "all" if include_inactive else "active"
 
 
 def _composite_key(left: str, right: str) -> str:

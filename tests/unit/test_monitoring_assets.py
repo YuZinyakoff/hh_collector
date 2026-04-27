@@ -325,6 +325,7 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
     assert "record: hhru:coverage_failed_partitions_open" in rules_text
     assert "record: hhru:coverage_unresolved_partitions_open" in rules_text
     assert "record: hhru:detail_repair_backlog_open" in rules_text
+    assert "record: hhru:first_detail_backlog_active_open" in rules_text
     assert "record: hhru:housekeeping_last_run_age_seconds" in rules_text
     assert "record: hhru:backup_last_success_age_seconds" in rules_text
     assert "record: hhru:restore_drill_last_success_age_seconds" in rules_text
@@ -339,6 +340,8 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
         "HHRUPlatformFailedPartitionsPresent",
         "HHRUPlatformUnresolvedPartitionsStuck",
         "HHRUPlatformDetailRepairBacklogStuck",
+        "HHRUPlatformFirstDetailDrainFailures",
+        "HHRUPlatformFirstDetailBacklogNotDraining",
         "HHRUPlatformResumeUnresolvedRepeatedly",
         "HHRUPlatformHousekeepingStale",
         "HHRUPlatformBackupStale",
@@ -349,6 +352,16 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
     assert "expr: hhru:coverage_failed_partitions_open > 0" in rules_text
     assert "expr: hhru:coverage_unresolved_partitions_open > 0" in rules_text
     assert "expr: hhru:detail_repair_backlog_open > 0" in rules_text
+    assert 'expr: sum(hhru_first_detail_backlog_size{scope="active"})' in rules_text
+    assert (
+        'expr: increase(hhru_first_detail_drain_failed_total{scope="active"}[30m]) > 0'
+        in rules_text
+    )
+    assert (
+        'expr: hhru:first_detail_backlog_active_open > 0 unless '
+        'increase(hhru_first_detail_drain_selected_total{scope="active"}[6h]) > 0'
+        in rules_text
+    )
     assert "expr: hhru:housekeeping_last_run_age_seconds > 604800" in rules_text
     assert "expr: hhru:backup_last_success_age_seconds > 259200" in rules_text
     assert (

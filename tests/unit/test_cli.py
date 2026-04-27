@@ -49,6 +49,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "run-list-engine-v2" in captured.out
     assert "fetch-vacancy-detail" in captured.out
     assert "retry-failed-details" in captured.out
+    assert "drain-first-detail-backlog" in captured.out
     assert "reconcile-run" in captured.out
     assert "study-detail-payloads" in captured.out
     assert "show-metrics" in captured.out

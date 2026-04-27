@@ -214,43 +214,62 @@ def fetch_vacancy_detail(
             normalized_detail = _normalize_response(response)
         except VacancyDetailNormalizationError as error:
             failed_at = response.response_received_at or datetime.now(UTC)
+            detail_fetch_status = _failed_detail_fetch_status(response)
             vacancy_current_state_repository.record_detail_fetch(
                 vacancy_id=vacancy.id,
                 recorded_at=failed_at,
                 detail_hash=None,
-                detail_fetch_status=DetailFetchStatus.FAILED.value,
+                detail_fetch_status=detail_fetch_status,
             )
             detail_fetch_attempt_repository.finish(
                 detail_fetch_attempt_id=detail_fetch_attempt_id,
-                status=DetailFetchStatus.FAILED.value,
+                status=detail_fetch_status,
                 finished_at=failed_at,
                 error_message=str(error),
             )
             result = FetchVacancyDetailResult(
                 vacancy_id=vacancy.id,
                 hh_vacancy_id=vacancy.hh_vacancy_id,
-                detail_fetch_status=DetailFetchStatus.FAILED.value,
+                detail_fetch_status=detail_fetch_status,
                 snapshot_id=None,
                 request_log_id=request_log_id,
                 raw_payload_id=raw_payload_id,
                 detail_fetch_attempt_id=detail_fetch_attempt_id,
                 error_message=str(error),
             )
-            record_operation_failed(
-                LOGGER,
-                operation="fetch_vacancy_detail",
-                started_at=started_at,
-                error_type=error.__class__.__name__,
-                error_message=str(error),
-                level=logging.WARNING,
-                vacancy_id=result.vacancy_id,
-                hh_vacancy_id=result.hh_vacancy_id,
-                attempt=command.attempt,
-                run_id=command.crawl_run_id,
-                request_log_id=result.request_log_id,
-                raw_payload_id=result.raw_payload_id,
-                detail_fetch_attempt_id=result.detail_fetch_attempt_id,
-            )
+            if detail_fetch_status == DetailFetchStatus.TERMINAL_404.value:
+                record_operation_succeeded(
+                    LOGGER,
+                    operation="fetch_vacancy_detail",
+                    started_at=started_at,
+                    records_written={"terminal_detail": 1},
+                    vacancy_id=result.vacancy_id,
+                    hh_vacancy_id=result.hh_vacancy_id,
+                    attempt=command.attempt,
+                    run_id=command.crawl_run_id,
+                    request_log_id=result.request_log_id,
+                    raw_payload_id=result.raw_payload_id,
+                    detail_fetch_attempt_id=result.detail_fetch_attempt_id,
+                    detail_status=result.detail_fetch_status,
+                    error_message=result.error_message,
+                )
+            else:
+                record_operation_failed(
+                    LOGGER,
+                    operation="fetch_vacancy_detail",
+                    started_at=started_at,
+                    error_type=error.__class__.__name__,
+                    error_message=str(error),
+                    level=logging.WARNING,
+                    vacancy_id=result.vacancy_id,
+                    hh_vacancy_id=result.hh_vacancy_id,
+                    attempt=command.attempt,
+                    run_id=command.crawl_run_id,
+                    request_log_id=result.request_log_id,
+                    raw_payload_id=result.raw_payload_id,
+                    detail_fetch_attempt_id=result.detail_fetch_attempt_id,
+                    detail_status=result.detail_fetch_status,
+                )
             return result
 
         vacancy_repository.apply_detail_update(vacancy_id=vacancy.id, detail=normalized_detail)
@@ -320,6 +339,12 @@ def fetch_vacancy_detail(
         detail_status=result.detail_fetch_status,
     )
     return result
+
+
+def _failed_detail_fetch_status(response: VacancyDetailResponse) -> str:
+    if response.status_code == 404:
+        return DetailFetchStatus.TERMINAL_404.value
+    return DetailFetchStatus.FAILED.value
 
 
 def _normalize_response(response: VacancyDetailResponse) -> NormalizedVacancyDetail:

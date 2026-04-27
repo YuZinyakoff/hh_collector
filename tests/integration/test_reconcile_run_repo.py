@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,13 @@ from hhru_platform.application.commands.reconcile_run import (
 )
 from hhru_platform.application.policies.reconciliation import (
     MissingRunsReconciliationPolicyV1,
+)
+from hhru_platform.domain.entities.vacancy_current_state import (
+    VacancyCurrentState,
+    VacancyCurrentStateReconciliationUpdate,
+)
+from hhru_platform.infrastructure.db.models.vacancy_current_state import (
+    VacancyCurrentState as VacancyCurrentStateModel,
 )
 from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyCrawlPartitionRepository,
@@ -307,8 +314,9 @@ def test_reconcile_run_updates_current_state_and_completes_run() -> None:
                     crawl_run_repository=crawl_run_repository,
                     crawl_partition_repository=crawl_partition_repository,
                     vacancy_seen_event_repository=vacancy_seen_event_repository,
-                    vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(
-                        session
+                    vacancy_current_state_repository=_ScopedVacancyCurrentStateRepository(
+                        session=session,
+                        vacancy_ids=[seen_vacancy_id, missing_vacancy_id],
                     ),
                     reconciliation_policy=MissingRunsReconciliationPolicyV1(),
                 )
@@ -370,3 +378,32 @@ def test_reconcile_run_updates_current_state_and_completes_run() -> None:
                 transaction.rollback()
     finally:
         engine.dispose()
+
+
+class _ScopedVacancyCurrentStateRepository:
+    def __init__(self, *, session: Session, vacancy_ids: list[UUID]) -> None:
+        self._session = session
+        self._vacancy_ids = list(vacancy_ids)
+        self._delegate = SqlAlchemyVacancyCurrentStateRepository(session)
+
+    def list_all(self) -> list[VacancyCurrentState]:
+        statement = (
+            select(VacancyCurrentStateModel)
+            .where(VacancyCurrentStateModel.vacancy_id.in_(tuple(self._vacancy_ids)))
+            .order_by(VacancyCurrentStateModel.vacancy_id)
+        )
+        return [
+            SqlAlchemyVacancyCurrentStateRepository._to_entity(model)
+            for model in self._session.scalars(statement)
+        ]
+
+    def apply_reconciliation_updates(
+        self,
+        *,
+        updated_at: datetime,
+        updates: list[VacancyCurrentStateReconciliationUpdate],
+    ) -> int:
+        return self._delegate.apply_reconciliation_updates(
+            updated_at=updated_at,
+            updates=updates,
+        )

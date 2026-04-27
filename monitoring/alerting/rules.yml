@@ -11,6 +11,8 @@ groups:
         expr: sum(hhru_run_tree_unresolved_partitions)
       - record: hhru:detail_repair_backlog_open
         expr: sum(hhru_detail_repair_backlog_size)
+      - record: hhru:first_detail_backlog_active_open
+        expr: sum(hhru_first_detail_backlog_size{scope="active"})
       - record: hhru:housekeeping_last_run_age_seconds
         expr: clamp_min(time() - max(hhru_housekeeping_last_run_timestamp_seconds), 0)
       - record: hhru:backup_last_success_age_seconds
@@ -88,6 +90,24 @@ groups:
           summary: detail repair backlog remains open
           description: Detail repair backlog has remained non-empty for more than 6 hours.
           action: Run retry-failed-details for the affected run and inspect repeatedly failing vacancies or upstream detail errors.
+      - alert: HHRUPlatformFirstDetailDrainFailures
+        expr: increase(hhru_first_detail_drain_failed_total{scope="active"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: first-detail drain has retryable failures
+          description: First-detail backlog drain produced retryable non-terminal failures in the last 30 minutes.
+          action: Inspect detail-worker logs and separate transient transport/API failures from expected terminal_404 outcomes.
+      - alert: HHRUPlatformFirstDetailBacklogNotDraining
+        expr: hhru:first_detail_backlog_active_open > 0 unless increase(hhru_first_detail_drain_selected_total{scope="active"}[6h]) > 0
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: active first-detail backlog is not draining
+          description: Active first-detail backlog is non-empty, but no active-scope drain selections were observed for 6 hours.
+          action: Verify detail-worker is intentionally disabled or start it with a bounded batch size.
       - alert: HHRUPlatformResumeUnresolvedRepeatedly
         expr: increase(hhru_resume_run_v2_attempt_total{outcome="completed_with_unresolved"}[12h]) >= 2
         for: 15m

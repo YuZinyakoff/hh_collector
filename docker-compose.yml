@@ -37,6 +37,10 @@ x-app-env: &app-env
   HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_BEARER_TOKEN: "${HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_BEARER_TOKEN:-}"
   HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_TIMEOUT_SECONDS: ${HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_TIMEOUT_SECONDS:-60.0}
   HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET: ${HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET:-10000}
+  HHRU_DETAIL_WORKER_BATCH_SIZE: ${HHRU_DETAIL_WORKER_BATCH_SIZE:-100}
+  HHRU_DETAIL_WORKER_INTERVAL_SECONDS: ${HHRU_DETAIL_WORKER_INTERVAL_SECONDS:-300.0}
+  HHRU_DETAIL_WORKER_INCLUDE_INACTIVE: ${HHRU_DETAIL_WORKER_INCLUDE_INACTIVE:-no}
+  HHRU_DETAIL_WORKER_TRIGGERED_BY: ${HHRU_DETAIL_WORKER_TRIGGERED_BY:-detail-worker}
 
 x-app-image: &app-image
   image: hh_collector-app
@@ -120,6 +124,21 @@ services:
       - "${HHRU_SCHEDULER_RUN_TYPE:-weekly_sweep}"
       - "--triggered-by"
       - "${HHRU_SCHEDULER_TRIGGERED_BY:-scheduler-loop}"
+    restart: unless-stopped
+
+  detail-worker:
+    <<: *app-image
+    profiles: ["ops"]
+    entrypoint: ["python", "-m", "hhru_platform.interfaces.workers.detail_worker"]
+    command:
+      - "--batch-size"
+      - "${HHRU_DETAIL_WORKER_BATCH_SIZE:-100}"
+      - "--interval-seconds"
+      - "${HHRU_DETAIL_WORKER_INTERVAL_SECONDS:-300.0}"
+      - "--include-inactive"
+      - "${HHRU_DETAIL_WORKER_INCLUDE_INACTIVE:-no}"
+      - "--triggered-by"
+      - "${HHRU_DETAIL_WORKER_TRIGGERED_BY:-detail-worker}"
     restart: unless-stopped
 
   metrics:

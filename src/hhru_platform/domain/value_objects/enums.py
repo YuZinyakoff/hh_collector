@@ -39,6 +39,7 @@ class DetailFetchStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    TERMINAL_404 = "terminal_404"
 
 
 class VacancySnapshotType(StrEnum):

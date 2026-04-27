@@ -157,6 +157,39 @@ def test_select_detail_candidates_skips_recent_successful_unchanged_vacancies() 
     assert result.ttl_refresh_candidates == 0
 
 
+def test_select_detail_candidates_skips_recent_terminal_404_without_short_change() -> None:
+    crawl_run_id = uuid4()
+    now = datetime(2026, 3, 19, 12, 0, tzinfo=UTC)
+    vacancy_id = uuid4()
+
+    result = select_detail_candidates(
+        SelectDetailCandidatesCommand(
+            crawl_run_id=crawl_run_id,
+            limit=10,
+            detail_refresh_ttl_days=30,
+        ),
+        vacancy_current_state_repository=InMemoryVacancyCurrentStateRepository(
+            [
+                _build_vacancy_current_state(
+                    vacancy_id=vacancy_id,
+                    crawl_run_id=crawl_run_id,
+                    last_seen_at=now - timedelta(hours=1),
+                    last_short_hash="hash-current",
+                    last_detail_fetched_at=now - timedelta(days=3),
+                    detail_fetch_status=DetailFetchStatus.TERMINAL_404.value,
+                )
+            ]
+        ),
+        vacancy_seen_event_repository=InMemoryVacancySeenEventRepository(
+            {vacancy_id: "hash-current"}
+        ),
+        now=now,
+    )
+
+    assert result.eligible_candidates_count == 0
+    assert result.selected_candidates == ()
+
+
 def _build_vacancy_current_state(
     *,
     vacancy_id: UUID,

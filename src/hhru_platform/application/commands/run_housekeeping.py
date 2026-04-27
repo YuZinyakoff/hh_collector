@@ -784,7 +784,14 @@ def _archive_plan_before_delete(
 def _selected_archive_ids(
     identifiers: Sequence[int | UUID | Path],
 ) -> tuple[int, ...]:
-    return tuple(int(identifier) for identifier in identifiers)
+    selected_ids: list[int] = []
+    for identifier in identifiers:
+        if not isinstance(identifier, int):
+            raise TypeError(
+                "archive-before-delete is only supported for integer retention identifiers"
+            )
+        selected_ids.append(identifier)
+    return tuple(selected_ids)
 
 
 def _summary_fields(

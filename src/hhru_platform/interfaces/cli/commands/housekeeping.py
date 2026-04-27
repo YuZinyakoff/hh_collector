@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import cast
 
 from hhru_platform.application.commands.export_retention_archive import (
     ExportRetentionArchiveCommand,
@@ -12,6 +13,7 @@ from hhru_platform.application.commands.export_retention_archive import (
 from hhru_platform.application.commands.run_housekeeping import (
     HOUSEKEEPING_MODE_DRY_RUN,
     HousekeepingRetentionPolicy,
+    RetentionArchiveStore,
     RunHousekeepingCommand,
     RunHousekeepingResult,
     run_housekeeping,
@@ -120,7 +122,10 @@ def handle_run_housekeeping(args: argparse.Namespace) -> int:
                 command,
                 housekeeping_repository=SqlAlchemyHousekeepingRepository(session),
                 report_artifact_store=LocalReportArtifactStore(),
-                retention_archive_store=LocalRetentionArchiveStore(),
+                retention_archive_store=cast(
+                    RetentionArchiveStore,
+                    LocalRetentionArchiveStore(),
+                ),
                 metrics_recorder=get_metrics_registry(),
             )
     except Exception as error:

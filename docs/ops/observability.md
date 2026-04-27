@@ -86,6 +86,12 @@ Provisioned dashboards:
 - `hhru_detail_repair_attempt_total{run_type,outcome}`
 - `hhru_detail_repair_repaired_total{run_type}`
 - `hhru_detail_repair_still_failing_total{run_type}`
+- `hhru_first_detail_backlog_size{scope}`
+- `hhru_first_detail_drain_attempt_total{scope,outcome}`
+- `hhru_first_detail_drain_selected_total{scope}`
+- `hhru_first_detail_drain_succeeded_total{scope}`
+- `hhru_first_detail_drain_terminal_total{scope}`
+- `hhru_first_detail_drain_failed_total{scope}`
 - `hhru_housekeeping_run_total{mode,status}`
 - `hhru_housekeeping_last_run_timestamp_seconds`
 - `hhru_housekeeping_last_run_status{status}`
@@ -98,7 +104,7 @@ Provisioned dashboards:
 - `hhru_restore_drill_last_success_timestamp_seconds`
 - `hhru_upstream_request_total{endpoint,status_class}`
 - `hhru_upstream_request_duration_seconds{endpoint,status_class}`
-- recording rules `hhru:scheduler_tick_age_seconds`, `hhru:scheduler_last_triggered_run_age_seconds`, `hhru:coverage_failed_partitions_open`, `hhru:coverage_unresolved_partitions_open`, `hhru:detail_repair_backlog_open`, `hhru:housekeeping_last_run_age_seconds`, `hhru:backup_last_success_age_seconds`, `hhru:restore_drill_last_success_age_seconds`
+- recording rules `hhru:scheduler_tick_age_seconds`, `hhru:scheduler_last_triggered_run_age_seconds`, `hhru:coverage_failed_partitions_open`, `hhru:coverage_unresolved_partitions_open`, `hhru:detail_repair_backlog_open`, `hhru:first_detail_backlog_active_open`, `hhru:housekeeping_last_run_age_seconds`, `hhru:backup_last_success_age_seconds`, `hhru:restore_drill_last_success_age_seconds`
 
 Новый orchestration-lite flow пишет отдельную operation metric:
 
@@ -181,7 +187,7 @@ Planner-v2 execution path пишет отдельные operation metrics:
 - `hhru_run_tree_total_partitions` и `hhru_run_tree_failed_partitions` читаются как тот же lifecycle snapshot, что и coverage ratio: это не отдельная stored aggregate, а моментальный срез текущего tree state run.
 - `run-once-v2` публикует detail repair backlog gauge автоматически: `0` для clean run и `detail_fetch_failed` для terminal `completed_with_detail_errors`.
 - `resume-run-v2` публикует тот же coverage snapshot и отдельный `hhru_resume_run_v2_attempt_total{outcome=...}`, поэтому можно видеть не только текущее дерево, но и сколько resume попыток снова закончилось `completed_with_unresolved`.
-- Recording rules `hhru:coverage_failed_partitions_open`, `hhru:coverage_unresolved_partitions_open` и `hhru:detail_repair_backlog_open` агрегируют текущий file-backed open debt по всем опубликованным run snapshots. Эти сигналы не "протухают" сами по себе от времени: alert уйдёт только после того, как соответствующий run будет реально дочинен и gauge опустится до `0`.
+- Recording rules `hhru:coverage_failed_partitions_open`, `hhru:coverage_unresolved_partitions_open`, `hhru:detail_repair_backlog_open` и `hhru:first_detail_backlog_active_open` агрегируют текущий file-backed open debt. Эти сигналы не "протухают" сами по себе от времени: alert уйдёт только после того, как соответствующий backlog будет реально дочинен и gauge опустится до `0`.
 - `coverage_ratio` нужно читать как долю уже покрытых terminal leaves от текущего множества terminal partitions этого run.
 - `split_partitions > 0` само по себе не является ошибкой: это сигнал, что часть coverage делегирована child scopes.
 - `unresolved_partitions > 0` означает, что часть дерева не удалось refine'ить текущей split-policy и этот run нельзя считать полностью покрытым.
@@ -207,6 +213,8 @@ Planner-v2 execution path пишет отдельные operation metrics:
   `hhru_scheduler_last_run_finished_timestamp_seconds`,
   `hhru_scheduler_last_observed_run_status{status}` для liveness/timing и outcome visibility.
 - `hhru_detail_repair_backlog_size` теперь показывает текущий remaining backlog по run; `hhru_detail_repair_attempt_total`, `hhru_detail_repair_repaired_total` и `hhru_detail_repair_still_failing_total` показывают repair activity без ручного CLI refresh.
+- `hhru_first_detail_backlog_size{scope="active"}` показывает глобальный first-detail backlog для активных вакансий. `scope="all"` используется только если drain запущен с `--include-inactive yes`.
+- `hhru_first_detail_drain_terminal_total` считает terminal outcomes, например detail HTTP 404, которые закрывают first-detail backlog item без detail snapshot и без retryable failure.
 - В `Collector Overview` панели `Scheduler Overlap Skips In Range`, `Scheduler Active-Run Skips In Range`, `Scheduler Last Tick`, `Scheduler Last Triggered Run` и `Scheduler Last Observed Run Status` позволяют быстро понять, жив ли loop, не упирается ли он в admission conflicts и чем закончился последний admitted run.
 - Для recovery path операторское чтение теперь такое:
   `Detail Repair Backlog > 0` вместе с ростом `Detail Still Failing In Range` означает, что repair contour активен, но backlog ещё не очищен.
@@ -246,6 +254,8 @@ Planner-v2 execution path пишет отдельные operation metrics:
 - устойчивый `hhru_run_tree_unresolved_partitions > 0` после нескольких `hhru_resume_run_v2_attempt_total`
 - рост `hhru_run_terminal_status_total{status="completed_with_detail_errors"}` или `...{status="failed"}` в выбранном интервале
 - `hhru_detail_repair_backlog_size > 0` без снижения, особенно если одновременно растёт `hhru_detail_repair_still_failing_total`
+- `hhru_first_detail_backlog_size{scope="active"}` не снижается при работающем `detail-worker`
+- рост `hhru_first_detail_drain_failed_total` означает retryable failures; рост `hhru_first_detail_drain_terminal_total` сам по себе нормален для протухших вакансий из search snapshot
 - stale `hhru_scheduler_last_tick_timestamp_seconds` или рост `hhru_scheduler_tick_total{outcome="skipped_overlap"}` / `...{outcome="skipped_active_run"}`
 - sustained `4xx`/`5xx`/`timeout`/`network_error` на dashboard `HH API / Ingest Health`
 - отсутствие свежего `reconcile_run` success timestamp

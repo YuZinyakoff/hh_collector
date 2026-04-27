@@ -6,7 +6,7 @@
 
 - получить successful `search-only` baseline на стабильном хосте;
 - подтвердить backup/restore/offsite archive contour;
-- явно оставить `persistent first-detail backlog` отдельным следующим этапом.
+- не смешивать search baseline с масштабным `first-detail` drain.
 
 ## 1. Что уже готово
 
@@ -20,11 +20,16 @@
   - smoke bundle uploaded;
   - повторный sync skipped по receipt;
   - real DB archive bundles uploaded.
+- Есть persistent `first-detail` backlog + `detail_worker` loop для bounded drain.
+- Локально проверен batch `1000`: `962` detail snapshots, `38` HTTP 404, средняя скорость около `2.9 req/s`.
+- HTTP 404 detail responses закрываются как `terminal_404` и не остаются retryable backlog.
+- Добавлены first-detail backlog metrics и alert rules.
 
 ## 2. Что ещё не готово
 
-- Нет persistent `first-detail` backlog, который гарантирует "каждая найденная vacancy хотя бы раз получила successful detail".
-- `src/hhru_platform/interfaces/workers/detail_worker.py` пока placeholder, а не долгоживущий detail drain worker.
+- `first-detail` backlog ещё не прогнан на масштабе полного baseline.
+- Нет dashboard panels для first-detail backlog metrics.
+- Нет cooldown/backoff для repeated non-terminal detail failures.
 - Нет production alert delivery; dashboards/metrics foundation есть, но уведомления ещё не оформлены.
 - Нет многодневного unattended production signal.
 
@@ -186,10 +191,12 @@ docker compose --profile ops run --rm app sync-retention-archive-offsite --trigg
 
 Следующий крупный slice после successful search baseline:
 
-1. Persistent first-detail backlog MVP.
-2. Detail drain worker или scheduler-admitted detail drain command.
-3. Detail backlog metrics and alerts.
-4. Supervised `search + detail drain` week.
+1. Запустить MVP first-detail drain на bounded batch.
+2. Замерить detail throughput, failure mix и storage growth.
+3. Добавить dashboard panels и cooldown/backoff для repeated non-terminal detail failures.
+4. Провести supervised `search + detail drain` week.
 5. Только потом месячное unattended окно.
 
-Пока detail backlog не реализован, утверждение "полная research completeness" преждевременно. Корректная формулировка после pilot: full search coverage is operationally validated.
+Пока detail backlog не прогнан на масштабе baseline, утверждение "полная research completeness" преждевременно. Корректная формулировка после pilot: full search coverage is operationally validated.
+
+См. также: [first-detail-backlog.md](/home/yurizinyakov/projects/hh_collector/docs/ops/first-detail-backlog.md).

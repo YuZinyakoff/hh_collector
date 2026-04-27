@@ -73,6 +73,28 @@ class SqlAlchemyDetailFetchAttemptRepository:
             if model.status == "failed"
         ]
 
+    def latest_attempt_numbers_by_vacancy_ids(
+        self,
+        vacancy_ids: list[UUID],
+    ) -> dict[UUID, int]:
+        if not vacancy_ids:
+            return {}
+
+        latest_attempts = (
+            select(DetailFetchAttempt.vacancy_id, DetailFetchAttempt.attempt)
+            .where(DetailFetchAttempt.vacancy_id.in_(tuple(vacancy_ids)))
+            .distinct(DetailFetchAttempt.vacancy_id)
+            .order_by(
+                DetailFetchAttempt.vacancy_id,
+                DetailFetchAttempt.requested_at.desc(),
+                DetailFetchAttempt.id.desc(),
+            )
+        )
+        return {
+            vacancy_id: attempt
+            for vacancy_id, attempt in self._session.execute(latest_attempts)
+        }
+
     @staticmethod
     def _to_entity(model: DetailFetchAttempt) -> DetailFetchAttemptEntity:
         return DetailFetchAttemptEntity(

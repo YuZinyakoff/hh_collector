@@ -1,6 +1,6 @@
 # Current Readiness
 
-Состояние проекта на 2026-04-03 после длинного локального `search-only` baseline run.
+Состояние проекта на 2026-04-27 после длинного локального `search-only` baseline run и bounded `first-detail` drain validation.
 
 ## Коротко
 
@@ -29,24 +29,33 @@
   - появился local retention archive export
   - housekeeping умеет `archive-before-delete` для `raw_api_payload` и `vacancy_snapshot`
   - появился off-host sync contour для готовых archive chunks через WebDAV + local upload receipts
+- Добавлен MVP `first-detail` backlog contour:
+  - backlog выводится из `vacancy_current_state`, без новой таблицы
+  - есть one-shot команда `drain-first-detail-backlog`
+  - есть тонкий `detail_worker` loop для bounded background drain
+  - локальный batch `1000` доказал рабочий путь `backlog -> hh detail API -> raw payload/snapshot/state`
+  - HTTP 404 detail responses закрываются как `terminal_404`, чтобы не ретраить протухшие вакансии бесконечно
+  - добавлены first-detail backlog metrics и alert rules
 
 ## Что ещё не доказано
 
 - Полностью успешный terminal `search-only` baseline без внешнего обрыва.
 - Run-level resilience к transient transport/DNS outage без потери почти готового baseline.
 - Автоматический bounded run-level retry budget для repeated transport failures; сейчас есть operator recovery path, но не полный self-healing contour.
-- Persistent `first-detail` backlog contour для полной research completeness, а не только `search` coverage.
+- `first-detail` backlog на масштабе полного baseline: bounded batch доказан, но полный drain ещё не завершён.
+- Dashboard panels для first-detail backlog metrics.
+- Cooldown/backoff для repeated non-terminal detail failures.
 - Многодневная unattended production stability.
 
 ## Текущий practical reading
 
 На 2026-04-03 система уже выглядит готовой не к "первой попытке baseline", а к следующему operational этапу:
 
-1. VPS pilot на более стабильном хосте.
-2. Ещё один полный `search-only` baseline уже на VPS.
+1. Довести локальный first-detail contour до наблюдаемого `detail-worker` run с понятной скоростью и storage growth.
+2. Добавить dashboard panels для first-detail backlog.
 3. Transport/resume hardening, чтобы не терять почти завершённый run из-за единичного outage.
-4. Real provider config + регулярный off-host archive/backup copy contour.
-5. Затем persistent `first-detail` backlog и steady-state completeness contour.
+4. Затем VPS pilot на более стабильном хосте и полный `search-only` baseline.
+5. После baseline включить supervised `search + detail drain` contour.
 
 ## Практический вывод
 
@@ -57,6 +66,7 @@
 ## Смежные документы
 
 - [vps-pilot-checklist.md](/home/yurizinyakov/projects/hh_collector/docs/ops/vps-pilot-checklist.md)
+- [first-detail-backlog.md](/home/yurizinyakov/projects/hh_collector/docs/ops/first-detail-backlog.md)
 - [hh-api-completeness-implementation-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-completeness-implementation-plan.md)
 - [hh-api-search-baseline-blocker-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-search-baseline-blocker-plan.md)
 - [testing-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/testing-plan.md)

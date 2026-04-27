@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     housekeeping_archive_offsite_bearer_token: str | None = Field(default=None, repr=False)
     housekeeping_archive_offsite_timeout_seconds: float = 60.0
     housekeeping_delete_limit_per_target: int = 10_000
+    detail_worker_batch_size: int = 100
+    detail_worker_interval_seconds: float = 300.0
+    detail_worker_include_inactive: bool = False
+    detail_worker_triggered_by: str = "detail-worker"
 
     @property
     def database_url(self) -> str:

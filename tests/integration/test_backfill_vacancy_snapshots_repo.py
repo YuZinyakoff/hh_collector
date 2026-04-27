@@ -57,6 +57,11 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
     session_factory = create_session_factory(engine)
     created_run_id: UUID | None = None
     created_partition_id: UUID | None = None
+    search_request_log_id: int | None = None
+    detail_request_log_id: int | None = None
+    short_raw_payload_id: int | None = None
+    detail_raw_payload_id: int | None = None
+    legacy_snapshot_id: int | None = None
     vacancy_id = uuid4()
     short_payload_json = {
         "items": [
@@ -154,28 +159,26 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
                     "short_hash": short_hash,
                 },
             )
-            session.execute(
-                text(
-                    """
-                    INSERT INTO api_request_log (
-                        id,
-                        crawl_run_id,
-                        crawl_partition_id,
-                        request_type,
-                        endpoint,
-                        method,
-                        params_json,
-                        status_code,
-                        latency_ms,
-                        attempt,
-                        requested_at,
-                        response_received_at,
-                        error_type,
-                        error_message
-                    )
-                    VALUES
-                        (
-                            9901,
+            search_request_log_id = int(
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO api_request_log (
+                            crawl_run_id,
+                            crawl_partition_id,
+                            request_type,
+                            endpoint,
+                            method,
+                            params_json,
+                            status_code,
+                            latency_ms,
+                            attempt,
+                            requested_at,
+                            response_received_at,
+                            error_type,
+                            error_message
+                        )
+                        VALUES (
                             :crawl_run_id,
                             :crawl_partition_id,
                             'vacancy_search',
@@ -189,9 +192,37 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
                             :seen_at,
                             NULL,
                             NULL
-                        ),
-                        (
-                            9902,
+                        )
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "crawl_run_id": created_run_id,
+                        "crawl_partition_id": created_partition_id,
+                        "seen_at": datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
+                    },
+                ).scalar_one()
+            )
+            detail_request_log_id = int(
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO api_request_log (
+                            crawl_run_id,
+                            crawl_partition_id,
+                            request_type,
+                            endpoint,
+                            method,
+                            params_json,
+                            status_code,
+                            latency_ms,
+                            attempt,
+                            requested_at,
+                            response_received_at,
+                            error_type,
+                            error_message
+                        )
+                        VALUES (
                             :crawl_run_id,
                             NULL,
                             'vacancy_detail',
@@ -206,55 +237,75 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
                             NULL,
                             NULL
                         )
-                    """
-                ),
-                {
-                    "crawl_run_id": created_run_id,
-                    "crawl_partition_id": created_partition_id,
-                    "seen_at": datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
-                    "detail_seen_at": datetime(2026, 3, 20, 12, 5, tzinfo=UTC),
-                },
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "crawl_run_id": created_run_id,
+                        "detail_seen_at": datetime(2026, 3, 20, 12, 5, tzinfo=UTC),
+                    },
+                ).scalar_one()
             )
-            session.execute(
-                text(
-                    """
-                    INSERT INTO raw_api_payload (
-                        id,
-                        api_request_log_id,
-                        endpoint_type,
-                        entity_hh_id,
-                        payload_json,
-                        payload_hash,
-                        received_at
-                    )
-                    VALUES
-                        (
-                            9911,
-                            9901,
+            short_raw_payload_id = int(
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO raw_api_payload (
+                            api_request_log_id,
+                            endpoint_type,
+                            entity_hh_id,
+                            payload_json,
+                            payload_hash,
+                            received_at
+                        )
+                        VALUES (
+                            :api_request_log_id,
                             'vacancies.search',
                             NULL,
                             CAST(:short_payload_json AS jsonb),
                             'pytest-short-payload',
                             :seen_at
-                        ),
-                        (
-                            9912,
-                            9902,
+                        )
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "api_request_log_id": search_request_log_id,
+                        "short_payload_json": text_repr(short_payload_json),
+                        "seen_at": datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
+                    },
+                ).scalar_one()
+            )
+            detail_raw_payload_id = int(
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO raw_api_payload (
+                            api_request_log_id,
+                            endpoint_type,
+                            entity_hh_id,
+                            payload_json,
+                            payload_hash,
+                            received_at
+                        )
+                        VALUES (
+                            :api_request_log_id,
                             'vacancies.detail',
                             :hh_vacancy_id,
                             CAST(:detail_payload_json AS jsonb),
                             'pytest-detail-payload',
                             :detail_seen_at
                         )
-                    """
-                ),
-                {
-                    "short_payload_json": text_repr(short_payload_json),
-                    "detail_payload_json": text_repr(detail_payload_json),
-                    "seen_at": datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
-                    "detail_seen_at": datetime(2026, 3, 20, 12, 5, tzinfo=UTC),
-                    "hh_vacancy_id": TEST_VACANCY_HH_ID,
-                },
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "api_request_log_id": detail_request_log_id,
+                        "detail_payload_json": text_repr(detail_payload_json),
+                        "detail_seen_at": datetime(2026, 3, 20, 12, 5, tzinfo=UTC),
+                        "hh_vacancy_id": TEST_VACANCY_HH_ID,
+                    },
+                ).scalar_one()
             )
             session.execute(
                 text(
@@ -275,7 +326,7 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
                         :seen_at,
                         0,
                         :short_hash,
-                        9911
+                        :short_raw_payload_id
                     )
                     """
                 ),
@@ -285,44 +336,47 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
                     "crawl_partition_id": created_partition_id,
                     "seen_at": datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
                     "short_hash": short_hash,
+                    "short_raw_payload_id": short_raw_payload_id,
                 },
             )
-            session.execute(
-                text(
-                    """
-                    INSERT INTO vacancy_snapshot (
-                        id,
-                        vacancy_id,
-                        snapshot_type,
-                        captured_at,
-                        crawl_run_id,
-                        short_hash,
-                        detail_hash,
-                        short_payload_ref_id,
-                        detail_payload_ref_id,
-                        normalized_json,
-                        change_reason
-                    )
-                    VALUES (
-                        9921,
-                        :vacancy_id,
-                        'detail',
-                        :detail_seen_at,
-                        :crawl_run_id,
-                        NULL,
-                        'legacy-detail-hash',
-                        NULL,
-                        9912,
-                        '{}'::jsonb,
-                        'legacy_snapshot'
-                    )
-                    """
-                ),
-                {
-                    "vacancy_id": vacancy_id,
-                    "detail_seen_at": datetime(2026, 3, 20, 12, 5, tzinfo=UTC),
-                    "crawl_run_id": created_run_id,
-                },
+            legacy_snapshot_id = int(
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO vacancy_snapshot (
+                            vacancy_id,
+                            snapshot_type,
+                            captured_at,
+                            crawl_run_id,
+                            short_hash,
+                            detail_hash,
+                            short_payload_ref_id,
+                            detail_payload_ref_id,
+                            normalized_json,
+                            change_reason
+                        )
+                        VALUES (
+                            :vacancy_id,
+                            'detail',
+                            :detail_seen_at,
+                            :crawl_run_id,
+                            NULL,
+                            'legacy-detail-hash',
+                            NULL,
+                            :detail_raw_payload_id,
+                            '{}'::jsonb,
+                            'legacy_snapshot'
+                        )
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "vacancy_id": vacancy_id,
+                        "detail_seen_at": datetime(2026, 3, 20, 12, 5, tzinfo=UTC),
+                        "crawl_run_id": created_run_id,
+                        "detail_raw_payload_id": detail_raw_payload_id,
+                    },
+                ).scalar_one()
             )
 
             result = backfill_vacancy_snapshots(
@@ -341,9 +395,10 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
                         """
                         SELECT detail_hash, normalized_json
                         FROM vacancy_snapshot
-                        WHERE id = 9921
+                        WHERE id = :legacy_snapshot_id
                         """
-                    )
+                    ),
+                    {"legacy_snapshot_id": legacy_snapshot_id},
                 )
                 .mappings()
                 .one()
@@ -384,12 +439,42 @@ def test_backfill_vacancy_snapshots_upgrades_legacy_detail_rows_and_creates_shor
         )
         assert short_snapshot_row["snapshot_type"] == "short"
         assert short_snapshot_row["short_hash"] == short_hash
-        assert short_snapshot_row["short_payload_ref_id"] == 9911
+        assert short_snapshot_row["short_payload_ref_id"] == short_raw_payload_id
         assert short_snapshot_row["normalized_json"]["payload"]["id"] == TEST_VACANCY_HH_ID
         assert current_state_row["last_detail_hash"] == detail_snapshot_row["detail_hash"]
     finally:
         with engine.begin() as connection:
-            connection.execute(text("DELETE FROM api_request_log WHERE id IN (9901, 9902)"))
+            connection.execute(
+                text("DELETE FROM vacancy_snapshot WHERE vacancy_id = :vacancy_id"),
+                {"vacancy_id": vacancy_id},
+            )
+            connection.execute(
+                text("DELETE FROM vacancy_seen_event WHERE vacancy_id = :vacancy_id"),
+                {"vacancy_id": vacancy_id},
+            )
+            connection.execute(
+                text("DELETE FROM vacancy_current_state WHERE vacancy_id = :vacancy_id"),
+                {"vacancy_id": vacancy_id},
+            )
+            request_log_ids = [
+                request_log_id
+                for request_log_id in (search_request_log_id, detail_request_log_id)
+                if request_log_id is not None
+            ]
+            if request_log_ids:
+                connection.execute(
+                    text(
+                        """
+                        DELETE FROM raw_api_payload
+                        WHERE api_request_log_id = ANY(:request_log_ids)
+                        """
+                    ),
+                    {"request_log_ids": request_log_ids},
+                )
+                connection.execute(
+                    text("DELETE FROM api_request_log WHERE id = ANY(:request_log_ids)"),
+                    {"request_log_ids": request_log_ids},
+                )
             connection.execute(
                 text("DELETE FROM vacancy WHERE id = :vacancy_id"),
                 {"vacancy_id": vacancy_id},

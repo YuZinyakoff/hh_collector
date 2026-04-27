@@ -79,6 +79,18 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
         repaired_count=1,
         still_failing_count=1,
     )
+    registry.set_first_detail_backlog(
+        include_inactive=False,
+        backlog_size=42,
+    )
+    registry.record_first_detail_drain_attempt(
+        include_inactive=False,
+        outcome="succeeded",
+        selected_count=10,
+        succeeded_count=8,
+        terminal_count=2,
+        failed_count=0,
+    )
     registry.record_housekeeping_run(
         mode="dry_run",
         status="succeeded",
@@ -150,6 +162,14 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
     assert 'hhru_detail_repair_retried_total{run_type="weekly_sweep"} 2' in rendered
     assert 'hhru_detail_repair_repaired_total{run_type="weekly_sweep"} 1' in rendered
     assert 'hhru_detail_repair_still_failing_total{run_type="weekly_sweep"} 1' in rendered
+    assert 'hhru_first_detail_backlog_size{scope="active"} 42.000000' in rendered
+    assert (
+        'hhru_first_detail_drain_attempt_total{scope="active",outcome="succeeded"} 1'
+        in rendered
+    )
+    assert 'hhru_first_detail_drain_selected_total{scope="active"} 10' in rendered
+    assert 'hhru_first_detail_drain_succeeded_total{scope="active"} 8' in rendered
+    assert 'hhru_first_detail_drain_terminal_total{scope="active"} 2' in rendered
     assert 'hhru_housekeeping_run_total{mode="dry_run",status="succeeded"} 1' in rendered
     assert "hhru_housekeeping_last_run_timestamp_seconds" in rendered
     assert 'hhru_housekeeping_last_run_status{status="succeeded"} 1.0' in rendered
@@ -161,6 +181,25 @@ def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> N
     assert 'hhru_housekeeping_deleted_total{target="crawl_partition"} 5' in rendered
     assert "hhru_operation_duration_seconds_count" in rendered
     assert "hhru_upstream_request_duration_seconds_count" in rendered
+
+
+def test_file_backed_metrics_registry_recovers_from_zero_filled_state(tmp_path) -> None:
+    metrics_file = tmp_path / "metrics.json"
+    metrics_file.write_bytes(b"\x00" * 1024)
+    registry = FileBackedMetricsRegistry(metrics_file)
+
+    registry.record_operation(
+        operation="drain_first_detail_backlog",
+        status="succeeded",
+        duration_seconds=0.1,
+    )
+
+    rendered = registry.render_prometheus()
+
+    assert (
+        'hhru_operation_total{operation="drain_first_detail_backlog",status="succeeded"} 1'
+        in rendered
+    )
 
 
 def test_json_log_formatter_keeps_structured_fields() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from hhru_platform.config.settings import get_settings
+from hhru_platform.config.settings import Settings, get_settings
 from hhru_platform.infrastructure.hh_api.user_agent import (
     HHApiUserAgentValidationError,
     validate_live_vacancy_search_user_agent,
@@ -106,5 +106,5 @@ def handle_health_check(_: argparse.Namespace) -> int:
     return 0
 
 
-def _is_archive_offsite_configured(settings, auth_mode: str) -> bool:
+def _is_archive_offsite_configured(settings: Settings, auth_mode: str) -> bool:
     return bool(settings.housekeeping_archive_offsite_url) and auth_mode != "none"

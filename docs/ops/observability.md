@@ -6,6 +6,8 @@
 
 - `metrics` service экспортирует `GET /metrics` и `GET /healthz`
 - `prometheus` profile скрейпит `metrics:8001`
+- `alertmanager` profile получает Prometheus alerts
+- `alert-webhook` принимает Alertmanager webhook payloads и, если настроен Telegram, отправляет сообщения наружу
 - `grafana` profile автоматически подключает Prometheus datasource и dashboards из репозитория
 - приложение пишет JSON structured logs в stderr
 - file-backed metrics сохраняются в `HHRU_METRICS_STATE_PATH`
@@ -36,12 +38,15 @@ make up-observability
 curl http://127.0.0.1:8001/healthz
 curl http://127.0.0.1:8001/metrics
 curl http://127.0.0.1:9090/-/ready
+curl http://127.0.0.1:9093/-/ready
+curl http://127.0.0.1:8010/healthz
 ```
 
 Открыть UI:
 
 - Grafana: `http://127.0.0.1:3000`
 - Prometheus: `http://127.0.0.1:9090`
+- Alertmanager: `http://127.0.0.1:9093`
 
 Локальные default credentials для Grafana берутся из `.env`:
 
@@ -238,6 +243,33 @@ Planner-v2 execution path пишет отдельные operation metrics:
   `Restore Drill Runs In Range` показывает, был ли сам drill успешным или только падал.
 
 ## Alert rules baseline
+
+Alert delivery path:
+
+- Prometheus evaluates `monitoring/alerting/rules.yml`.
+- Alertmanager reads `monitoring/alertmanager/alertmanager.yml`.
+- Alertmanager sends webhooks to `alert-webhook:8010/alertmanager`.
+- `alert-webhook` logs every alert payload.
+- If `HHRU_ALERT_TELEGRAM_BOT_TOKEN` and `HHRU_ALERT_TELEGRAM_CHAT_ID` are set, `alert-webhook` also sends Telegram messages.
+
+Production env keys:
+
+- `HHRU_ALERTMANAGER_PORT`
+- `HHRU_ALERTMANAGER_BIND_HOST`
+- `HHRU_ALERT_WEBHOOK_HOST`
+- `HHRU_ALERT_WEBHOOK_PORT`
+- `HHRU_ALERT_WEBHOOK_BIND_HOST`
+- `HHRU_ALERT_TELEGRAM_BOT_TOKEN`
+- `HHRU_ALERT_TELEGRAM_CHAT_ID`
+- `HHRU_ALERT_TELEGRAM_DISABLE_NOTIFICATION`
+
+Synthetic local webhook check without Telegram:
+
+```bash
+curl -X POST http://127.0.0.1:8010/alertmanager \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"firing","commonLabels":{"alertname":"SyntheticAlert","severity":"warning"},"commonAnnotations":{"summary":"synthetic alert","action":"check alert-webhook logs"},"alerts":[]}'
+```
 
 - `HHRUPlatformMetricsEndpointDown`
 - `HHRUPlatformOperationFailures`

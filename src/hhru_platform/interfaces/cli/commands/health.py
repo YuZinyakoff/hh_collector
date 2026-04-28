@@ -45,6 +45,14 @@ def handle_health_check(_: argparse.Namespace) -> int:
     print(f"hh_api_user_agent_live_search_error={user_agent_validation_error or '-'}")
     print(f"metrics_state_path={settings.metrics_state_path}")
     print(f"metrics_endpoint=http://{settings.metrics_host}:{settings.metrics_port}/metrics")
+    print(
+        "alert_webhook_endpoint="
+        f"http://{settings.alert_webhook_host}:{settings.alert_webhook_port}/alertmanager"
+    )
+    print(
+        "alert_telegram_configured="
+        f"{'yes' if _is_alert_telegram_configured(settings) else 'no'}"
+    )
     print(f"backup_dir={settings.backup_dir}")
     print(f"backup_retention_days={settings.backup_retention_days}")
     print(
@@ -108,3 +116,7 @@ def handle_health_check(_: argparse.Namespace) -> int:
 
 def _is_archive_offsite_configured(settings: Settings, auth_mode: str) -> bool:
     return bool(settings.housekeeping_archive_offsite_url) and auth_mode != "none"
+
+
+def _is_alert_telegram_configured(settings: Settings) -> bool:
+    return bool(settings.alert_telegram_bot_token and settings.alert_telegram_chat_id)

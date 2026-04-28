@@ -18,6 +18,11 @@ x-app-env: &app-env
   HHRU_METRICS_HOST: 0.0.0.0
   HHRU_METRICS_PORT: 8001
   HHRU_METRICS_STATE_PATH: .state/metrics/metrics.json
+  HHRU_ALERT_WEBHOOK_HOST: 0.0.0.0
+  HHRU_ALERT_WEBHOOK_PORT: 8010
+  HHRU_ALERT_TELEGRAM_BOT_TOKEN: "${HHRU_ALERT_TELEGRAM_BOT_TOKEN:-}"
+  HHRU_ALERT_TELEGRAM_CHAT_ID: "${HHRU_ALERT_TELEGRAM_CHAT_ID:-}"
+  HHRU_ALERT_TELEGRAM_DISABLE_NOTIFICATION: ${HHRU_ALERT_TELEGRAM_DISABLE_NOTIFICATION:-false}
   HHRU_BACKUP_DIR: .state/backups
   HHRU_BACKUP_RETENTION_DAYS: ${HHRU_BACKUP_RETENTION_DAYS:-7}
   HHRU_BACKUP_PREFIX: ${HHRU_BACKUP_PREFIX:-hhru-platform}
@@ -171,6 +176,8 @@ services:
     depends_on:
       metrics:
         condition: service_healthy
+      alertmanager:
+        condition: service_started
     ports:
       - "${HHRU_PROMETHEUS_BIND_HOST:-127.0.0.1}:${HHRU_PROMETHEUS_PORT:-9090}:9090"
     volumes:
@@ -182,6 +189,40 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
 
+  alertmanager:
+    image: prom/alertmanager:latest
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      alert-webhook:
+        condition: service_started
+    ports:
+      - "${HHRU_ALERTMANAGER_BIND_HOST:-127.0.0.1}:${HHRU_ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+
+  alert-webhook:
+    image: hh_collector-app
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment: *app-env
+    entrypoint: ["python", "-m", "hhru_platform.interfaces.workers.alert_webhook"]
+    command:
+      - "--host"
+      - "${HHRU_ALERT_WEBHOOK_HOST:-0.0.0.0}"
+      - "--port"
+      - "${HHRU_ALERT_WEBHOOK_PORT:-8010}"
+    ports:
+      - "${HHRU_ALERT_WEBHOOK_BIND_HOST:-127.0.0.1}:${HHRU_ALERT_WEBHOOK_PORT:-8010}:8010"
+    volumes:
+      - ./src:/app/src:ro
 
   grafana:
     image: grafana/grafana-oss:latest
@@ -226,4 +267,5 @@ volumes:
   postgres_data:
   redis_data:
   prometheus_data:
+  alertmanager_data:
   grafana_data:

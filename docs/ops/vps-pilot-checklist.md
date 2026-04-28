@@ -27,11 +27,12 @@
 - Добавлен exponential cooldown для repeated non-terminal detail failures.
 - Добавлены Grafana panels для first-detail open/ready/cooldown backlog и drain outcomes.
 - Controlled local `detail-worker --once --batch-size 25` прошёл успешно: `24` detail snapshots, `1` terminal_404, `0` retryable failures, `~1.88 req/s`, DB delta `270336 bytes`.
+- Добавлен Alertmanager + `alert-webhook` receiver; Telegram delivery включается через env.
 
 ## 2. Что ещё не готово
 
 - `first-detail` backlog ещё не прогнан на масштабе полного baseline.
-- Нет production alert delivery; dashboards/metrics foundation есть, но уведомления ещё не оформлены.
+- Production alert delivery foundation есть, но на VPS ещё нужно настроить Telegram credentials и сделать synthetic alert test.
 - Нет многодневного unattended production signal.
 
 Практический вывод: VPS pilot должен быть `search-only` baseline pilot, а не финальный месячный production launch.

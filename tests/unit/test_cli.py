@@ -112,6 +112,8 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "hh_api_default_auth_mode=application_token" in captured.out
     assert "hh_api_user_agent_live_search_valid=yes" in captured.out
     assert "metrics_state_path=.state/metrics/metrics.json" in captured.out
+    assert "alert_webhook_endpoint=http://0.0.0.0:8010/alertmanager" in captured.out
+    assert "alert_telegram_configured=no" in captured.out
     assert "backup_retention_days=14" in captured.out
     assert "backup_restore_drill_target_db=hhru_platform_restore_drill" in captured.out
     assert "backup_restore_drill_drop_existing=yes" in captured.out

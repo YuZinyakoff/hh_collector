@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 8001
     metrics_state_path: str = ".state/metrics/metrics.json"
+    alert_webhook_host: str = "0.0.0.0"
+    alert_webhook_port: int = 8010
+    alert_telegram_bot_token: str | None = Field(default=None, repr=False)
+    alert_telegram_chat_id: str | None = None
+    alert_telegram_disable_notification: bool = False
     backup_dir: str = ".state/backups"
     backup_retention_days: int = 7
     backup_prefix: str = "hhru-platform"

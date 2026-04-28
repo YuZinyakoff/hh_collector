@@ -47,7 +47,7 @@
 | Backup / restore drill | ready for pilot | path реализован и документирован |
 | Retention archive / offsite sync | ready for pilot | WebDAV path проверен, нужен production routine |
 | Observability | foundation ready | metrics, dashboards, alert rules есть |
-| Alert delivery | not ready | нужен реальный канал уведомлений |
+| Alert delivery | foundation ready | Alertmanager + webhook receiver добавлены; на VPS нужно настроить Telegram credentials и synthetic test |
 | VPS deploy | documented, not executed here | первый VPS pilot должен быть search-only |
 | Research enrichment | intentionally out of scope | не начинать до стабилизации collection layer |
 
@@ -83,9 +83,17 @@ Go/no-go:
 
 ### Stage 2. Production alert delivery
 
-1. Выбрать канал: Telegram, email, webhook или Alertmanager route.
-2. Проверить хотя бы один synthetic alert.
-3. Документировать operator action для scheduler stale, failed partitions, backup stale, first-detail failures.
+1. Настроить Telegram bot token и chat id в VPS `.env`.
+2. Проверить хотя бы один synthetic alert через `alert-webhook`.
+3. Проверить один реальный Prometheus -> Alertmanager -> webhook route.
+4. Документировать operator action для scheduler stale, failed partitions, backup stale, first-detail failures.
+
+Status на 2026-04-28:
+
+- Alertmanager route добавлен.
+- `alert-webhook` receiver добавлен.
+- Без Telegram credentials receiver логирует payloads.
+- С Telegram credentials receiver отправляет сообщения в Telegram.
 
 Go/no-go:
 

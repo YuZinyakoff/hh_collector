@@ -43,7 +43,7 @@
 
 - этот draft уже выглядит defendable для `search` coverage;
 - но `detail_limit=20` здесь пока означает bounded same-run detail budget, а не полную гарантию "хотя бы один detail на каждую найденную vacancy";
-- gap по `first-detail completeness` отдельно зафиксирован в [hh-api-completeness-policy-note.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-completeness-policy-note.md).
+- first-detail completeness теперь закрывается отдельным MVP backlog/drain contour, а не этим same-run budget; см. [first-detail-backlog.md](/home/yurizinyakov/projects/hh_collector/docs/ops/first-detail-backlog.md).
 
 Recommended launch shape:
 
@@ -208,14 +208,17 @@ runtime теперь уже различает `captcha` и `transport` на com
 Но это нужно читать узко:
 
 - данный draft уже хорошо защищает `search coverage`;
-- для полной research-completeness цели ему ещё не хватает persistent first-detail backlog semantics и отдельного drain contour для вакансий без успешного `detail`.
+- persistent first-detail backlog semantics теперь реализованы на MVP-уровне;
+- оставшийся gap для полной research-completeness уже не в semantics, а в scale validation полного drain, alert delivery и steady-state measurement.
 
 ## Follow-Ups
 
-До полного implementation-grade `v1` остаются два практических кодовых шага:
+До полного implementation-grade `v1` остаются практические hardening-шаги:
 
 1. Довести search transport budget от conservative hard stop до policy-target `3` consecutive / `5` total.
 2. Довести scheduler/run status mapping до `completed_with_detail_errors` и `completed_with_unresolved`.
+3. Провести более длинный supervised `detail-worker` run и закрепить capacity/storage estimate.
+4. Оформить production alert delivery.
 
 Текущая implementation queue вынесена отдельно:
 

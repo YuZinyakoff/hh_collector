@@ -1,9 +1,9 @@
 # HH API Policy V1 Next Implementation Steps
 
 Статус: active queue  
-Дата: 2026-03-31
+Дата: 2026-04-27
 
-Этот файл фиксирует ближайшие кодовые шаги после внедрения runtime-классификации `captcha` vs `transport`, bounded retry/backoff и baseline-prep hard stop на первом hard failed search partition.
+Этот файл фиксирует оставшиеся policy-v1 hardening steps после внедрения runtime-классификации `captcha` vs `transport`, bounded retry/backoff, failed-run resume path и MVP `first-detail` backlog contour.
 
 Цель:
 
@@ -19,8 +19,8 @@
 Важно:
 
 - immediate queue ниже описывает именно ближайший hardening scope для текущего scheduler draft;
-- но после уточнения research goal стало ясно, что этого недостаточно для полной `first-detail completeness`;
-- persistent first-detail backlog и отдельный drain contour теперь нужно считать следующим более крупным design/implementation slice, а не "необязательной оптимизацией".
+- persistent first-detail backlog и отдельный drain contour уже реализованы на MVP-уровне;
+- оставшийся gap по `first-detail completeness` теперь operational: scale validation, storage estimate, alert delivery и steady-state trend.
 
 ## 1. Search Transport Budget Refinement
 
@@ -106,9 +106,10 @@ Code focus:
 
 ## 4. Recommended Order
 
-Рекомендуемый порядок теперь:
+Рекомендуемый порядок на 2026-04-27:
 
-1. Довести thresholded search transport budget до `3 consecutive / 5 total`.
-2. Довести run status integration.
-3. После этого не переходить сразу к "final policy", а отдельно спроектировать persistent first-detail backlog / drain contour.
-4. Уже после этого переводить `policy v1` из draft в implementation-ready operator profile для полной research-completeness цели.
+1. Провести более длинный supervised `detail-worker` run и зафиксировать throughput/storage/failure mix.
+2. Оформить production alert delivery.
+3. Довести thresholded search transport budget до `3 consecutive / 5 total`.
+4. Довести run status integration.
+5. После successful VPS `search-only` baseline включать supervised first-detail drain и только затем переводить `policy v1` в implementation-ready operator profile для полной research-completeness цели.

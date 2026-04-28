@@ -1,7 +1,7 @@
 # HH API Completeness Policy Note
 
 Статус: active working note  
-Дата: 2026-03-31
+Дата: 2026-04-27
 
 Этот документ фиксирует уточнение research goal и policy-gap между текущим scheduler draft и фактической задачей проекта.
 
@@ -59,19 +59,20 @@
 
 ### 3.2. Detail Side
 
-Текущий scheduler draft недостаточен для `first-detail completeness`.
+Текущий scheduler draft сам по себе недостаточен для `first-detail completeness`, но отдельный MVP backlog/drain contour уже реализован.
 
 Почему:
 
 - same-run `detail_limit=20` является только bounded budget, а не гарантией first-detail coverage;
 - current detail selection строится из vacancies, наблюдённых в данном `crawl_run`, и режется по `limit`;
 - run может честно завершиться как `succeeded`, даже если множество впервые увиденных vacancies не получили `detail` просто потому, что не вошли в top-`limit`.
+- теперь этот gap закрывается не повышением `detail_limit`, а отдельным `drain-first-detail-backlog` / `detail_worker` contour поверх `vacancy_current_state`.
 
 Практически это означает:
 
 - текущий policy draft хорош для bounded same-run detail;
-- но он не гарантирует, что каждая найденная vacancy когда-либо получит первый `detail`;
-- для fast-moving vacancies это особенно рискованно: они могут исчезнуть до того, как попадут в маленький same-run detail budget.
+- first-detail completeness нужно оценивать по backlog trend, а не по success/failure одного `crawl_run`;
+- для fast-moving vacancies остаётся риск terminal_404 до первого detail, поэтому важно мерить first-detail lag и terminal_404 share.
 
 Свежий live signal по самому detail endpoint уже сильнее, чем раньше:
 
@@ -88,7 +89,7 @@
 Это меняет practical reading:
 
 - detail endpoint сейчас не выглядит главным throughput bottleneck;
-- главная проблема остаётся не в самом HH detail endpoint, а в backlog semantics и планировании drain contour.
+- главная проблема теперь не в самом HH detail endpoint и не в базовой backlog semantics, а в scale validation, storage growth и steady-state drain planning.
 
 Нижняя грубая оценка one-time detail bootstrap по текущему visible volume теперь уже лучше опирать на measured detail contour:
 
@@ -108,6 +109,13 @@
 1. `mandatory first-detail backlog`
 2. `optional refresh backlog`
 
+Статус на 2026-04-27:
+
+- `mandatory first-detail backlog` реализован на MVP-уровне через `vacancy_current_state`, `drain-first-detail-backlog` и `detail_worker`;
+- `terminal_404` закрывает item без бесконечного retry;
+- repeated non-terminal failures проходят через exponential cooldown;
+- `optional refresh backlog` остаётся bounded/same-run contour и не должен вытеснять first-detail backlog.
+
 Recommended priority order:
 
 1. `first_seen_or_missing_detail`
@@ -123,7 +131,7 @@ Required operator semantics:
 
 ## 5. Execution Implication
 
-Из этого следует отдельный execution contour для detail backlog.
+Из этого следует отдельный execution contour для detail backlog. На MVP-уровне он уже есть.
 
 Это не обязательно должен быть именно Celery, но по смыслу нужен отдельный background/drain path, который:
 
@@ -139,7 +147,7 @@ Required operator semantics:
 - отдельный guarded CLI loop;
 - queue-backed worker позже.
 
-Ключевое требование не в конкретном фреймворке, а в наличии persistent first-detail drain contour.
+Ключевое требование не в конкретном фреймворке, а в наличии persistent first-detail drain contour. Следующий вопрос уже не "есть ли contour", а "какой sustained drain envelope безопасен для production".
 
 ## 6. What Must Be Measured Next
 
@@ -165,8 +173,9 @@ Decision rule:
 На текущий момент корректно говорить так:
 
 - текущий draft уже близок к defendable `search coverage policy`;
-- текущий draft ещё не является defendable `full research completeness policy`;
-- для этого ему не хватает persistent first-detail backlog semantics и capacity estimate для detail drain.
+- текущий draft вместе с MVP first-detail backlog уже закрывает базовую semantics для `first-detail completeness`;
+- текущий draft ещё не является defendable `full research completeness policy`, пока нет full-scale drain measurement, alert delivery и steady-state proof;
+- следующий практический шаг: supervised `detail-worker` run с измерением throughput/storage/failure mix.
 
 Связанные документы:
 

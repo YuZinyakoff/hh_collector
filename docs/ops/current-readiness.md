@@ -2,6 +2,8 @@
 
 Состояние проекта на 2026-04-27 после длинного локального `search-only` baseline run и bounded `first-detail` drain validation.
 
+Короткая дорожная карта и текущий порядок работ: [project-status-roadmap.md](/home/yurizinyakov/projects/hh_collector/docs/ops/project-status-roadmap.md).
+
 ## Коротко
 
 - Planner completeness blocker закрыт: `area -> time_window` fallback выдержал большой живой run.
@@ -66,6 +68,7 @@
 
 ## Смежные документы
 
+- [project-status-roadmap.md](/home/yurizinyakov/projects/hh_collector/docs/ops/project-status-roadmap.md)
 - [vps-pilot-checklist.md](/home/yurizinyakov/projects/hh_collector/docs/ops/vps-pilot-checklist.md)
 - [first-detail-backlog.md](/home/yurizinyakov/projects/hh_collector/docs/ops/first-detail-backlog.md)
 - [hh-api-completeness-implementation-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-completeness-implementation-plan.md)

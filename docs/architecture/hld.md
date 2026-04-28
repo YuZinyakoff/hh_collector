@@ -904,6 +904,8 @@ Detail fetch выполняется только если:
 
 ## 16. Предлагаемый следующий шаг
 
+Исторический статус: этот HLD был исходной архитектурной постановкой. LLD, logical data model, repository scaffold и MVP components уже подготовлены; актуальная дорожная карта находится в [project-status-roadmap.md](/home/yurizinyakov/projects/hh_collector/docs/ops/project-status-roadmap.md).
+
 После утверждения данного HLD рекомендуется подготовить:
 
 1. **LLD по сервисам и очередям**

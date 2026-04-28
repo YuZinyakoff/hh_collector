@@ -2,10 +2,11 @@
 
 Короткий runbook для ночного локального прогона перед VPS pilot.
 
-Статус на 2026-04-03:
+Статус на 2026-04-27:
 
 - local soak-grade baseline contour уже подтверждён near-complete long run;
-- документ остаётся полезным как operator checklist, но следующий практический шаг уже смещается в VPS pilot.
+- first-detail backlog MVP реализован и smoke-проверен bounded worker tick'ом;
+- документ остаётся полезным как operator checklist, но следующий практический шаг уже смещается в supervised detail-worker measurement, alert delivery и VPS pilot.
 
 Смежные документы:
 

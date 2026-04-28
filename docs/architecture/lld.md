@@ -596,10 +596,10 @@ Operator semantics:
 ## 11.3. Detail fetch status
 
 * `not_requested`
-* `queued`
 * `running`
-* `done`
+* `succeeded`
 * `failed`
+* `terminal_404`
 
 ---
 
@@ -607,19 +607,16 @@ Operator semantics:
 
 Основные конфиги:
 
-* `SWEEP_SCHEDULE`
-* `GLOBAL_RPS_LIMIT`
-* `LIST_CONCURRENCY`
-* `DETAIL_CONCURRENCY`
-* `DETAIL_REFRESH_TTL_DAYS`
-* `MAX_RETRIES`
-* `RAW_RETENTION_DAYS`
-* `LOG_RETENTION_DAYS`
-* `INACTIVE_THRESHOLD_RUNS`
-* `DB_DSN`
-* `REDIS_DSN`
-* `HH_API_BASE_URL`
-* `HH_USER_AGENT`
+* `HHRU_SCHEDULER_INTERVAL_SECONDS`
+* `HHRU_SCHEDULER_DETAIL_LIMIT`
+* `HHRU_SCHEDULER_DETAIL_REFRESH_TTL_DAYS`
+* `HHRU_DB_*`
+* `HHRU_REDIS_*`
+* `HHRU_HH_API_BASE_URL`
+* `HHRU_HH_API_USER_AGENT`
+* `HHRU_HH_API_APPLICATION_TOKEN`
+* `HHRU_HOUSEKEEPING_*`
+* `HHRU_DETAIL_WORKER_*`
 
 ---
 

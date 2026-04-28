@@ -158,7 +158,7 @@ Confidence: medium-high.
 - При этом сам detail endpoint по свежим long probes не выглядит главным throughput bottleneck:
   - sequential `2000` distinct detail requests под `application_token` прошли без `403/captcha` с observed `~179.9 req/min`;
   - conservative batched contour `workers=3`, `burst_pause=1s`, `1200` distinct detail requests тоже прошёл без `403/captcha` с observed `~119.5 req/min`;
-  - practical implication: основной gap теперь не "умеет ли detail endpoint жить долго", а "есть ли у нас persistent first-detail backlog policy".
+  - practical implication: основной gap теперь не "умеет ли detail endpoint жить долго", а "как масштабировать persistent first-detail backlog policy до production".
 - `small ongoing detail budget` уже выглядит допустимым bounded contour как минимум до `every 5 searches -> 1 detail` и `max 24 details` на `search_prefix=120` в режиме `workers=3` + `burst_pause=1s`.
 - Search/detail auth signal на baseline-safe contours не показывает measured причины предпочесть один auth mode другому по anti-bot поведению: мягкий `detail` crossover прошёл clean у обоих auth modes, bounded mixed crossover тоже прошёл без captcha/403, а long-volume `2000` run прошёл и у token, и у anonymous. Поэтому default здесь задаётся operator policy, а не benchmark gain.
 - На `workers=4` есть неожиданный сигнал, что `small interleaved detail budget every 5 -> 1 detail` может даже смягчать search pressure относительно pure search burst, но пока это только один clean run, а не policy-grade fact.

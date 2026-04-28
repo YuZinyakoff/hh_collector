@@ -4,11 +4,12 @@
 
 Текущий фокус: надёжность сбора данных, а не аналитический слой.
 
-Статус на 2026-04-03:
+Статус на 2026-04-27:
 
 - длинный локальный `search-only` baseline уже практически доказан near-complete run'ом;
 - planner completeness blocker и локальный memory blocker больше не выглядят текущими stop-факторами;
-- следующий operational step теперь не "первый ночной тест", а VPS pilot плюс transport/outage resilience.
+- first-detail backlog MVP реализован и smoke-проверен bounded worker tick'ом;
+- следующий operational step теперь не "первый ночной тест", а supervised detail-worker measurement, alert delivery, VPS pilot и transport/outage resilience.
 
 ## 1. Цель
 
@@ -53,7 +54,15 @@ make compose-health
 PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main trigger-run-now --sync-dictionaries yes --detail-limit 5 --detail-refresh-ttl-days 30 --triggered-by manual-smoke
 ```
 
-### Stage 2. Ночной soak-test
+### Stage 2. Supervised detail-worker measurement
+
+Цель:
+
+- проверить first-detail drain не на одном smoke tick, а на более длинном controlled окне;
+- снять sustained throughput, terminal_404 share, retryable failure mix, cooldown backlog и DB growth;
+- подтвердить, что worker можно безопасно останавливать и продолжать.
+
+### Stage 3. Ночной soak-test
 
 Цель:
 
@@ -62,9 +71,9 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main trigger-r
 - увидеть честные terminal outcomes run'ов;
 - понять, нет ли failed partitions, stuck unresolved branches или неконтролируемого detail backlog.
 
-Это ближайший обязательный шаг.
+Это обязательный шаг перед unattended operation, но после Stage 2 и production alert delivery.
 
-### Stage 3. Несколько дней unattended
+### Stage 4. Несколько дней unattended
 
 Цель:
 
@@ -78,16 +87,16 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main trigger-r
 - ежедневная утренняя проверка dashboard + scheduler logs;
 - хотя бы один свежий backup и один успешный restore drill в этом окне.
 
-### Stage 4. VPS pilot
+### Stage 5. VPS pilot
 
 Цель:
 
 - перенести уже проверенный local soak baseline на постоянную машину;
 - включить alert delivery, регулярные backup/housekeeping и off-host backup copy.
 
-## 3. Ночной тест 2026-03-21 -> 2026-03-22
+## 3. Исторический пример ночного теста 2026-03-21 -> 2026-03-22
 
-Это конкретный план на сегодняшнюю ночь.
+Это пример локального soak-test profile. Не читать как актуальную дату следующего запуска.
 
 ### 3.1. Вечерний preflight
 

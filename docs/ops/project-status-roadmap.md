@@ -59,6 +59,21 @@
 2. Снять detail throughput, retryable failure mix, terminal_404 долю и DB growth.
 3. Зафиксировать estimate для cold-start drain и steady-state weekly operation.
 
+Команда для controlled local measurement:
+
+```bash
+BATCH_SIZE=100 MAX_TICKS=1 make detail-worker-measurement
+```
+
+Первый measurement 2026-04-28 уже прошёл clean:
+
+- `100/100` successful details;
+- `0` terminal_404;
+- `0` retryable failures;
+- active backlog `766389 -> 766289`;
+- DB delta `2277376 bytes`, примерно `22.8 KB` на selected item;
+- artifact: `.state/reports/detail-worker-measurement/20260428T111507Z/summary.md`.
+
 Go/no-go:
 
 - retryable failures не растут неконтролируемо;

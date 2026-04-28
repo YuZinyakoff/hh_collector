@@ -112,6 +112,7 @@ make compose-health
 make run-once-v2
 make drain-first-detail-backlog
 make worker-detail
+make detail-worker-measurement
 make scheduler-loop
 make backup
 make verify-backup

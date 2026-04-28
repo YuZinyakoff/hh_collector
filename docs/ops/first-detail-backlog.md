@@ -61,6 +61,35 @@ docker compose logs -f detail-worker
 
 Для первого VPS `search-only` pilot service лучше не включать. После успешного baseline можно включать detail worker отдельно и смотреть на скорость уменьшения backlog.
 
+## Supervised Measurement
+
+Для следующего controlled шага не запускать worker "вслепую"; использовать tmux launcher, который сохраняет preflight/postflight snapshot, worker log и summary:
+
+```bash
+BATCH_SIZE=100 MAX_TICKS=1 make detail-worker-measurement
+```
+
+Пути печатаются в stdout, а последние значения сохраняются в:
+
+- `.state/reports/detail-worker-measurement.tmux-log`
+- `.state/reports/detail-worker-measurement.summary`
+
+Если host Python не может подключиться к Postgres через `localhost`, launcher по умолчанию переопределяет `HHRU_DB_HOST=127.0.0.1`. Для другой схемы подключения можно задать:
+
+```bash
+HOST_DB_HOST=localhost BATCH_SIZE=100 MAX_TICKS=1 make detail-worker-measurement
+```
+
+Что смотреть после завершения:
+
+- `selected_total`
+- `succeeded_total`
+- `terminal_total`
+- `failed_total`
+- `active_backlog_delta`
+- `db_size_delta_bytes`
+- `first_detail_attempt_status.*` в postflight report
+
 ## Latest Controlled Local Run
 
 2026-04-27 после добавления dashboard panels и cooldown metrics был выполнен один controlled worker tick:
@@ -82,6 +111,25 @@ make worker-detail ARGS="--once --batch-size 25 --triggered-by controlled-detail
 - DB size delta: `270336 bytes`
 
 На этом sample storage growth составил примерно `10.8 KB` на selected item. Это не финальная capacity-константа, но полезная нижняя оценка для планирования первого bounded drain.
+
+2026-04-28 был выполнен supervised measurement через `make detail-worker-measurement`:
+
+```bash
+BATCH_SIZE=100 MAX_TICKS=1 make detail-worker-measurement
+```
+
+Итог:
+
+- `selected_total=100`
+- `succeeded_total=100`
+- `terminal_total=0`
+- `failed_total=0`
+- `active_backlog`: `766389 -> 766289`
+- duration: `39.333s`, примерно `2.54 detail req/s`
+- DB size delta: `2277376 bytes`
+- artifact: `.state/reports/detail-worker-measurement/20260428T111507Z/summary.md`
+
+На этом sample storage growth составил примерно `22.8 KB` на selected item. Это ближе к practical local measurement, чем batch `25`, но всё ещё не финальная capacity-константа для VPS.
 
 ## Retry Cooldown
 

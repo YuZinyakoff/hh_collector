@@ -7,7 +7,8 @@ ARGS ?=
 	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop worker-detail \
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill soak-test soak-test-no-build
+	backup verify-backup restore restore-drill detail-worker-measurement \
+	soak-test soak-test-no-build
 
 up:
 	$(COMPOSE) up -d postgres redis metrics
@@ -57,6 +58,9 @@ drain-first-detail-backlog:
 
 worker-detail:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.workers.detail_worker $(ARGS)
+
+detail-worker-measurement:
+	bash ./scripts/dev/launch_detail_worker_measurement_tmux.sh
 
 run-housekeeping:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-housekeeping $(ARGS)

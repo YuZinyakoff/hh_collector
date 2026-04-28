@@ -58,6 +58,8 @@ from hhru_platform.application.commands.run_collection_once import (
     run_collection_once,
 )
 from hhru_platform.application.commands.run_collection_once_v2 import (
+    DEFAULT_SEARCH_TRANSPORT_CONSECUTIVE_FAILURE_LIMIT,
+    DEFAULT_SEARCH_TRANSPORT_TOTAL_FAILURE_LIMIT,
     RunCollectionOnceV2Command,
     RunCollectionOnceV2Result,
     run_collection_once_v2,
@@ -180,6 +182,24 @@ def register_run_once_commands(
         default="run-once-v2",
         help="Actor or subsystem that initiated the flow. Defaults to run-once-v2.",
     )
+    v2_parser.add_argument(
+        "--search-transport-consecutive-failure-limit",
+        type=int,
+        default=DEFAULT_SEARCH_TRANSPORT_CONSECUTIVE_FAILURE_LIMIT,
+        help=(
+            "Stop in-run search transport requeue after this many consecutive failures. "
+            f"Defaults to {DEFAULT_SEARCH_TRANSPORT_CONSECUTIVE_FAILURE_LIMIT}."
+        ),
+    )
+    v2_parser.add_argument(
+        "--search-transport-total-failure-limit",
+        type=int,
+        default=DEFAULT_SEARCH_TRANSPORT_TOTAL_FAILURE_LIMIT,
+        help=(
+            "Stop in-run search transport requeue after this many total failures. "
+            f"Defaults to {DEFAULT_SEARCH_TRANSPORT_TOTAL_FAILURE_LIMIT}."
+        ),
+    )
     v2_parser.set_defaults(handler=handle_run_once_v2)
 
     resume_parser = subparsers.add_parser(
@@ -214,6 +234,24 @@ def register_run_once_commands(
         "--triggered-by",
         default="resume-run-v2",
         help="Actor or subsystem that initiated the resume flow. Defaults to resume-run-v2.",
+    )
+    resume_parser.add_argument(
+        "--search-transport-consecutive-failure-limit",
+        type=int,
+        default=DEFAULT_SEARCH_TRANSPORT_CONSECUTIVE_FAILURE_LIMIT,
+        help=(
+            "Stop in-run search transport requeue after this many consecutive failures. "
+            f"Defaults to {DEFAULT_SEARCH_TRANSPORT_CONSECUTIVE_FAILURE_LIMIT}."
+        ),
+    )
+    resume_parser.add_argument(
+        "--search-transport-total-failure-limit",
+        type=int,
+        default=DEFAULT_SEARCH_TRANSPORT_TOTAL_FAILURE_LIMIT,
+        help=(
+            "Stop in-run search transport requeue after this many total failures. "
+            f"Defaults to {DEFAULT_SEARCH_TRANSPORT_TOTAL_FAILURE_LIMIT}."
+        ),
     )
     resume_parser.set_defaults(handler=handle_resume_run_v2)
 
@@ -270,6 +308,10 @@ def handle_run_once_v2(args: argparse.Namespace) -> int:
         detail_refresh_ttl_days=int(args.detail_refresh_ttl_days),
         run_type=str(args.run_type),
         triggered_by=str(args.triggered_by),
+        search_transport_consecutive_failure_limit=int(
+            args.search_transport_consecutive_failure_limit
+        ),
+        search_transport_total_failure_limit=int(args.search_transport_total_failure_limit),
     )
     api_client = HHApiClient.from_settings()
     saturation_policy = PartitionSaturationPolicyV1()
@@ -300,6 +342,10 @@ def handle_resume_run_v2(args: argparse.Namespace) -> int:
         detail_limit=int(args.detail_limit),
         detail_refresh_ttl_days=int(args.detail_refresh_ttl_days),
         triggered_by=str(args.triggered_by),
+        search_transport_consecutive_failure_limit=int(
+            args.search_transport_consecutive_failure_limit
+        ),
+        search_transport_total_failure_limit=int(args.search_transport_total_failure_limit),
     )
     api_client = HHApiClient.from_settings()
     saturation_policy = PartitionSaturationPolicyV1()
@@ -439,6 +485,9 @@ def _execute_run_collection_once_v2_step(
             saturation_policy=saturation_policy,
         ),
         report_run_coverage_step=_execute_report_run_coverage_step,
+        requeue_failed_partitions_step=(
+            _SessionlessCrawlPartitionRepository().requeue_failed_by_run_id
+        ),
         select_detail_candidates_step=_execute_select_detail_candidates_step,
         fetch_vacancy_detail_step=lambda step_command: _execute_fetch_detail_step(
             step_command,
@@ -637,6 +686,8 @@ def _print_run_once_v2_summary(result: RunCollectionOnceV2Result) -> None:
     print(f"failed_partitions={result.failed_partitions}")
     print(f"coverage_ratio={result.coverage_ratio:.4f}")
     print(f"list_stage_status={result.list_stage_status}")
+    print(f"search_transport_failures_total={result.search_transport_failures_total}")
+    print(f"search_captcha_failures_total={result.search_captcha_failures_total}")
     print(f"detail_stage_status={result.detail_stage_status}")
     print(f"detail_candidates_selected={result.detail_candidates_selected}")
     print(f"detail_fetch_attempted={result.detail_fetch_attempted}")
@@ -679,6 +730,14 @@ def _print_resume_run_v2_summary(result: ResumeRunV2Result) -> None:
     print(f"failed_partitions={result.failed_partitions}")
     print(f"coverage_ratio={result.coverage_ratio:.4f}")
     print(f"list_stage_status={result.list_stage_status}")
+    print(
+        "search_transport_failures_total="
+        f"{getattr(result, 'search_transport_failures_total', 0)}"
+    )
+    print(
+        "search_captcha_failures_total="
+        f"{getattr(result, 'search_captcha_failures_total', 0)}"
+    )
     print(f"detail_stage_status={result.detail_stage_status}")
     print(f"detail_candidates_selected={result.detail_candidates_selected}")
     print(f"detail_fetch_attempted={result.detail_fetch_attempted}")

@@ -23,6 +23,8 @@ from hhru_platform.application.commands.report_run_coverage import (
     RunCoverageReport,
 )
 from hhru_platform.application.commands.run_collection_once_v2 import (
+    DEFAULT_SEARCH_TRANSPORT_CONSECUTIVE_FAILURE_LIMIT,
+    DEFAULT_SEARCH_TRANSPORT_TOTAL_FAILURE_LIMIT,
     DETAIL_STAGE_STATUS_COMPLETED,
     DETAIL_STAGE_STATUS_COMPLETED_WITH_FAILURES,
     DETAIL_STAGE_STATUS_SKIPPED,
@@ -30,6 +32,8 @@ from hhru_platform.application.commands.run_collection_once_v2 import (
     LIST_STAGE_STATUS_COMPLETED_WITH_UNRESOLVED,
     LIST_STAGE_STATUS_FAILED,
     _build_run_list_engine_failure_message,
+    _build_search_transport_budget_exhausted_message,
+    _search_transport_budget_allows_requeue,
 )
 from hhru_platform.application.commands.run_list_engine_v2 import (
     RunListEngineV2Command,
@@ -102,6 +106,10 @@ class ResumeRunV2Command:
     detail_limit: int = 100
     detail_refresh_ttl_days: int = 30
     triggered_by: str = "resume-run-v2"
+    search_transport_consecutive_failure_limit: int = (
+        DEFAULT_SEARCH_TRANSPORT_CONSECUTIVE_FAILURE_LIMIT
+    )
+    search_transport_total_failure_limit: int = DEFAULT_SEARCH_TRANSPORT_TOTAL_FAILURE_LIMIT
 
     def __post_init__(self) -> None:
         normalized_triggered_by = self.triggered_by.strip()
@@ -111,6 +119,14 @@ class ResumeRunV2Command:
             raise ValueError("detail_limit must be greater than or equal to zero")
         if self.detail_refresh_ttl_days < 1:
             raise ValueError("detail_refresh_ttl_days must be greater than or equal to one")
+        if self.search_transport_consecutive_failure_limit < 1:
+            raise ValueError(
+                "search_transport_consecutive_failure_limit must be greater than or equal to one"
+            )
+        if self.search_transport_total_failure_limit < 1:
+            raise ValueError(
+                "search_transport_total_failure_limit must be greater than or equal to one"
+            )
 
         object.__setattr__(self, "triggered_by", normalized_triggered_by)
 
@@ -237,6 +253,14 @@ class ResumeRunV2Result:
         if self.reconciliation_result is None:
             return "skipped"
         return self.reconciliation_result.run_status
+
+    @property
+    def search_transport_failures_total(self) -> int:
+        return sum(result.search_transport_failures_total for result in self.list_engine_results)
+
+    @property
+    def search_captcha_failures_total(self) -> int:
+        return sum(result.search_captcha_failures_total for result in self.list_engine_results)
 
 
 class CrawlRunRepository(Protocol):
@@ -437,8 +461,13 @@ def resume_run_v2(
             list_stage_error_message,
         ) = _run_resume_list_stage(
             crawl_run_id=crawl_run.id,
+            crawl_partition_repository=crawl_partition_repository,
             run_list_engine_v2_step=run_list_engine_v2_step,
             report_run_coverage_step=report_run_coverage_step,
+            search_transport_consecutive_failure_limit=(
+                command.search_transport_consecutive_failure_limit
+            ),
+            search_transport_total_failure_limit=command.search_transport_total_failure_limit,
         )
         completed_steps.append("run_list_engine_v2")
 
@@ -513,6 +542,8 @@ def resume_run_v2(
                 failed_partitions=result.failed_partitions,
                 coverage_ratio_before_resume=result.coverage_ratio_before_resume,
                 coverage_ratio=result.coverage_ratio,
+                search_transport_failures_total=result.search_transport_failures_total,
+                search_captcha_failures_total=result.search_captcha_failures_total,
             )
             return result
 
@@ -658,6 +689,8 @@ def resume_run_v2(
             triggered_by=result.triggered_by,
             initial_run_status=result.initial_run_status,
             failed_step=result.failed_step,
+            search_transport_failures_total=result.search_transport_failures_total,
+            search_captcha_failures_total=result.search_captcha_failures_total,
             unresolved_before_resume=result.unresolved_before_resume,
             resumed_unresolved_partitions=result.resumed_unresolved_partitions,
             resumed_failed_partitions=result.resumed_failed_partitions,
@@ -755,6 +788,8 @@ def resume_run_v2(
         coverage_ratio=result.coverage_ratio,
         list_stage_status=result.list_stage_status,
         final_status=result.status,
+        search_transport_failures_total=result.search_transport_failures_total,
+        search_captcha_failures_total=result.search_captcha_failures_total,
         detail_stage_status=result.detail_stage_status,
         detail_fetch_attempted=result.detail_fetch_attempted,
         detail_fetch_failed=result.detail_fetch_failed,
@@ -864,8 +899,11 @@ def _report_resume_coverage_safely(
 def _run_resume_list_stage(
     *,
     crawl_run_id: UUID,
+    crawl_partition_repository: CrawlPartitionRepository,
     run_list_engine_v2_step: RunListEngineV2Step,
     report_run_coverage_step: ReportRunCoverageStep,
+    search_transport_consecutive_failure_limit: int,
+    search_transport_total_failure_limit: int,
 ) -> tuple[
     tuple[RunListEngineV2Result, ...],
     RunCoverageReport,
@@ -874,6 +912,8 @@ def _run_resume_list_stage(
 ]:
     coverage_report = _report_resume_coverage(crawl_run_id, report_run_coverage_step)
     list_engine_results: list[RunListEngineV2Result] = []
+    search_transport_failures_total = 0
+    search_transport_failures_consecutive = 0
 
     while True:
         if coverage_report.summary.is_fully_covered:
@@ -936,6 +976,68 @@ def _run_resume_list_stage(
         coverage_report = _report_resume_coverage(crawl_run_id, report_run_coverage_step)
 
         if run_result.status == LIST_STAGE_STATUS_FAILED:
+            if run_result.search_transport_failures_total > 0:
+                search_transport_failures_total += run_result.search_transport_failures_total
+                search_transport_failures_consecutive += (
+                    run_result.search_transport_failures_total
+                )
+                failure_message = _build_run_list_engine_failure_message(
+                    run_result,
+                    coverage_report=coverage_report,
+                )
+                if not _search_transport_budget_allows_requeue(
+                    consecutive_failures=search_transport_failures_consecutive,
+                    total_failures=search_transport_failures_total,
+                    consecutive_failure_limit=search_transport_consecutive_failure_limit,
+                    total_failure_limit=search_transport_total_failure_limit,
+                ):
+                    return (
+                        tuple(list_engine_results),
+                        coverage_report,
+                        LIST_STAGE_STATUS_FAILED,
+                        _build_search_transport_budget_exhausted_message(
+                            consecutive_failures=search_transport_failures_consecutive,
+                            total_failures=search_transport_failures_total,
+                            consecutive_failure_limit=(
+                                search_transport_consecutive_failure_limit
+                            ),
+                            total_failure_limit=search_transport_total_failure_limit,
+                            failure_message=failure_message,
+                        ),
+                    )
+
+                requeued_partitions = crawl_partition_repository.requeue_failed_by_run_id(
+                    crawl_run_id
+                )
+                if requeued_partitions:
+                    LOGGER.warning(
+                        "resume_run_v2.search_transport_failure_requeued",
+                        extra={
+                            "run_id": str(crawl_run_id),
+                            "requeued_failed_partitions": len(requeued_partitions),
+                            "search_transport_failures_consecutive": (
+                                search_transport_failures_consecutive
+                            ),
+                            "search_transport_failures_total": search_transport_failures_total,
+                            "search_transport_consecutive_failure_limit": (
+                                search_transport_consecutive_failure_limit
+                            ),
+                            "search_transport_total_failure_limit": (
+                                search_transport_total_failure_limit
+                            ),
+                        },
+                    )
+                    coverage_report = _report_resume_coverage(
+                        crawl_run_id,
+                        report_run_coverage_step,
+                    )
+                    continue
+                return (
+                    tuple(list_engine_results),
+                    coverage_report,
+                    LIST_STAGE_STATUS_FAILED,
+                    f"{failure_message}; failed partition requeue made no progress",
+                )
             return (
                 tuple(list_engine_results),
                 coverage_report,
@@ -945,6 +1047,8 @@ def _run_resume_list_stage(
                     coverage_report=coverage_report,
                 ),
             )
+
+        search_transport_failures_consecutive = 0
 
         if (
             run_result.partitions_attempted == 0

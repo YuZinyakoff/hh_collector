@@ -1,6 +1,6 @@
 # Current Readiness
 
-Состояние проекта на 2026-04-27 после длинного локального `search-only` baseline run и bounded `first-detail` drain validation.
+Состояние проекта на 2026-04-28 после длинного локального `search-only` baseline run, bounded `first-detail` drain validation и transport hardening slice.
 
 Короткая дорожная карта и текущий порядок работ: [project-status-roadmap.md](/home/yurizinyakov/projects/hh_collector/docs/ops/project-status-roadmap.md).
 
@@ -18,6 +18,7 @@
   - terminal error: `URLError: [Errno -3] Temporary failure in name resolution`
   - момент: `2026-04-02 14:52 MSK`
 - Практически это означает: baseline contour уже жизнеспособен, а следующий blocker теперь не planner/memory, а resilience к transient transport/power/network failures.
+- Для этого blocker-а добавлен in-run search transport budget: `run-once-v2` и `resume-run-v2` переочередят failed search partitions после transient transport failure до лимитов `3` consecutive / `5` total.
 
 ## Что уже можно считать доказанным
 
@@ -25,7 +26,8 @@
 - `run-once-v2` с planner v2 способен пройти почти весь live search tree без `unresolved` веток как системного blocker-а.
 - Runtime больше не упирается в прежний локальный memory wall при длинном `search-only` run.
 - Текущий корпус уже имеет правильный порядок величины для HH search snapshot-like сбора.
-- `resume-run-v2` теперь умеет переочередить `failed` terminal search partitions из `failed` run, то есть единичный transport leaf failure больше не обязан обнулять почти готовый baseline.
+- `resume-run-v2` умеет переочередить `failed` terminal search partitions из `failed` run, то есть единичный transport leaf failure больше не обязан обнулять почти готовый baseline.
+- `run-once-v2` теперь также имеет in-run transport budget: search partition с transport failure переочередится без ручного full rerun, пока не исчерпан лимит `3` consecutive / `5` total.
 - Начат storage-tiering contour:
   - short snapshot churn снижен до `first_seen/hash_changed`
   - появился local retention archive export
@@ -45,8 +47,7 @@
 ## Что ещё не доказано
 
 - Полностью успешный terminal `search-only` baseline без внешнего обрыва.
-- Run-level resilience к transient transport/DNS outage без потери почти готового baseline.
-- Автоматический bounded run-level retry budget для repeated transport failures; сейчас есть operator recovery path, но не полный self-healing contour.
+- Live proof нового run-level transport budget на полном `search-only` baseline.
 - `first-detail` backlog на масштабе полного baseline: bounded batch доказан, но полный drain ещё не завершён.
 - Многодневная unattended production stability.
 
@@ -55,9 +56,9 @@
 На 2026-04-27 система уже выглядит готовой не к "первой попытке baseline", а к следующему operational этапу:
 
 1. Провести более длинный supervised `detail-worker` run для уточнения throughput и storage growth.
-2. Оформить production alert delivery.
-3. Transport/resume hardening, чтобы не терять почти завершённый run из-за единичного outage.
-4. Затем VPS pilot на более стабильном хосте и полный `search-only` baseline.
+2. Оформить production alert delivery на реальном Telegram receiver.
+3. Проверить новый transport budget на VPS `search-only` baseline.
+4. Затем снять полный successful baseline report: DB size, backup size, request count, duration, coverage, unique vacancies.
 5. После baseline включить supervised `search + detail drain` contour.
 
 ## Практический вывод

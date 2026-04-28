@@ -1,6 +1,6 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-04-27.
+Дата среза: 2026-04-28.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -19,17 +19,20 @@
 - backup/verify/restore-drill path есть;
 - retention archive и WebDAV offsite sync проверены на Yandex Disk;
 - first-detail backlog MVP реализован: backlog selector, drain command, `detail_worker`, terminal `404`, retry cooldown, metrics, alerts, Grafana panels;
-- controlled first-detail worker tick прошёл чисто: `24` successful detail snapshots, `1` terminal_404, `0` retryable failures.
+- controlled first-detail worker tick прошёл чисто: `24` successful detail snapshots, `1` terminal_404, `0` retryable failures;
+- local detail-worker measurement `100` items прошёл clean: `100/100` successful details, active backlog `766389 -> 766289`, DB delta около `2.28 MB`;
+- Alertmanager + `alert-webhook` delivery foundation добавлены;
+- in-run search transport budget добавлен для `run-once-v2` и `resume-run-v2`: transient failed search partitions переочередятся до лимитов `3` consecutive / `5` total.
 
 Текущий статус не равен production readiness. Корректная формулировка: базовая жизнеспособность search collection и first-detail backlog contour доказана, но полный production operating mode ещё не доказан.
 
 ## 2. Что Ещё Не Доказано
 
 - Полностью successful terminal `search-only` baseline без внешнего outage.
-- Автоматический run-level transport budget `3 consecutive / 5 total`; сейчас есть bounded request retries и operator recovery, но не полный self-healing run state machine.
+- Live proof автоматического run-level transport budget `3 consecutive / 5 total` на длинном search baseline.
 - Полный first-detail drain на масштабе baseline.
 - Sustained detail throughput/storage growth на длинном supervised run.
-- Production alert delivery, а не только metrics/rules/dashboards.
+- Production alert delivery на VPS с реальными Telegram credentials и synthetic alert test.
 - Многодневная unattended stability на VPS.
 - Месячный production режим с backup, housekeeping, offsite archive и operator routine.
 
@@ -39,7 +42,7 @@
 | --- | --- | --- |
 | DB schema / migrations | ready for MVP | core operational tables есть, миграции и tests покрывают основной путь |
 | Search planner v2 | locally validated | near-complete baseline снял planner completeness blocker |
-| Search runtime | viable, needs hardening | нужен run-level transport budget и clean terminal baseline |
+| Search runtime | viable, partially hardened | in-run transport budget добавлен; нужен clean terminal baseline |
 | Resume failed search run | MVP ready | умеет продолжать failed terminal search branches |
 | Detail same-run budget | ready as bounded contour | не является completeness guarantee |
 | First-detail backlog | MVP ready | нужен длинный drain measurement |
@@ -106,9 +109,15 @@ Go/no-go:
 2. Уточнить terminal status mapping для `completed_with_unresolved` и `completed_with_detail_errors`.
 3. Не превращать transient DNS/network outage в потерю почти готового baseline.
 
+Status на 2026-04-28:
+
+- `run-once-v2` переочередит failed search partitions только для transport failures, пока не достигнет `3` consecutive или `5` total failures.
+- `resume-run-v2` использует тот же budget при повторном прохождении failed/unresolved branches.
+- CLI summary показывает `search_transport_failures_total` и `search_captcha_failures_total`.
+
 Go/no-go:
 
-- единичный outage не требует full rerun;
+- единичный transport leaf failure не требует full rerun;
 - operator summary объясняет, что именно произошло;
 - targeted resume path остаётся штатным.
 

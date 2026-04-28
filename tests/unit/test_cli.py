@@ -384,11 +384,14 @@ def test_run_once_v2_cli_prints_tree_aware_summary(monkeypatch, capsys) -> None:
         assert command.detail_refresh_ttl_days == 21
         assert command.run_type == "weekly_sweep"
         assert command.triggered_by == "cli-v2"
+        assert command.search_transport_consecutive_failure_limit == 3
+        assert command.search_transport_total_failure_limit == 5
         assert "sync_dictionary_step" in kwargs
         assert "create_crawl_run_step" in kwargs
         assert "plan_run_v2_step" in kwargs
         assert "run_list_engine_v2_step" in kwargs
         assert "report_run_coverage_step" in kwargs
+        assert "requeue_failed_partitions_step" in kwargs
         assert "select_detail_candidates_step" in kwargs
         assert "fetch_vacancy_detail_step" in kwargs
         assert "reconcile_run_step" in kwargs
@@ -449,6 +452,8 @@ def test_run_once_v2_cli_prints_tree_aware_summary(monkeypatch, capsys) -> None:
     assert "total_partitions=0" in captured.out
     assert "coverage_ratio=0.0000" in captured.out
     assert "list_stage_status=completed" in captured.out
+    assert "search_transport_failures_total=0" in captured.out
+    assert "search_captcha_failures_total=0" in captured.out
     assert "detail_stage_status=skipped" in captured.out
     assert "reconciliation_status=succeeded" in captured.out
     assert "completed_steps=create_crawl_run,plan_sweep_v2,reconcile_run" in captured.out

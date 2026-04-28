@@ -767,6 +767,7 @@ def test_run_collection_once_v2_surfaces_transport_failure_in_list_stage() -> No
             detail_limit=0,
             run_type="weekly_sweep",
             triggered_by="cli",
+            search_transport_consecutive_failure_limit=1,
         ),
         sync_dictionary_step=lambda command: (_ for _ in ()).throw(
             AssertionError(f"unexpected dictionary sync {command.dictionary_name}")
@@ -799,6 +800,207 @@ def test_run_collection_once_v2_surfaces_transport_failure_in_list_stage() -> No
     assert result.status == "failed"
     assert result.failed_step == "run_list_engine_v2"
     assert "transport" in (result.error_message or "")
+
+
+def test_run_collection_once_v2_requeues_transient_search_transport_failure() -> None:
+    run_id = uuid4()
+    root_partition_id = uuid4()
+    events: list[tuple[object, ...]] = []
+
+    def create_crawl_run_step(command) -> CrawlRun:
+        events.append(("create", command.run_type, command.triggered_by))
+        return _build_crawl_run(run_id=run_id, run_type=command.run_type)
+
+    def plan_run_v2_step(command) -> PlanRunResult:
+        events.append(("plan_v2", command.crawl_run_id))
+        root_partition = _build_partition(
+            crawl_run_id=command.crawl_run_id,
+            partition_id=root_partition_id,
+            partition_key="area:113",
+            status="pending",
+            coverage_status="unassessed",
+        )
+        return PlanRunResult(
+            crawl_run_id=command.crawl_run_id,
+            created_partitions=[root_partition],
+            partitions=[root_partition],
+        )
+
+    coverage_reports = iter(
+        (
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=1,
+                pending_terminal_partitions=1,
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                failed_partitions=1,
+                coverage_ratio=0.0,
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=0,
+                pending_partitions=1,
+                pending_terminal_partitions=1,
+                coverage_ratio=0.0,
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=1,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                coverage_ratio=1.0,
+            ),
+            _build_coverage_report(
+                run_id=run_id,
+                total_partitions=1,
+                terminal_partitions=1,
+                covered_terminal_partitions=1,
+                pending_partitions=0,
+                pending_terminal_partitions=0,
+                coverage_ratio=1.0,
+                run_status="succeeded",
+            ),
+        )
+    )
+
+    def report_run_coverage_step(command) -> RunCoverageReport:
+        events.append(("coverage", command.crawl_run_id))
+        return next(coverage_reports)
+
+    engine_calls = 0
+
+    def run_list_engine_v2_step(command) -> RunListEngineV2Result:
+        nonlocal engine_calls
+        engine_calls += 1
+        events.append(("list_engine", command.crawl_run_id, command.partition_limit))
+        if engine_calls == 1:
+            return RunListEngineV2Result(
+                status="failed",
+                crawl_run_id=command.crawl_run_id,
+                partition_results=(
+                    _build_partition_result(
+                        crawl_run_id=command.crawl_run_id,
+                        partition_id=root_partition_id,
+                        final_partition_status="failed",
+                        final_coverage_status="unassessed",
+                        error_message="transport_error: DNS failure",
+                        page_results=(
+                            ProcessListPageResult(
+                                partition_id=root_partition_id,
+                                partition_status="failed",
+                                page=0,
+                                pages_total_expected=None,
+                                vacancies_processed=0,
+                                vacancies_created=0,
+                                seen_events_created=0,
+                                request_log_id=10,
+                                raw_payload_id=None,
+                                processed_vacancies=[],
+                                error_message="transport_error: DNS failure",
+                                status_code=0,
+                                error_type=None,
+                            ),
+                        ),
+                    ),
+                ),
+                remaining_pending_terminal_count=0,
+                search_transport_failures_total=1,
+                first_failure_error_message="transport_error: DNS failure",
+            )
+        return RunListEngineV2Result(
+            status="succeeded",
+            crawl_run_id=command.crawl_run_id,
+            partition_results=(
+                _build_partition_result(
+                    crawl_run_id=command.crawl_run_id,
+                    partition_id=root_partition_id,
+                    final_partition_status="done",
+                    final_coverage_status="covered",
+                ),
+            ),
+            remaining_pending_terminal_count=0,
+        )
+
+    def requeue_failed_partitions_step(crawl_run_id: UUID) -> tuple[CrawlPartition, ...]:
+        events.append(("requeue_failed", crawl_run_id))
+        return (
+            _build_partition(
+                crawl_run_id=crawl_run_id,
+                partition_id=root_partition_id,
+                partition_key="area:113",
+                status="pending",
+                coverage_status="unassessed",
+            ),
+        )
+
+    def reconcile_run_step(command) -> ReconcileRunResult:
+        events.append(("reconcile", command.crawl_run_id, command.final_run_status))
+        assert command.final_run_status == "succeeded"
+        return ReconcileRunResult(
+            crawl_run_id=command.crawl_run_id,
+            observed_in_run_count=0,
+            missing_updated_count=0,
+            marked_inactive_count=0,
+            run_status="succeeded",
+        )
+
+    result = run_collection_once_v2(
+        RunCollectionOnceV2Command(
+            detail_limit=0,
+            run_type="weekly_sweep",
+            triggered_by="cli",
+        ),
+        sync_dictionary_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected dictionary sync {command.dictionary_name}")
+        ),
+        create_crawl_run_step=create_crawl_run_step,
+        plan_run_v2_step=plan_run_v2_step,
+        run_list_engine_v2_step=run_list_engine_v2_step,
+        report_run_coverage_step=report_run_coverage_step,
+        requeue_failed_partitions_step=requeue_failed_partitions_step,
+        select_detail_candidates_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected detail selection {command.crawl_run_id}")
+        ),
+        fetch_vacancy_detail_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected detail fetch {command.vacancy_id}")
+        ),
+        reconcile_run_step=reconcile_run_step,
+        finalize_crawl_run_step=lambda command: (_ for _ in ()).throw(
+            AssertionError(f"unexpected finalize {command.crawl_run_id}")
+        ),
+    )
+
+    assert events == [
+        ("create", "weekly_sweep", "cli"),
+        ("plan_v2", run_id),
+        ("coverage", run_id),
+        ("list_engine", run_id, 1),
+        ("coverage", run_id),
+        ("requeue_failed", run_id),
+        ("coverage", run_id),
+        ("list_engine", run_id, 1),
+        ("coverage", run_id),
+        ("reconcile", run_id, "succeeded"),
+        ("coverage", run_id),
+    ]
+    assert result.status == "succeeded"
+    assert result.list_stage_status == "completed"
+    assert result.search_transport_failures_total == 1
+    assert result.list_engine_iterations == 2
 
 
 def _build_crawl_run(*, run_id: UUID, run_type: str) -> CrawlRun:

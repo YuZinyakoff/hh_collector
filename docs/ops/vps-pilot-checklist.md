@@ -28,11 +28,13 @@
 - Добавлены Grafana panels для first-detail open/ready/cooldown backlog и drain outcomes.
 - Controlled local `detail-worker --once --batch-size 25` прошёл успешно: `24` detail snapshots, `1` terminal_404, `0` retryable failures, `~1.88 req/s`, DB delta `270336 bytes`.
 - Добавлен Alertmanager + `alert-webhook` receiver; Telegram delivery включается через env.
+- Добавлен in-run search transport budget для `run-once-v2` и `resume-run-v2`: transient transport failed partitions переочередятся до лимитов `3` consecutive / `5` total.
 
 ## 2. Что ещё не готово
 
 - `first-detail` backlog ещё не прогнан на масштабе полного baseline.
 - Production alert delivery foundation есть, но на VPS ещё нужно настроить Telegram credentials и сделать synthetic alert test.
+- Новый in-run transport budget ещё не проверен на полном VPS `search-only` baseline.
 - Нет многодневного unattended production signal.
 
 Практический вывод: VPS pilot должен быть `search-only` baseline pilot, а не финальный месячный production launch.
@@ -131,6 +133,11 @@ docker compose --profile ops run --rm app run-once-v2 \
   --triggered-by vps-search-baseline
 ```
 
+По умолчанию `run-once-v2` не валит весь baseline на первом transient transport leaf: failed search partition будет переочереден, пока не достигнуты лимиты `3` consecutive / `5` total transport failures. В summary смотреть:
+
+- `search_transport_failures_total`
+- `search_captcha_failures_total`
+
 Detach:
 
 ```text
@@ -152,6 +159,8 @@ docker compose logs --tail=100 metrics
 ```bash
 docker compose --profile ops run --rm app resume-run-v2 --run-id <run_id> --triggered-by vps-resume
 ```
+
+`resume-run-v2` использует тот же in-run transport budget. Если summary содержит `search transport budget exhausted`, не запускать blind loop сразу: сначала проверить сеть/DNS/VPS host и recent HH API health.
 
 Если run упал из-за memory/disk/host issue:
 

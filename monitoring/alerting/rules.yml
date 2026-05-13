@@ -23,6 +23,27 @@ groups:
         expr: clamp_min(time() - max(hhru_backup_last_success_timestamp_seconds), 0)
       - record: hhru:restore_drill_last_success_age_seconds
         expr: clamp_min(time() - max(hhru_restore_drill_last_success_timestamp_seconds), 0)
+      - record: hhru:host_cpu_usage_ratio
+        expr: 1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))
+      - record: hhru:host_iowait_ratio
+        expr: avg(rate(node_cpu_seconds_total{mode="iowait"}[5m]))
+      - record: hhru:host_memory_usage_ratio
+        expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+      - record: hhru:host_filesystem_usage_ratio
+        expr: |
+          max by (instance, mountpoint) (
+            1 - (
+              node_filesystem_avail_bytes{
+                fstype!~"autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|squashfs|sysfs|tracefs|tmpfs",
+                mountpoint!~"/(dev|proc|sys|run)($|/)"
+              }
+              /
+              node_filesystem_size_bytes{
+                fstype!~"autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|squashfs|sysfs|tracefs|tmpfs",
+                mountpoint!~"/(dev|proc|sys|run)($|/)"
+              }
+            )
+          )
   - name: hhru-platform
     rules:
       - alert: HHRUPlatformMetricsEndpointDown
@@ -139,3 +160,59 @@ groups:
           summary: PostgreSQL backup is stale
           description: No successful PostgreSQL backup has been observed for more than 72 hours.
           action: Run run-backup, verify the archive, and if it still fails inspect PostgreSQL connectivity, disk space, and backup script output.
+  - name: hhru-platform-host
+    rules:
+      - alert: HHRUPlatformNodeExporterDown
+        expr: up{job="node_exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: node-exporter is down
+          description: Prometheus cannot scrape node-exporter for 5 minutes, so host CPU/RAM/disk metrics are unavailable.
+          action: Check the node-exporter container, Docker host mounts, and observability profile.
+      - alert: HHRUPlatformCAdvisorDown
+        expr: up{job="cadvisor"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: cAdvisor is down
+          description: Prometheus cannot scrape cAdvisor for 5 minutes, so container CPU/RAM metrics are unavailable.
+          action: Check the cadvisor container, privileged mode, and Docker host mounts.
+      - alert: HHRUPlatformHostFilesystemHigh
+        expr: hhru:host_filesystem_usage_ratio > 0.85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: host filesystem usage is high
+          description: A monitored host filesystem has been above 85% usage for 15 minutes.
+          action: Check DB volume, backups, retention archives, Docker volumes, and offsite sync before starting another long run.
+      - alert: HHRUPlatformHostMemoryHigh
+        expr: hhru:host_memory_usage_ratio > 0.90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: host memory usage is high
+          description: Host memory usage has been above 90% for 15 minutes.
+          action: Check postgres, detail-worker, scheduler and Docker container memory in the Host / Container Resources dashboard.
+      - alert: HHRUPlatformHostCPUHigh
+        expr: hhru:host_cpu_usage_ratio > 0.90
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: host CPU usage is high
+          description: Host CPU usage has been above 90% for 30 minutes.
+          action: Check active search/detail runs and container CPU consumers before increasing worker throughput.
+      - alert: HHRUPlatformHostIOWaitHigh
+        expr: hhru:host_iowait_ratio > 0.20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: host IO wait is high
+          description: Host IO wait has been above 20% for 15 minutes.
+          action: Check PostgreSQL write load, backup/archive activity, disk type, and whether any live DB path is on slow network storage.

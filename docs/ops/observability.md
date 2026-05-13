@@ -9,6 +9,8 @@
 - `alertmanager` profile получает Prometheus alerts
 - `alert-webhook` принимает Alertmanager webhook payloads и, если настроен Telegram, отправляет сообщения наружу
 - `grafana` profile автоматически подключает Prometheus datasource и dashboards из репозитория
+- `node-exporter` profile экспортирует host CPU/RAM/filesystem/IO metrics
+- `cadvisor` profile экспортирует Docker container CPU/RAM/network metrics
 - приложение пишет JSON structured logs в stderr
 - file-backed metrics сохраняются в `HHRU_METRICS_STATE_PATH`
 
@@ -40,6 +42,8 @@ curl http://127.0.0.1:8001/metrics
 curl http://127.0.0.1:9090/-/ready
 curl http://127.0.0.1:9093/-/ready
 curl http://127.0.0.1:8010/healthz
+curl http://127.0.0.1:9100/metrics
+curl http://127.0.0.1:8080/metrics
 ```
 
 Открыть UI:
@@ -66,6 +70,7 @@ Provisioned dashboards:
 - `Scheduler / Recovery Health`
 - `Collector Overview`
 - `HH API / Ingest Health`
+- `Host / Container Resources`
 
 Ключевые метрики:
 
@@ -112,6 +117,9 @@ Provisioned dashboards:
 - `hhru_upstream_request_total{endpoint,status_class}`
 - `hhru_upstream_request_duration_seconds{endpoint,status_class}`
 - recording rules `hhru:scheduler_tick_age_seconds`, `hhru:scheduler_last_triggered_run_age_seconds`, `hhru:coverage_failed_partitions_open`, `hhru:coverage_unresolved_partitions_open`, `hhru:detail_repair_backlog_open`, `hhru:first_detail_backlog_active_open`, `hhru:first_detail_backlog_active_ready`, `hhru:first_detail_backlog_active_cooldown`, `hhru:housekeeping_last_run_age_seconds`, `hhru:backup_last_success_age_seconds`, `hhru:restore_drill_last_success_age_seconds`
+- host recording rules `hhru:host_cpu_usage_ratio`, `hhru:host_iowait_ratio`, `hhru:host_memory_usage_ratio`, `hhru:host_filesystem_usage_ratio`
+- node-exporter raw metrics `node_cpu_seconds_total`, `node_memory_MemAvailable_bytes`, `node_memory_MemTotal_bytes`, `node_filesystem_*`
+- cAdvisor raw metrics `container_cpu_usage_seconds_total`, `container_memory_working_set_bytes`, `container_network_*`
 
 Новый orchestration-lite flow пишет отдельную operation metric:
 
@@ -175,6 +183,26 @@ Planner-v2 execution path пишет отдельные operation metrics:
 - error mix по endpoint
 - last success timestamps критичных ingest-операций
 
+### Host / Container Resources
+
+Нужен для VPS sizing и диагностики resource pressure. Показывает:
+
+- host CPU usage;
+- host memory usage;
+- host IO wait;
+- filesystem usage по mountpoint;
+- container CPU usage по Docker Compose service;
+- container memory working set по Docker Compose service;
+- container network IO по Docker Compose service.
+
+Операторская цель: после VPS pilot понять, хватает ли `8 vCPU / 16 GB RAM`, можно ли уменьшиться, или detail-worker/search/backup создают CPU/RAM/IO pressure.
+
+Local caveat:
+
+- Docker Desktop / WSL может отдавать неполные filesystem/container labels через `node-exporter`/`cadvisor`.
+- Для sizing authoritative signal должен сниматься на VPS/Linux host.
+- Локально достаточно проверить, что Prometheus targets `node_exporter` и `cadvisor` поднимаются и скрейпятся.
+
 ## Какие dashboard смотреть в первую очередь
 
 1. `Scheduler / Recovery Health`
@@ -183,6 +211,8 @@ Planner-v2 execution path пишет отдельные operation metrics:
    Нужен для общего operational контекста, terminal statuses и write activity.
 3. `HH API / Ingest Health`
    Открывать, когда health dashboard показывает деградацию и нужно понять, это upstream/API или collector execution.
+4. `Host / Container Resources`
+   Открывать перед sizing-решениями, после длинных baseline/detail runs и при disk/memory/CPU/IO алертах.
 
 ## Как интерпретировать панели
 
@@ -284,6 +314,12 @@ curl -X POST http://127.0.0.1:8010/alertmanager \
 - `HHRUPlatformResumeUnresolvedRepeatedly`
 - `HHRUPlatformHousekeepingStale`
 - `HHRUPlatformBackupStale`
+- `HHRUPlatformNodeExporterDown`
+- `HHRUPlatformCAdvisorDown`
+- `HHRUPlatformHostFilesystemHigh`
+- `HHRUPlatformHostMemoryHigh`
+- `HHRUPlatformHostCPUHigh`
+- `HHRUPlatformHostIOWaitHigh`
 
 ## Что считать тревожным
 
@@ -303,6 +339,11 @@ curl -X POST http://127.0.0.1:8010/alertmanager \
 - любое состояние, в котором open-debt панели на `Scheduler / Recovery Health` остаются ненулевыми дольше ожидаемого operator window: это означает не просто historical факт, а незакрытый operational долг по конкретным run-ам
 - `hhru:housekeeping_last_run_age_seconds` уходит за неделю или `Housekeeping Deletions In Range` долго остаётся нулевым при явно растущих data volumes
 - `hhru:backup_last_success_age_seconds` уходит за 72 часа или `Backup Runs In Range` показывает repeated failures
+- `up{job="node_exporter"} == 0` или `up{job="cadvisor"} == 0`: host/container resource telemetry недоступна
+- `hhru:host_filesystem_usage_ratio > 0.85`: перед long run нужно разбирать DB volume, backups, archive bundles и Docker volumes
+- `hhru:host_memory_usage_ratio > 0.90`: риск swap/OOM и деградации Postgres/worker-ов
+- `hhru:host_cpu_usage_ratio > 0.90`: CPU saturation; полезно смотреть, search/detail/backup ли это
+- `hhru:host_iowait_ratio > 0.20`: disk/IO pressure; особенно важно при сетевых дисках и во время backup/archive
 
 ## Как действовать по алертам
 
@@ -328,6 +369,18 @@ curl -X POST http://127.0.0.1:8010/alertmanager \
   Сначала запустить `run-housekeeping` без `--execute`, проверить per-target plan и guardrails, затем повторить с `--execute`, если summary выглядит ожидаемо и не затрагивает лишние данные.
 - `HHRUPlatformBackupStale`
   Запустить `run-backup`, затем `verify-backup-file`. Если backup всё ещё падает, разбирать PostgreSQL connectivity, disk space и backup/restore tooling до следующего unattended run.
+- `HHRUPlatformNodeExporterDown`
+  Проверить контейнер `node-exporter`, mounts `/proc`, `/sys`, `/`, и что observability profile поднят на Linux/VPS host.
+- `HHRUPlatformCAdvisorDown`
+  Проверить контейнер `cadvisor`, privileged mode и Docker host mounts. На VPS это blocker для container-level sizing.
+- `HHRUPlatformHostFilesystemHigh`
+  Проверить `df -h`, размер Docker volumes, `.state/backups`, `.state/archive`, свежесть offsite sync и retention policy. Не стартовать новый long run до освобождения места.
+- `HHRUPlatformHostMemoryHigh`
+  Открыть `Host / Container Resources`, найти service с высоким working set, проверить Postgres/detail-worker/scheduler и при необходимости снизить worker throughput.
+- `HHRUPlatformHostCPUHigh`
+  Проверить активные search/detail/backup jobs. Если CPU high совпадает с detail drain, уменьшить batch/interval до следующего sizing решения.
+- `HHRUPlatformHostIOWaitHigh`
+  Проверить PostgreSQL write load, backup/archive jobs и тип диска. Если DB live path на сетевом диске, считать это главным подозреваемым до load test.
 
 ## State file
 

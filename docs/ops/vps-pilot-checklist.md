@@ -1,6 +1,6 @@
 # VPS Pilot Checklist
 
-Дата: 2026-04-25
+Дата: 2026-04-29
 
 Цель этого документа: провести первый VPS pilot без смешивания трёх разных задач:
 
@@ -55,6 +55,77 @@
 
 Для первого pilot лучше не брать диск меньше `160 GB`. Один near-complete local `search-only` run уже дал несколько GB Postgres growth, а `detail` stage позже увеличит storage pressure.
 
+### Timeweb Cloud decision
+
+Источник истины на момент выбора: актуальная панель Timeweb Cloud. Ссылки для сверки:
+
+- [VDS/VPS tariffs](https://timeweb.cloud/services/vds-vps)
+- [Cloud servers calculator](https://timeweb.cloud/prices/)
+- [Cloud server configuration](https://timeweb.cloud/docs/cloud-servers/manage-servers/server-configuration)
+- [Network drives](https://timeweb.cloud/docs/network-drives)
+- [Managed PostgreSQL](https://timeweb.cloud/services/postgresql)
+- [S3 storage](https://timeweb.cloud/services/s3-storage)
+
+Решение для первого pilot:
+
+- взять один VPS/cloud server с локальным NVMe/SSD и держать `postgres`, `redis`, `metrics`, `prometheus`, `grafana`, `alertmanager` в Docker Compose на этом же хосте;
+- целиться минимум в `4 vCPU / 8 GB RAM / 160 GB NVMe`;
+- если разница в цене приемлемая, сразу брать production-shaped `8 vCPU / 16 GB RAM / 320-500 GB NVMe`;
+- не использовать сетевой HDD как основной диск PostgreSQL;
+- сетевой диск или S3 использовать только под backups, retention archives и cold/offsite copies;
+- Managed PostgreSQL отложить до момента, когда single-node Compose перестанет быть достаточным по storage/ops/availability.
+
+Почему так:
+
+- PostgreSQL для crawler state и raw payloads чувствителен к latency и random IO, поэтому live DB должна лежать на локальном NVMe/SSD или, минимум, на высокопроизводительном сетевом NVMe, но не на HDD cold storage.
+- Сетевой HDD выгоден для объёма, но это backup/archive tier, не primary database tier.
+- Managed PostgreSQL снижает операционную нагрузку, но добавляет стоимость, сетевую связность, отдельный backup/restore contour и отклоняется от текущего Docker Compose runbook.
+- S3/Yandex Disk/WebDAV подходят для offsite-копий и архивов; это не файловая система для live PostgreSQL.
+
+Go/no-go после pilot:
+
+- если `DB size + next backup + local archive` занимает больше `60-70%` диска, до `detail` drain нужно увеличивать диск или мигрировать на larger node;
+- если `search-only` baseline стабилен, но `detail` batch показывает быстрый рост storage, переходить на `320-500 GB` до недельного `search + detail`;
+- если CPU/RAM становятся узким местом, сначала масштабировать VPS вверх; managed DB рассматривать вторым шагом.
+
+Локальные storage facts на 2026-04-29:
+
+- near-complete `search-only` corpus: `767451` unique vacancies, `880556` seen events, `57101` HH requests, `coverage_ratio=0.9863`;
+- текущая локальная PostgreSQL DB после baseline и small detail samples: `4595626467 bytes` (`~4.4 GB`);
+- row counts: `880556` short snapshots, `1122` detail snapshots, `58276` raw payload rows;
+- fresh `pg_dump` custom backup: `905826544 bytes` (`~0.91 GB`), duration `~176s`;
+- measured `detail-worker` batch `100`: DB delta `2277376 bytes`, примерно `22.8 KB` на successful detail item.
+
+Практическая оценка:
+
+- full `search-only` baseline с текущей схемой ожидается в порядке `5 GB` DB, не десятки GB;
+- first-detail drain для `~767k` vacancies по текущему small-sample порядку может добавить `~15-30 GB`, но это пока bounded measurement, не доказанная production-константа;
+- `160 GB` локального NVMe достаточно для VPS pilot и early supervised drain, если держать локально только короткую цепочку backups и регулярно выгружать archives/offsite;
+- `320-500 GB` остаётся safer production-shaped вариантом, но не обязательным для первого pilot.
+
+Компромисс при cost pressure:
+
+- основной PostgreSQL volume оставить на локальном NVMe/SSD `160 GB`;
+- сетевой HDD подключить только под `.state/backups`, `.state/archive` и временные export bundles;
+- после успешного offsite sync удалять локальные archive bundles по retention policy;
+- не переносить `/var/lib/postgresql/data` на сетевой HDD без отдельного load test.
+
+Storage terminology:
+
+- `api_request_log`: metadata about one request to HH API.
+- `raw_api_payload`: raw full JSON response body from HH API for search/detail endpoints.
+- `vacancy_seen_event`: observation fact that a vacancy appeared in a search result page/partition.
+- `vacancy_snapshot` with `snapshot_type=short`: normalized per-vacancy document extracted from a search page item. Current behavior: created only on `first_seen` or `short_hash_changed`.
+- `vacancy_snapshot` with `snapshot_type=detail`: normalized per-vacancy document extracted from a successful `GET /vacancies/{id}` detail response. Current behavior: created on every successful detail fetch.
+- `vacancy_current_state`: current aggregate state and latest known short/detail hashes/statuses.
+- `detail_fetch_attempt`: operational attempt log for detail requests, including retries, terminal 404 and retryable failures.
+
+Future storage optimization candidate:
+
+- detail snapshots can likely adopt `first_seen/hash_changed` semantics too, using `last_detail_hash`, so repeated successful detail refetches with identical normalized content do not create new `vacancy_snapshot` rows;
+- raw detail payload retention can still preserve the full original JSON for a bounded TTL/archive window even if normalized detail snapshot churn is reduced;
+- this should be implemented only after VPS measurements confirm that detail snapshot churn is a real storage pressure point.
+
 ## 4. Подготовка VPS
 
 1. Установить Docker Engine и Compose plugin.
@@ -91,6 +162,22 @@ docker compose ps
 - `health-check` показывает `env=production`;
 - `hh_api_user_agent_live_search_valid=yes`;
 - `housekeeping_archive_offsite_configured=yes`, если уже настроен Yandex Disk WebDAV.
+
+Если поднят observability profile:
+
+```bash
+make up-observability
+curl http://127.0.0.1:9100/metrics >/dev/null
+curl http://127.0.0.1:8080/metrics >/dev/null
+```
+
+В Prometheus targets должны быть `up`:
+
+- `hhru_platform`
+- `node_exporter`
+- `cadvisor`
+
+Перед long run открыть Grafana dashboard `Host / Container Resources` и убедиться, что видны host CPU/RAM/filesystem/IO и container CPU/RAM.
 
 ## 6. Preflight
 

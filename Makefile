@@ -14,7 +14,7 @@ up:
 	$(COMPOSE) up -d postgres redis metrics
 
 up-observability:
-	$(COMPOSE) --profile observability up -d postgres redis metrics prometheus grafana
+	$(COMPOSE) --profile observability up -d postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor
 
 up-scheduler:
 	$(COMPOSE) --profile ops up -d postgres redis metrics scheduler
@@ -102,7 +102,7 @@ restore-drill:
 	$(COMPOSE) --profile ops run --rm app run-restore-drill --backup-file "$(BACKUP_FILE)" $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
 
 soak-test:
-	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus grafana scheduler
+	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor scheduler
 
 soak-test-no-build:
-	$(COMPOSE) --profile ops --profile observability up -d --no-build postgres redis metrics prometheus grafana scheduler
+	$(COMPOSE) --profile ops --profile observability up -d --no-build postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor scheduler

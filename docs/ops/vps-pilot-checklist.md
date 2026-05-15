@@ -1,6 +1,6 @@
 # VPS Pilot Checklist
 
-Дата: 2026-04-29
+Дата: 2026-05-15
 
 Цель этого документа: провести первый VPS pilot без смешивания трёх разных задач:
 
@@ -8,9 +8,49 @@
 - подтвердить backup/restore/offsite archive contour;
 - не смешивать search baseline с масштабным `first-detail` drain.
 
+## 0. Результат VPS Pilot На 2026-05-15
+
+Первый VPS `search-only` pilot завершён успешно.
+
+Run:
+
+- `run_id=c7e7d8c6-6813-454c-845e-ca44539da1e8`
+- `run_type=weekly_sweep`
+- `run_status=succeeded`
+- `coverage_ratio=1.0000`
+- `covered_terminal_partitions=16108/16108`
+- `pending_terminal_partitions=0`
+- `failed_partitions=0`
+- `split_partitions=2196`
+- `fully_covered=yes`
+
+Post-baseline database facts:
+
+- PostgreSQL database size: `6648 MB`
+- `vacancy`: `865868`
+- `vacancy_seen_event`: `2309443`
+- `vacancy_snapshot(snapshot_type=short)`: `872201`
+- `raw_api_payload`: `129008`
+- `api_request_log`: `dictionary_sync 200 = 1`, `vacancy_search 200 = 129006`, `vacancy_search 502 = 1`
+
+Post-baseline backup facts:
+
+- backup file: `.state/backups/hhru-platform_hhru_platform_20260515T084422Z.dump`
+- backup size: `1596355292` bytes
+- backup sha256: `192cd44693f49bbdcf76832a011b1648b0b5ed1ff748a912eb0c324cb27513cf`
+- verify-backup: succeeded
+- restore-drill: succeeded, `schema_verified=yes`, `verified_tables=5/5`
+
+Operational observations:
+
+- Единичный HH `502` на search page сначала уронил run, но targeted resume восстановил failed partition; final run successful.
+- Этот `502` прошёл как `VacancySearchNormalizationError` / `bad_gateway`, при этом `search_transport_failures_total=0`. Нужно доработать классификацию HH `5xx` как retryable transport failures.
+- Telegram alerts доходят, но payloads слишком общие: по ним видно факт проблемы, но плохо видно run id, failed step, error и конкретное действие.
+- `export-retention-archive` и `sync-retention-archive-offsite` прошли, но `candidate_bundle_count=0`; это подтверждает retention archive path, а не offsite-копию свежего DB backup.
+
 ## 1. Что уже готово
 
-- Planner v2 и `area -> time_window` fallback выдержали near-complete live run.
+- Planner v2 и `area -> time_window` fallback выдержали full VPS `search-only` baseline.
 - Memory regression снят: crawler больше не растёт до WSL memory wall.
 - `resume-run-v2` умеет переочередить failed terminal search partitions.
 - Short snapshot churn снижен до `first_seen/hash_changed`.
@@ -29,15 +69,19 @@
 - Controlled local `detail-worker --once --batch-size 25` прошёл успешно: `24` detail snapshots, `1` terminal_404, `0` retryable failures, `~1.88 req/s`, DB delta `270336 bytes`.
 - Добавлен Alertmanager + `alert-webhook` receiver; Telegram delivery включается через env.
 - Добавлен in-run search transport budget для `run-once-v2` и `resume-run-v2`: transient transport failed partitions переочередятся до лимитов `3` consecutive / `5` total.
+- VPS `search-only` baseline completed successfully on Timeweb VPS.
+- Post-baseline backup, verify-backup and restore-drill completed successfully.
+- Telegram delivery до alert bot проверен.
 
 ## 2. Что ещё не готово
 
 - `first-detail` backlog ещё не прогнан на масштабе полного baseline.
-- Production alert delivery foundation есть, но на VPS ещё нужно настроить Telegram credentials и сделать synthetic alert test.
-- Новый in-run transport budget ещё не проверен на полном VPS `search-only` baseline.
+- Alert delivery работает, но Telegram payloads нужно сделать operator-friendly.
+- HH `5xx` search responses ещё не классифицируются как retryable transport failures в summary/budget.
+- Offsite sync свежих DB backup dumps ещё не доказан; проверен только retention archive offsite path.
 - Нет многодневного unattended production signal.
 
-Практический вывод: VPS pilot должен быть `search-only` baseline pilot, а не финальный месячный production launch.
+Практический вывод: VPS pilot доказал full `search-only` coverage на стабильном хосте, но это ещё не финальный месячный production launch.
 
 ## 3. Рекомендуемый VPS spec
 
@@ -98,8 +142,8 @@ Go/no-go после pilot:
 
 Практическая оценка:
 
-- full `search-only` baseline с текущей схемой ожидается в порядке `5 GB` DB, не десятки GB;
-- first-detail drain для `~767k` vacancies по текущему small-sample порядку может добавить `~15-30 GB`, но это пока bounded measurement, не доказанная production-константа;
+- full VPS `search-only` baseline с текущей схемой дал `~6.6 GB` DB и `~1.6 GB` custom backup, не десятки GB;
+- first-detail drain для `~866k` vacancies по текущему small-sample порядку может добавить `~17-35 GB`, но это пока bounded measurement, не доказанная production-константа;
 - `160 GB` локального NVMe достаточно для VPS pilot и early supervised drain, если держать локально только короткую цепочку backups и регулярно выгружать archives/offsite;
 - `320-500 GB` остаётся safer production-shaped вариантом, но не обязательным для первого pilot.
 
@@ -113,12 +157,20 @@ Go/no-go после pilot:
 Storage terminology:
 
 - `api_request_log`: metadata about one request to HH API.
-- `raw_api_payload`: raw full JSON response body from HH API for search/detail endpoints.
-- `vacancy_seen_event`: observation fact that a vacancy appeared in a search result page/partition.
-- `vacancy_snapshot` with `snapshot_type=short`: normalized per-vacancy document extracted from a search page item. Current behavior: created only on `first_seen` or `short_hash_changed`.
+- `raw_api_payload`: raw full JSON response body from HH API for search/detail endpoints. Это ближе к "API responses/pages", а не к вакансиям: один successful `vacancy_search` payload обычно содержит до `20` вакансий.
+- `vacancy`: unique normalized vacancy identity, one row per known HH vacancy id.
+- `vacancy_seen_event`: observation fact that a vacancy appeared in a search result page/partition. Эта таблица закономерно больше `vacancy`, потому что одна vacancy может встречаться в нескольких partitions/windows/search contexts.
+- `vacancy_snapshot` with `snapshot_type=short`: normalized per-vacancy document extracted from a search page item. Current behavior: created only on `first_seen` or `short_hash_changed`. Эта таблица может быть немного больше `vacancy`, если short representation изменилась в течение run.
 - `vacancy_snapshot` with `snapshot_type=detail`: normalized per-vacancy document extracted from a successful `GET /vacancies/{id}` detail response. Current behavior: created on every successful detail fetch.
 - `vacancy_current_state`: current aggregate state and latest known short/detail hashes/statuses.
 - `detail_fetch_attempt`: operational attempt log for detail requests, including retries, terminal 404 and retryable failures.
+
+VPS baseline interpretation:
+
+- `vacancy=865868` означает unique vacancies.
+- `vacancy_seen_event=2309443` означает observations, не unique vacancies. Отношение около `2.67` seen events на vacancy для этого sweep нормальное для partitioned search.
+- `short snapshots=872201` на `6333` больше `vacancy`; это небольшой `~0.7%` churn short representation/hash, а не ошибка дедупликации.
+- `raw_payload=129008` почти точно совпадает с request log: `129006` successful search pages + `1` search `502` payload + `1` dictionary sync.
 
 Future storage optimization candidate:
 

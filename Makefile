@@ -8,6 +8,7 @@ ARGS ?=
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill compose-health compose-show-metrics \
 	backup verify-backup restore restore-drill detail-worker-measurement \
+	vps-first-detail-measurement \
 	soak-test soak-test-no-build
 
 up:
@@ -61,6 +62,9 @@ worker-detail:
 
 detail-worker-measurement:
 	bash ./scripts/dev/launch_detail_worker_measurement_tmux.sh
+
+vps-first-detail-measurement:
+	bash ./scripts/dev/run_vps_first_detail_measurement.sh
 
 run-housekeeping:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-housekeeping $(ARGS)

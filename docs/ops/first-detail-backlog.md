@@ -90,6 +90,61 @@ HOST_DB_HOST=localhost BATCH_SIZE=100 MAX_TICKS=1 make detail-worker-measurement
 - `db_size_delta_bytes`
 - `first_detail_attempt_status.*` в postflight report
 
+## VPS First Measurement
+
+После successful VPS `search-only` baseline следующий безопасный шаг - bounded one-shot drain на `100` items, без включения long-running `detail-worker` service.
+
+Baseline context на 2026-05-15:
+
+- `run_id=c7e7d8c6-6813-454c-845e-ca44539da1e8`
+- `vacancy=865868`
+- `short snapshots=872201`
+- `raw_payload=129008`
+- `detail_stage_status=skipped`
+- `coverage_ratio=1.0000`
+
+Команды для первого VPS measurement:
+
+```bash
+cd /opt/hh_collector
+
+LIMIT=100 make vps-first-detail-measurement
+```
+
+Эквивалентный ручной вариант:
+
+```bash
+RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+REPORT_DIR=".state/reports/vps-first-detail-measurement/$RUN_TS"
+mkdir -p "$REPORT_DIR"
+
+docker compose --profile ops run --rm --entrypoint python app \
+  scripts/dev/write_detail_backlog_report.py \
+  | tee "$REPORT_DIR/preflight.txt"
+
+docker compose --profile ops run --rm app drain-first-detail-backlog \
+  --limit 100 \
+  --triggered-by "vps-first-detail-measurement-$RUN_TS" \
+  | tee "$REPORT_DIR/drain.txt"
+
+docker compose --profile ops run --rm --entrypoint python app \
+  scripts/dev/write_detail_backlog_report.py \
+  | tee "$REPORT_DIR/postflight.txt"
+```
+
+Для первого run ожидаем не скорость любой ценой, а измерение:
+
+- `selected_count`
+- `detail_fetch_succeeded`
+- `detail_fetch_terminal`
+- `detail_fetch_failed`
+- `active_backlog_size` delta
+- `detail_snapshot_rows` delta
+- `raw_payload_rows` delta
+- `db_size_bytes` delta
+
+Если `detail_fetch_failed > 0`, не расширять batch. Сначала смотреть error mix и cooldown counters.
+
 ## Latest Controlled Local Run
 
 2026-04-27 после добавления dashboard panels и cooldown metrics был выполнен один controlled worker tick:

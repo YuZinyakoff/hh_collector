@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     backup_prefix: str = "hhru-platform"
     backup_restore_drill_target_db: str = "hhru_platform_restore_drill"
     backup_restore_drill_drop_existing: bool = True
+    backup_offsite_url: str = ""
+    backup_offsite_root: str = "/hhru-platform/backups"
+    backup_offsite_username: str | None = None
+    backup_offsite_password: str | None = Field(default=None, repr=False)
+    backup_offsite_bearer_token: str | None = Field(default=None, repr=False)
+    backup_offsite_timeout_seconds: float = 60.0
     housekeeping_raw_api_payload_retention_days: int = 90
     housekeeping_vacancy_snapshot_retention_days: int = 0
     housekeeping_finished_crawl_run_retention_days: int = 90

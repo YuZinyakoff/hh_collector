@@ -110,7 +110,60 @@ docker compose exec postgres psql -U ${HHRU_DB_USER:-hhru} -d ${HHRU_BACKUP_REST
 
 Нулевой count допустим. Важно, что schema поднялась и таблицы читаются.
 
-## 6. Когда использовать low-level restore
+## 6. Синхронизировать backup offsite
+
+Retention archive offsite sync не загружает `.state/backups/*.dump`. Для PostgreSQL
+dump-ов используется отдельная команда:
+
+```bash
+make backup-offsite
+```
+
+По умолчанию команда берёт только свежий `.dump` из `HHRU_BACKUP_DIR`.
+Для нескольких последних файлов:
+
+```bash
+make backup-offsite ARGS="--limit 3 --triggered-by manual-backup-offsite"
+```
+
+CLI-эквивалент:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main sync-backup-offsite --limit 1 --triggered-by cli-backup-offsite
+```
+
+Offsite settings:
+
+- `HHRU_BACKUP_OFFSITE_URL`
+- `HHRU_BACKUP_OFFSITE_ROOT`
+- `HHRU_BACKUP_OFFSITE_USERNAME`
+- `HHRU_BACKUP_OFFSITE_PASSWORD`
+- `HHRU_BACKUP_OFFSITE_BEARER_TOKEN`
+- `HHRU_BACKUP_OFFSITE_TIMEOUT_SECONDS`
+
+Если `HHRU_BACKUP_OFFSITE_URL` и credentials не заданы, команда использует уже настроенный
+`HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_*` WebDAV contour, но кладёт backup-и под
+`HHRU_BACKUP_OFFSITE_ROOT` (`/hhru-platform/backups` по умолчанию).
+
+Ожидаемо:
+
+- `status=succeeded`
+- `scanned_backup_count=1`
+- `uploaded_backup_count=1` при первом upload или `skipped_backup_count=1` при повторном запуске
+- рядом с dump появляется `.manifest.json`
+- рядом с dump появляется `.offsite.json` receipt
+
+Порядок перед risky/long-running работами:
+
+```bash
+make backup
+BACKUP_FILE="$(ls -1t .state/backups/*.dump | head -n 1)"
+make verify-backup BACKUP_FILE="$BACKUP_FILE"
+make restore-drill BACKUP_FILE="$BACKUP_FILE"
+make backup-offsite
+```
+
+## 7. Когда использовать low-level restore
 
 Legacy destructive path остаётся только как аварийный инструмент:
 
@@ -122,9 +175,10 @@ make restore BACKUP_FILE=/backups/<file>.dump
 
 - backup уже проверен;
 - restore drill в отдельную DB уже прошёл;
+- offsite copy свежего dump-а загружена или сознательно признана недоступной;
 - понятна причина live recovery.
 
-## 7. Metrics и dashboard signals
+## 8. Metrics и dashboard signals
 
 Оператору важны:
 

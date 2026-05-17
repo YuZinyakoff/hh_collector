@@ -9,8 +9,17 @@ from hhru_platform.application.commands.run_restore_drill import (
     RunRestoreDrillCommand,
     run_restore_drill,
 )
+from hhru_platform.application.commands.sync_backup_offsite import (
+    SyncBackupOffsiteCommand,
+    SyncBackupOffsiteResult,
+    sync_backup_offsite,
+)
 from hhru_platform.config.settings import get_settings
-from hhru_platform.infrastructure.backup import BackupService
+from hhru_platform.infrastructure.backup import (
+    BackupService,
+    LocalBackupOffsiteUploadReceiptStore,
+)
+from hhru_platform.infrastructure.housekeeping import WebDavArchiveUploader
 from hhru_platform.infrastructure.observability.metrics import get_metrics_registry
 
 
@@ -76,6 +85,29 @@ def register_backup_commands(
         help="Actor or subsystem that initiated the restore drill. Defaults to run-restore-drill.",
     )
     restore_parser.set_defaults(handler=handle_run_restore_drill)
+
+    offsite_parser = subparsers.add_parser(
+        "sync-backup-offsite",
+        help=(
+            "Upload recent PostgreSQL backup dumps plus manifests to off-host WebDAV "
+            "storage and keep local upload receipts."
+        ),
+    )
+    offsite_parser.add_argument(
+        "--limit",
+        type=int,
+        default=1,
+        help="Maximum latest backup dumps to inspect in one run. Defaults to 1.",
+    )
+    offsite_parser.add_argument(
+        "--triggered-by",
+        default="sync-backup-offsite",
+        help=(
+            "Actor or subsystem that initiated off-host backup sync. "
+            "Defaults to sync-backup-offsite."
+        ),
+    )
+    offsite_parser.set_defaults(handler=handle_sync_backup_offsite)
 
 
 def handle_run_backup(args: argparse.Namespace) -> int:
@@ -152,3 +184,79 @@ def handle_run_restore_drill(args: argparse.Namespace) -> int:
     )
     print(f"checked_tables={','.join(result.checked_tables)}")
     return 0
+
+
+def handle_sync_backup_offsite(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        command = SyncBackupOffsiteCommand(
+            backup_dir=Path(settings.backup_dir),
+            offsite_url=settings.backup_offsite_url
+            or settings.housekeeping_archive_offsite_url,
+            offsite_root=settings.backup_offsite_root,
+            username=settings.backup_offsite_username
+            or settings.housekeeping_archive_offsite_username,
+            password=settings.backup_offsite_password
+            or settings.housekeeping_archive_offsite_password,
+            bearer_token=settings.backup_offsite_bearer_token
+            or settings.housekeeping_archive_offsite_bearer_token,
+            timeout_seconds=settings.backup_offsite_timeout_seconds,
+            limit=args.limit,
+            triggered_by=str(args.triggered_by),
+        )
+        if command.auth_mode == "bearer":
+            uploader = WebDavArchiveUploader.with_bearer_token(
+                base_url=command.offsite_url,
+                remote_root=command.offsite_root,
+                bearer_token=str(command.bearer_token),
+                timeout_seconds=command.timeout_seconds,
+            )
+        else:
+            uploader = WebDavArchiveUploader.with_basic_auth(
+                base_url=command.offsite_url,
+                remote_root=command.offsite_root,
+                username=str(command.username),
+                password=str(command.password),
+                timeout_seconds=command.timeout_seconds,
+            )
+        result = sync_backup_offsite(
+            command,
+            offsite_uploader=uploader,
+            receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_sync_backup_offsite_summary(result)
+    return 0
+
+
+def _print_sync_backup_offsite_summary(result: SyncBackupOffsiteResult) -> None:
+    print("completed backup offsite sync")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"synced_at={result.synced_at.isoformat()}")
+    print(f"backup_dir={result.backup_dir}")
+    print(f"offsite_url={result.offsite_url}")
+    print(f"offsite_root={result.offsite_root}")
+    print(f"auth_mode={result.auth_mode}")
+    print(f"limit={result.limit or 0}")
+    print(f"scanned_backup_count={result.scanned_backup_count}")
+    print(f"candidate_backup_count={result.candidate_backup_count}")
+    print(f"uploaded_backup_count={result.uploaded_backup_count}")
+    print(f"skipped_backup_count={result.skipped_backup_count}")
+    for summary in result.summaries:
+        print(
+            "backup="
+            f"{summary.backup_file} "
+            f"backup_size_bytes={summary.backup_size_bytes} "
+            f"backup_sha256={summary.backup_sha256} "
+            f"manifest_file={summary.manifest_file} "
+            f"manifest_sha256={summary.manifest_sha256} "
+            f"remote_backup_path={summary.remote_backup_path} "
+            f"remote_manifest_path={summary.remote_manifest_path} "
+            f"uploaded={'yes' if summary.uploaded else 'no'} "
+            f"skipped={'yes' if summary.skipped else 'no'} "
+            f"receipt_file={summary.receipt_file or '-'}"
+        )

@@ -28,6 +28,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "run-backup" in captured.out
     assert "verify-backup-file" in captured.out
     assert "run-restore-drill" in captured.out
+    assert "sync-backup-offsite" in captured.out
     assert "health-check" in captured.out
     assert "run-housekeeping" in captured.out
     assert "export-retention-archive" in captured.out
@@ -76,10 +77,14 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             metrics_host="0.0.0.0",
             metrics_port=8001,
             metrics_state_path=".state/metrics/metrics.json",
+            alert_telegram_bot_token=None,
+            alert_telegram_chat_id=None,
             backup_dir=".state/backups",
             backup_retention_days=14,
             backup_restore_drill_target_db="hhru_platform_restore_drill",
             backup_restore_drill_drop_existing=True,
+            backup_offsite_root="/hhru-platform/backups",
+            backup_offsite_timeout_seconds=120.0,
             housekeeping_raw_api_payload_retention_days=90,
             housekeeping_vacancy_snapshot_retention_days=365,
             housekeeping_finished_crawl_run_retention_days=60,
@@ -117,6 +122,11 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "backup_retention_days=14" in captured.out
     assert "backup_restore_drill_target_db=hhru_platform_restore_drill" in captured.out
     assert "backup_restore_drill_drop_existing=yes" in captured.out
+    assert "backup_offsite_configured=yes" in captured.out
+    assert "backup_offsite_url=https://webdav.example.test" in captured.out
+    assert "backup_offsite_root=/hhru-platform/backups" in captured.out
+    assert "backup_offsite_auth_mode=basic" in captured.out
+    assert "backup_offsite_timeout_seconds=120.0" in captured.out
     assert "housekeeping_raw_api_payload_retention_days=90" in captured.out
     assert "housekeeping_vacancy_snapshot_retention_days=365" in captured.out
     assert "housekeeping_finished_crawl_run_retention_days=60" in captured.out

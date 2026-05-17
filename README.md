@@ -118,6 +118,7 @@ make scheduler-loop
 make backup
 make verify-backup
 make restore-drill
+make backup-offsite
 ```
 
 ---

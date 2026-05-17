@@ -63,6 +63,15 @@ def handle_health_check(_: argparse.Namespace) -> int:
         "backup_restore_drill_drop_existing="
         f"{'yes' if settings.backup_restore_drill_drop_existing else 'no'}"
     )
+    backup_offsite_auth_mode = _backup_offsite_auth_mode(settings)
+    print(
+        "backup_offsite_configured="
+        f"{'yes' if _is_backup_offsite_configured(settings, backup_offsite_auth_mode) else 'no'}"
+    )
+    print(f"backup_offsite_url={_backup_offsite_url(settings) or '-'}")
+    print(f"backup_offsite_root={settings.backup_offsite_root}")
+    print(f"backup_offsite_auth_mode={backup_offsite_auth_mode}")
+    print(f"backup_offsite_timeout_seconds={settings.backup_offsite_timeout_seconds}")
     print(
         "housekeeping_raw_api_payload_retention_days="
         f"{settings.housekeeping_raw_api_payload_retention_days}"
@@ -116,6 +125,30 @@ def handle_health_check(_: argparse.Namespace) -> int:
 
 def _is_archive_offsite_configured(settings: Settings, auth_mode: str) -> bool:
     return bool(settings.housekeeping_archive_offsite_url) and auth_mode != "none"
+
+
+def _is_backup_offsite_configured(settings: Settings, auth_mode: str) -> bool:
+    return bool(_backup_offsite_url(settings)) and auth_mode != "none"
+
+
+def _backup_offsite_url(settings: Settings) -> str:
+    return settings.backup_offsite_url or settings.housekeeping_archive_offsite_url
+
+
+def _backup_offsite_auth_mode(settings: Settings) -> str:
+    if (
+        settings.backup_offsite_bearer_token
+        or settings.housekeeping_archive_offsite_bearer_token
+    ):
+        return "bearer"
+    if (
+        settings.backup_offsite_username and settings.backup_offsite_password
+    ) or (
+        settings.housekeeping_archive_offsite_username
+        and settings.housekeeping_archive_offsite_password
+    ):
+        return "basic"
+    return "none"
 
 
 def _is_alert_telegram_configured(settings: Settings) -> bool:

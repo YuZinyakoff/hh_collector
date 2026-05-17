@@ -125,7 +125,7 @@ Go/no-go:
 
 ### Stage 4. Backup offsite gap
 
-1. Добавить или закрепить отдельный sync для `.state/backups/*.dump`.
+1. Команда `sync-backup-offsite` / `make backup-offsite` добавлена для `.state/backups/*.dump`.
 2. Проверить upload свежего post-baseline DB backup в offsite storage.
 3. Зафиксировать retention policy: сколько backup dumps держим локально и offsite.
 

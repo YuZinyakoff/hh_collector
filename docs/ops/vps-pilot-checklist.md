@@ -78,7 +78,7 @@ Operational observations:
 - `first-detail` backlog ещё не прогнан на масштабе полного baseline.
 - Alert delivery работает, но Telegram payloads нужно сделать operator-friendly.
 - HH `5xx` search responses ещё не классифицируются как retryable transport failures в summary/budget.
-- Offsite sync свежих DB backup dumps ещё не доказан; проверен только retention archive offsite path.
+- Offsite sync свежих DB backup dumps ещё нужно проверить на VPS через `make backup-offsite`; проверен только retention archive offsite path.
 - Нет многодневного unattended production signal.
 
 Практический вывод: VPS pilot доказал full `search-only` coverage на стабильном хосте, но это ещё не финальный месячный production launch.

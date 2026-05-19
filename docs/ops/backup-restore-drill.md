@@ -139,7 +139,7 @@ Offsite settings:
 - `HHRU_BACKUP_OFFSITE_USERNAME`
 - `HHRU_BACKUP_OFFSITE_PASSWORD`
 - `HHRU_BACKUP_OFFSITE_BEARER_TOKEN`
-- `HHRU_BACKUP_OFFSITE_TIMEOUT_SECONDS`
+- `HHRU_BACKUP_OFFSITE_TIMEOUT_SECONDS` (`1800` по умолчанию, потому DB dump может быть гигабайтным)
 
 Если `HHRU_BACKUP_OFFSITE_URL` и credentials не заданы, команда использует уже настроенный
 `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_*` WebDAV contour, но кладёт backup-и под

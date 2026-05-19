@@ -4,7 +4,7 @@ import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import BinaryIO, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -17,7 +17,7 @@ class WebDavTransport(Protocol):
         method: str,
         url: str,
         headers: Mapping[str, str],
-        body: bytes | None = None,
+        body: bytes | BinaryIO | None = None,
     ) -> int:
         """Perform one WebDAV request and return the resulting HTTP status code."""
 
@@ -32,7 +32,7 @@ class UrlLibWebDavTransport:
         method: str,
         url: str,
         headers: Mapping[str, str],
-        body: bytes | None = None,
+        body: bytes | BinaryIO | None = None,
     ) -> int:
         request = Request(
             url=url,
@@ -106,18 +106,18 @@ class WebDavArchiveUploader:
         parent_parts, file_parts = _split_remote_file_path(remote_path)
         self._ensure_remote_directory(parent_parts)
         full_file_parts = self._with_remote_root(file_parts)
-        body = local_file.read_bytes()
-        status = self.transport.request(
-            method="PUT",
-            url=self._url_for_parts(full_file_parts),
-            headers=self._headers(
-                {
-                    "Content-Length": str(len(body)),
-                    "Content-Type": "application/octet-stream",
-                }
-            ),
-            body=body,
-        )
+        with local_file.open("rb") as body:
+            status = self.transport.request(
+                method="PUT",
+                url=self._url_for_parts(full_file_parts),
+                headers=self._headers(
+                    {
+                        "Content-Length": str(local_file.stat().st_size),
+                        "Content-Type": "application/octet-stream",
+                    }
+                ),
+                body=body,
+            )
         if status not in (200, 201, 204):
             raise RuntimeError(
                 f"webdav PUT failed for {local_file} -> {self._joined_path(full_file_parts)}: "

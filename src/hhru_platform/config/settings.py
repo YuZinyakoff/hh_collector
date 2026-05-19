@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     backup_offsite_username: str | None = None
     backup_offsite_password: str | None = Field(default=None, repr=False)
     backup_offsite_bearer_token: str | None = Field(default=None, repr=False)
-    backup_offsite_timeout_seconds: float = 60.0
+    backup_offsite_timeout_seconds: float = 1800.0
     housekeeping_raw_api_payload_retention_days: int = 90
     housekeeping_vacancy_snapshot_retention_days: int = 0
     housekeeping_finished_crawl_run_retention_days: int = 90

@@ -26,13 +26,14 @@ class RecordingWebDavTransport:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def request(self, *, method: str, url: str, headers, body: bytes | None = None) -> int:
+    def request(self, *, method: str, url: str, headers, body=None) -> int:
+        body_bytes = body.read() if hasattr(body, "read") else body
         self.calls.append(
             {
                 "method": method,
                 "url": url,
                 "headers": dict(headers),
-                "body": body,
+                "body": body_bytes,
             }
         )
         if method == "MKCOL":

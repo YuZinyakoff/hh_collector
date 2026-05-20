@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,10 +14,10 @@ from hhru_platform.infrastructure.backup import LocalBackupOffsiteUploadReceiptS
 
 class FakeOffsiteUploader:
     def __init__(self) -> None:
-        self.upload_calls: list[tuple[Path, str]] = []
+        self.upload_calls: list[tuple[str, bytes]] = []
 
     def upload_file(self, *, local_file: Path, remote_path: str) -> None:
-        self.upload_calls.append((local_file, remote_path))
+        self.upload_calls.append((remote_path, local_file.read_bytes()))
 
 
 def test_sync_backup_offsite_uploads_latest_backup_and_manifest_once(
@@ -40,6 +41,7 @@ def test_sync_backup_offsite_uploads_latest_backup_and_manifest_once(
             offsite_root="/hhru-platform/backups",
             username="user",
             password="secret",
+            chunk_size_bytes=6,
             limit=1,
             triggered_by="unit-test",
             synced_at=datetime(2026, 5, 16, 10, 0, tzinfo=UTC),
@@ -56,15 +58,32 @@ def test_sync_backup_offsite_uploads_latest_backup_and_manifest_once(
     assert result.skipped_backup_count == 0
     assert uploader.upload_calls == [
         (
-            latest_backup.resolve(),
-            "hhru-platform_hhru_platform_20260516T084422Z.dump",
+            "hhru-platform_hhru_platform_20260516T084422Z.dump.parts/000001.part",
+            b"latest",
         ),
         (
-            latest_manifest,
+            "hhru-platform_hhru_platform_20260516T084422Z.dump.parts/000002.part",
+            b"-backu",
+        ),
+        (
+            "hhru-platform_hhru_platform_20260516T084422Z.dump.parts/000003.part",
+            b"p",
+        ),
+        (
             "hhru-platform_hhru_platform_20260516T084422Z.dump.manifest.json",
+            latest_manifest.read_bytes(),
         ),
     ]
     assert latest_manifest.exists()
+    manifest_payload = json.loads(latest_manifest.read_text(encoding="utf-8"))
+    assert manifest_payload["upload_mode"] == "parts"
+    assert manifest_payload["chunk_size_bytes"] == 6
+    assert [part["size_bytes"] for part in manifest_payload["parts"]] == [6, 6, 1]
+    assert result.summaries[0].remote_backup_path == (
+        "/hhru-platform/backups/"
+        "hhru-platform_hhru_platform_20260516T084422Z.dump.parts"
+    )
+    assert result.summaries[0].part_count == 3
     assert Path(f"{latest_backup.resolve()}.offsite.json").exists()
 
     second_uploader = FakeOffsiteUploader()
@@ -75,6 +94,7 @@ def test_sync_backup_offsite_uploads_latest_backup_and_manifest_once(
             offsite_root="/hhru-platform/backups",
             username="user",
             password="secret",
+            chunk_size_bytes=6,
             limit=1,
             triggered_by="unit-test",
             synced_at=datetime(2026, 5, 16, 11, 0, tzinfo=UTC),

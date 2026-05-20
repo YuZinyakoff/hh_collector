@@ -72,6 +72,7 @@ def handle_health_check(_: argparse.Namespace) -> int:
     print(f"backup_offsite_root={settings.backup_offsite_root}")
     print(f"backup_offsite_auth_mode={backup_offsite_auth_mode}")
     print(f"backup_offsite_timeout_seconds={settings.backup_offsite_timeout_seconds}")
+    print(f"backup_offsite_chunk_size_bytes={settings.backup_offsite_chunk_size_bytes}")
     print(
         "housekeeping_raw_api_payload_retention_days="
         f"{settings.housekeeping_raw_api_payload_retention_days}"

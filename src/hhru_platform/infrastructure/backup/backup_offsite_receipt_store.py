@@ -14,6 +14,8 @@ class BackupOffsiteUploadReceipt:
     backup_size_bytes: int
     backup_sha256: str
     manifest_sha256: str
+    chunk_size_bytes: int
+    part_count: int
     remote_backup_path: str
     remote_manifest_path: str
 
@@ -31,6 +33,8 @@ class LocalBackupOffsiteUploadReceiptStore:
             backup_size_bytes=int(payload["backup_size_bytes"]),
             backup_sha256=str(payload["backup_sha256"]),
             manifest_sha256=str(payload["manifest_sha256"]),
+            chunk_size_bytes=int(payload.get("chunk_size_bytes", 0)),
+            part_count=int(payload.get("part_count", 0)),
             remote_backup_path=str(payload["remote_backup_path"]),
             remote_manifest_path=str(payload["remote_manifest_path"]),
         )
@@ -51,6 +55,8 @@ class LocalBackupOffsiteUploadReceiptStore:
                     "backup_size_bytes": receipt.backup_size_bytes,
                     "backup_sha256": receipt.backup_sha256,
                     "manifest_sha256": receipt.manifest_sha256,
+                    "chunk_size_bytes": receipt.chunk_size_bytes,
+                    "part_count": receipt.part_count,
                     "remote_backup_path": receipt.remote_backup_path,
                     "remote_manifest_path": receipt.remote_manifest_path,
                 },

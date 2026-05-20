@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Protocol
 from hhru_platform.infrastructure.backup.backup_offsite_receipt_store import (
     BackupOffsiteUploadReceipt,
 )
+from hhru_platform.infrastructure.observability.logging import log_event
 from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
     record_operation_failed,
@@ -20,6 +22,7 @@ from hhru_platform.infrastructure.observability.operations import (
 LOGGER = logging.getLogger(__name__)
 
 BACKUP_OFFSITE_STATUS_SUCCEEDED = "succeeded"
+DEFAULT_BACKUP_OFFSITE_CHUNK_SIZE_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(slots=True, frozen=True)
@@ -31,6 +34,7 @@ class SyncBackupOffsiteCommand:
     password: str | None = None
     bearer_token: str | None = None
     timeout_seconds: float = 60.0
+    chunk_size_bytes: int = DEFAULT_BACKUP_OFFSITE_CHUNK_SIZE_BYTES
     limit: int | None = 1
     triggered_by: str = "sync-backup-offsite"
     synced_at: datetime | None = None
@@ -50,6 +54,8 @@ class SyncBackupOffsiteCommand:
             raise ValueError("offsite_url must not be empty")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
+        if self.chunk_size_bytes < 1:
+            raise ValueError("chunk_size_bytes must be greater than or equal to one")
         if self.limit is not None and self.limit < 1:
             raise ValueError("limit must be greater than or equal to one")
 
@@ -84,6 +90,8 @@ class BackupOffsiteSummary:
     backup_size_bytes: int
     backup_sha256: str
     manifest_sha256: str
+    chunk_size_bytes: int
+    part_count: int
     uploaded: bool
     skipped: bool
     receipt_file: Path | None
@@ -149,6 +157,7 @@ def sync_backup_offsite(
         offsite_url=command.offsite_url,
         offsite_root=command.offsite_root,
         auth_mode=command.auth_mode,
+        chunk_size_bytes=command.chunk_size_bytes,
         limit=command.limit or 0,
         triggered_by=command.triggered_by,
     )
@@ -178,6 +187,7 @@ def sync_backup_offsite(
             backup_dir=str(command.backup_dir),
             offsite_url=command.offsite_url,
             offsite_root=command.offsite_root,
+            chunk_size_bytes=command.chunk_size_bytes,
             triggered_by=command.triggered_by,
         )
         raise
@@ -201,6 +211,7 @@ def sync_backup_offsite(
         offsite_url=result.offsite_url,
         offsite_root=result.offsite_root,
         auth_mode=result.auth_mode,
+        chunk_size_bytes=command.chunk_size_bytes,
         triggered_by=result.triggered_by,
         scanned_backup_count=result.scanned_backup_count,
         candidate_backup_count=result.candidate_backup_count,
@@ -217,10 +228,21 @@ class _BackupBundle:
     backup_size_bytes: int
     backup_sha256: str
     manifest_sha256: str
-    remote_backup_relative_path: str
+    chunk_size_bytes: int
+    parts: tuple[_BackupPart, ...]
     remote_manifest_relative_path: str
-    remote_backup_path: str
+    remote_parts_path: str
     remote_manifest_path: str
+
+
+@dataclass(slots=True, frozen=True)
+class _BackupPart:
+    index: int
+    relative_path: str
+    remote_relative_path: str
+    remote_path: str
+    size_bytes: int
+    sha256: str
 
 
 def _list_backup_files(*, backup_root: Path, limit: int | None) -> list[Path]:
@@ -249,26 +271,26 @@ def _sync_one_backup(
         backup_root=backup_root,
         backup_file=backup_file,
         offsite_root=command.offsite_root,
+        chunk_size_bytes=command.chunk_size_bytes,
     )
     existing_receipt = receipt_store.load_receipt(backup_file=bundle.backup_file)
     if _receipt_matches_bundle(existing_receipt, bundle=bundle, command=command):
         return BackupOffsiteSummary(
             backup_file=bundle.backup_file,
             manifest_file=bundle.manifest_file,
-            remote_backup_path=bundle.remote_backup_path,
+            remote_backup_path=bundle.remote_parts_path,
             remote_manifest_path=bundle.remote_manifest_path,
             backup_size_bytes=bundle.backup_size_bytes,
             backup_sha256=bundle.backup_sha256,
             manifest_sha256=bundle.manifest_sha256,
+            chunk_size_bytes=bundle.chunk_size_bytes,
+            part_count=len(bundle.parts),
             uploaded=False,
             skipped=True,
             receipt_file=Path(f"{bundle.backup_file}.offsite.json"),
         )
 
-    offsite_uploader.upload_file(
-        local_file=bundle.backup_file,
-        remote_path=bundle.remote_backup_relative_path,
-    )
+    _upload_backup_parts(bundle=bundle, offsite_uploader=offsite_uploader)
     offsite_uploader.upload_file(
         local_file=bundle.manifest_file,
         remote_path=bundle.remote_manifest_relative_path,
@@ -282,18 +304,22 @@ def _sync_one_backup(
             backup_size_bytes=bundle.backup_size_bytes,
             backup_sha256=bundle.backup_sha256,
             manifest_sha256=bundle.manifest_sha256,
-            remote_backup_path=bundle.remote_backup_path,
+            chunk_size_bytes=bundle.chunk_size_bytes,
+            part_count=len(bundle.parts),
+            remote_backup_path=bundle.remote_parts_path,
             remote_manifest_path=bundle.remote_manifest_path,
         ),
     )
     return BackupOffsiteSummary(
         backup_file=bundle.backup_file,
         manifest_file=bundle.manifest_file,
-        remote_backup_path=bundle.remote_backup_path,
+        remote_backup_path=bundle.remote_parts_path,
         remote_manifest_path=bundle.remote_manifest_path,
         backup_size_bytes=bundle.backup_size_bytes,
         backup_sha256=bundle.backup_sha256,
         manifest_sha256=bundle.manifest_sha256,
+        chunk_size_bytes=bundle.chunk_size_bytes,
+        part_count=len(bundle.parts),
         uploaded=True,
         skipped=False,
         receipt_file=receipt_file,
@@ -305,19 +331,36 @@ def _load_backup_bundle(
     backup_root: Path,
     backup_file: Path,
     offsite_root: str,
+    chunk_size_bytes: int,
 ) -> _BackupBundle:
     resolved_backup_file = backup_file.resolve()
     backup_relative_path = resolved_backup_file.relative_to(backup_root).as_posix()
     backup_size_bytes = resolved_backup_file.stat().st_size
-    backup_sha256 = _sha256_file(resolved_backup_file)
+    backup_sha256, parts = _build_backup_parts(
+        backup_file=resolved_backup_file,
+        backup_relative_path=backup_relative_path,
+        offsite_root=offsite_root,
+        chunk_size_bytes=chunk_size_bytes,
+    )
     manifest_file = Path(f"{resolved_backup_file}.manifest.json")
     _write_manifest_if_changed(
         manifest_file=manifest_file,
         payload={
-            "manifest_version": 1,
+            "manifest_version": 2,
+            "upload_mode": "parts",
             "backup_file": backup_relative_path,
             "backup_size_bytes": backup_size_bytes,
             "backup_sha256": backup_sha256,
+            "chunk_size_bytes": chunk_size_bytes,
+            "parts": [
+                {
+                    "index": part.index,
+                    "file": part.relative_path,
+                    "size_bytes": part.size_bytes,
+                    "sha256": part.sha256,
+                }
+                for part in parts
+            ],
         },
     )
     manifest_relative_path = manifest_file.relative_to(backup_root).as_posix()
@@ -326,12 +369,100 @@ def _load_backup_bundle(
         manifest_file=manifest_file,
         backup_size_bytes=backup_size_bytes,
         backup_sha256=backup_sha256,
+        chunk_size_bytes=chunk_size_bytes,
+        parts=parts,
         manifest_sha256=_sha256_file(manifest_file),
-        remote_backup_relative_path=backup_relative_path,
         remote_manifest_relative_path=manifest_relative_path,
-        remote_backup_path=_join_remote_path(offsite_root, backup_relative_path),
+        remote_parts_path=_join_remote_path(offsite_root, f"{backup_relative_path}.parts"),
         remote_manifest_path=_join_remote_path(offsite_root, manifest_relative_path),
     )
+
+
+def _build_backup_parts(
+    *,
+    backup_file: Path,
+    backup_relative_path: str,
+    offsite_root: str,
+    chunk_size_bytes: int,
+) -> tuple[str, tuple[_BackupPart, ...]]:
+    backup_digest = hashlib.sha256()
+    parts: list[_BackupPart] = []
+    with backup_file.open("rb") as handle:
+        index = 1
+        while chunk := handle.read(chunk_size_bytes):
+            backup_digest.update(chunk)
+            part_relative_path = f"{backup_relative_path}.parts/{index:06d}.part"
+            part_sha256 = hashlib.sha256(chunk).hexdigest()
+            parts.append(
+                _BackupPart(
+                    index=index,
+                    relative_path=part_relative_path,
+                    remote_relative_path=part_relative_path,
+                    remote_path=_join_remote_path(offsite_root, part_relative_path),
+                    size_bytes=len(chunk),
+                    sha256=part_sha256,
+                )
+            )
+            index += 1
+    return backup_digest.hexdigest(), tuple(parts)
+
+
+def _upload_backup_parts(
+    *,
+    bundle: _BackupBundle,
+    offsite_uploader: BackupOffsiteUploader,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="hhru-backup-offsite-") as temporary_dir:
+        temporary_root = Path(temporary_dir)
+        part_count = len(bundle.parts)
+        with bundle.backup_file.open("rb") as backup_handle:
+            for part in bundle.parts:
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "sync_backup_offsite.part_upload.started",
+                    operation="sync_backup_offsite",
+                    status="started",
+                    backup_file=bundle.backup_file,
+                    part_index=part.index,
+                    part_count=part_count,
+                    part_size_bytes=part.size_bytes,
+                    remote_path=part.remote_path,
+                )
+                part_file = temporary_root / Path(part.relative_path).name
+                with part_file.open("wb") as part_handle:
+                    remaining_bytes = part.size_bytes
+                    while remaining_bytes > 0:
+                        chunk = backup_handle.read(min(1024 * 1024, remaining_bytes))
+                        if not chunk:
+                            raise RuntimeError(
+                                f"backup file ended before writing part {part.relative_path}"
+                            )
+                        part_handle.write(chunk)
+                        remaining_bytes -= len(chunk)
+                part_sha256 = _sha256_file(part_file)
+                if part_sha256 != part.sha256:
+                    raise RuntimeError(
+                        f"backup part checksum mismatch for {part.relative_path}: "
+                        f"expected={part.sha256} actual={part_sha256}"
+                    )
+                offsite_uploader.upload_file(
+                    local_file=part_file,
+                    remote_path=part.remote_relative_path,
+                )
+                log_event(
+                    LOGGER,
+                    logging.INFO,
+                    "sync_backup_offsite.part_upload.succeeded",
+                    operation="sync_backup_offsite",
+                    status="succeeded",
+                    backup_file=bundle.backup_file,
+                    part_index=part.index,
+                    part_count=part_count,
+                    part_size_bytes=part.size_bytes,
+                    remote_path=part.remote_path,
+                )
+                part_file.unlink()
 
 
 def _write_manifest_if_changed(*, manifest_file: Path, payload: dict[str, object]) -> None:
@@ -357,7 +488,9 @@ def _receipt_matches_bundle(
         and receipt.backup_size_bytes == bundle.backup_size_bytes
         and receipt.backup_sha256 == bundle.backup_sha256
         and receipt.manifest_sha256 == bundle.manifest_sha256
-        and receipt.remote_backup_path == bundle.remote_backup_path
+        and receipt.chunk_size_bytes == bundle.chunk_size_bytes
+        and receipt.part_count == len(bundle.parts)
+        and receipt.remote_backup_path == bundle.remote_parts_path
         and receipt.remote_manifest_path == bundle.remote_manifest_path
     )
 

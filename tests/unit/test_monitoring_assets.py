@@ -429,7 +429,7 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
     )
     assert (
         'expr: hhru:first_detail_backlog_active_ready > 0 unless '
-        'increase(hhru_first_detail_drain_selected_total{scope="active"}[6h]) > 0'
+        'sum(increase(hhru_first_detail_drain_selected_total{scope="active"}[6h])) > 0'
         in rules_text
     )
     assert "expr: hhru:housekeeping_last_run_age_seconds > 604800" in rules_text

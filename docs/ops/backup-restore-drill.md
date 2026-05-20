@@ -140,16 +140,25 @@ Offsite settings:
 - `HHRU_BACKUP_OFFSITE_PASSWORD`
 - `HHRU_BACKUP_OFFSITE_BEARER_TOKEN`
 - `HHRU_BACKUP_OFFSITE_TIMEOUT_SECONDS` (`1800` по умолчанию, потому DB dump может быть гигабайтным)
+- `HHRU_BACKUP_OFFSITE_CHUNK_SIZE_BYTES` (`67108864` по умолчанию)
 
 Если `HHRU_BACKUP_OFFSITE_URL` и credentials не заданы, команда использует уже настроенный
 `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_*` WebDAV contour, но кладёт backup-и под
 `HHRU_BACKUP_OFFSITE_ROOT` (`/hhru-platform/backups` по умолчанию).
+
+Dump загружается не одним большим WebDAV request, а fixed-size частями:
+
+- части лежат в remote directory `<dump>.parts/000001.part`, `<dump>.parts/000002.part`, ...
+- `.manifest.json` содержит `backup_sha256`, `chunk_size_bytes`, список частей, размер и sha256 каждой части;
+- для recovery надо скачать manifest и все parts, затем склеить parts по порядку и проверить итоговый `backup_sha256`;
+- повторный запуск пропускает backup только если локальный `.offsite.json` receipt совпадает с dump, manifest, remote path, `chunk_size_bytes` и количеством частей.
 
 Ожидаемо:
 
 - `status=succeeded`
 - `scanned_backup_count=1`
 - `uploaded_backup_count=1` при первом upload или `skipped_backup_count=1` при повторном запуске
+- в summary есть `part_count > 0`
 - рядом с dump появляется `.manifest.json`
 - рядом с dump появляется `.offsite.json` receipt
 

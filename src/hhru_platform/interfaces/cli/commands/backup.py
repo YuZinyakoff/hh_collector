@@ -107,6 +107,15 @@ def register_backup_commands(
             "Defaults to sync-backup-offsite."
         ),
     )
+    offsite_parser.add_argument(
+        "--chunk-size-bytes",
+        type=int,
+        default=None,
+        help=(
+            "Split dump uploads into fixed-size parts. Defaults to "
+            "HHRU_BACKUP_OFFSITE_CHUNK_SIZE_BYTES."
+        ),
+    )
     offsite_parser.set_defaults(handler=handle_sync_backup_offsite)
 
 
@@ -201,6 +210,11 @@ def handle_sync_backup_offsite(args: argparse.Namespace) -> int:
             bearer_token=settings.backup_offsite_bearer_token
             or settings.housekeeping_archive_offsite_bearer_token,
             timeout_seconds=settings.backup_offsite_timeout_seconds,
+            chunk_size_bytes=(
+                args.chunk_size_bytes
+                if args.chunk_size_bytes is not None
+                else settings.backup_offsite_chunk_size_bytes
+            ),
             limit=args.limit,
             triggered_by=str(args.triggered_by),
         )
@@ -254,6 +268,8 @@ def _print_sync_backup_offsite_summary(result: SyncBackupOffsiteResult) -> None:
             f"backup_sha256={summary.backup_sha256} "
             f"manifest_file={summary.manifest_file} "
             f"manifest_sha256={summary.manifest_sha256} "
+            f"chunk_size_bytes={summary.chunk_size_bytes} "
+            f"part_count={summary.part_count} "
             f"remote_backup_path={summary.remote_backup_path} "
             f"remote_manifest_path={summary.remote_manifest_path} "
             f"uploaded={'yes' if summary.uploaded else 'no'} "

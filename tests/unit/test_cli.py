@@ -85,6 +85,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             backup_restore_drill_drop_existing=True,
             backup_offsite_root="/hhru-platform/backups",
             backup_offsite_timeout_seconds=120.0,
+            backup_offsite_chunk_size_bytes=1024,
             housekeeping_raw_api_payload_retention_days=90,
             housekeeping_vacancy_snapshot_retention_days=365,
             housekeeping_finished_crawl_run_retention_days=60,
@@ -127,6 +128,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "backup_offsite_root=/hhru-platform/backups" in captured.out
     assert "backup_offsite_auth_mode=basic" in captured.out
     assert "backup_offsite_timeout_seconds=120.0" in captured.out
+    assert "backup_offsite_chunk_size_bytes=1024" in captured.out
     assert "housekeeping_raw_api_payload_retention_days=90" in captured.out
     assert "housekeeping_vacancy_snapshot_retention_days=365" in captured.out
     assert "housekeeping_finished_crawl_run_retention_days=60" in captured.out

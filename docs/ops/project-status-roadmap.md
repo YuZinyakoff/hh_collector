@@ -131,6 +131,11 @@ Go/no-go:
 
 Наблюдение 2026-05-15: `export-retention-archive` и `sync-retention-archive-offsite` успешно отработали, но `candidate_bundle_count=0`. Это проверяет retention archive path, а не offsite-копию свежего DB backup.
 
+Наблюдение 2026-05-20: одиночный WebDAV `PUT` свежего DB dump-а размером 2.2 GiB
+упирался в timeout/зависание. `sync-backup-offsite` переведён на загрузку dump-а
+fixed-size частями с manifest v2 и receipt, который учитывает `chunk_size_bytes` и
+`part_count`.
+
 ### Stage 5. VPS supervised detail drain
 
 1. Включить bounded first-detail drain отдельно от baseline.

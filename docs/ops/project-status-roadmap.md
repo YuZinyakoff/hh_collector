@@ -1,12 +1,26 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-05-15.
+Дата среза: 2026-05-23.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
+## 0. Как Читать Ops Docs
+
+Если нужно быстро восстановить контекст, читать в таком порядке:
+
+1. `project-status-roadmap.md` - текущий статус, порядок работ и ближайшие решения.
+2. `backup-restore-drill.md` - operator runbook для backup, S3 offsite и restore drill.
+3. `storage-contours.md` - разделение provider snapshot, PostgreSQL backup и research archive.
+4. `first-detail-backlog.md` - detail backlog и worker semantics.
+5. `observability.md` - alerts, metrics, Prometheus/Grafana contour.
+
+Остальные документы являются detail plans или historical context. Если они конфликтуют
+с этим roadmap, приоритет у этого файла.
+
 ## 1. Где Мы Сейчас
 
-Проект находится после successful VPS `search-only` baseline и перед первым VPS `first-detail` measurement.
+Проект находится после successful VPS `search-only` baseline, S3 backup/offsite
+restore validation и в фазе supervised `first-detail` throughput/storage experiments.
 
 Уже доказано:
 
@@ -25,21 +39,25 @@
 - local detail-worker measurement `100` items прошёл clean: `100/100` successful details, active backlog `766389 -> 766289`, DB delta около `2.28 MB`;
 - Alertmanager + `alert-webhook` delivery до Telegram проверены на VPS;
 - in-run search transport budget добавлен для `run-once-v2` и `resume-run-v2`: transient failed search partitions переочередятся до лимитов `3` consecutive / `5` total;
-- backup offsite для DB dumps проверен на Timeweb cold S3: 2.2 GiB dump загружен
-  частями за ~82s, повторный запуск idempotent (`skipped_backup_count=1`), remote
-  size verification прошёл (`verified_object_count=35`);
-- offsite restore drill tooling добавлен: команда скачивает S3 parts, собирает dump,
-  проверяет `backup_sha256` и запускает restore drill в отдельную DB.
+- backup offsite для DB dumps проверен end-to-end на Timeweb cold S3: 2.2 GiB dump
+  загружен частями за ~82s, повторный запуск idempotent (`skipped_backup_count=1`),
+  remote size verification прошёл (`verified_object_count=35`), offsite restore drill
+  из S3 copy успешно восстановил core schema в отдельную DB.
 
-Текущий статус не равен production readiness. Корректная формулировка: full search coverage operationally validated, но `first-detail` drain, backup offsite для DB dumps и unattended production routine ещё не доказаны.
+Текущий статус не равен production readiness. Корректная формулировка: full search
+coverage operationally validated, backup/offsite restore contour operationally
+validated, но `first-detail` throughput, storage routine, research archive contour
+и unattended production routine ещё не доказаны.
 
 ## 2. Что Ещё Не Доказано
 
 - Полный first-detail drain на масштабе baseline.
 - Sustained detail throughput/storage growth на длинном supervised run.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
-- Offsite restore drill из S3 backup copy: tooling добавлен, но нужно выполнить хотя бы
-  один VPS drill на реальном S3 dump-е.
+- Backup retention и cleanup routine: backup/offsite contour работает, но retention
+  policy и operator cleanup ещё нужно зафиксировать.
+- Prometheus retention: текущий Prometheus volume уже может съедать десятки GiB,
+  retention должен быть ограничен как технический observability контур.
 - Многодневная unattended stability на VPS.
 - Месячный production режим с backup, housekeeping, offsite archive и operator routine.
 
@@ -55,14 +73,38 @@
 | First-detail backlog | MVP ready | следующий шаг: VPS bounded measurement |
 | Detail worker | MVP ready | есть one-shot и loop, пока без full-scale unattended proof |
 | Backup / restore drill | VPS validated | post-baseline backup, verify и restore-drill прошли |
-| DB backup offsite | S3 upload+verify validated | Timeweb cold S3 upload, idempotency и remote size verify работают; offsite restore drill command добавлен, нужен VPS run |
+| DB backup offsite | S3 end-to-end validated | Timeweb cold S3 upload, idempotency, remote size verify и offsite restore drill работают |
 | Retention archive / offsite sync | partially validated | retention bundle sync работает; нужен S3 backend, inventory и readback drill |
 | Observability | foundation ready | metrics, dashboards, alert rules есть |
 | Alert delivery | foundation ready | delivery до Telegram проверен; payloads нужно сделать информативнее |
 | VPS deploy | validated | search-only pilot completed on Timeweb VPS |
 | Research enrichment | intentionally out of scope | не начинать до стабилизации collection layer |
 
-## 4. Следующий Порядок Работ
+## 4. Current Execution Plan
+
+Непосредственный порядок работ после S3 offsite restore drill:
+
+1. Закрыть backup contour hygiene:
+   - факт successful VPS offsite restore drill записан;
+   - удалить `hhru_platform_restore_drill`, если DB не нужна для расследования;
+   - зафиксировать local/S3 backup retention policy.
+2. Ограничить Prometheus retention:
+   - Prometheus является техническим observability contour, не research archive;
+   - старые графики можно потерять, чтобы не сжигать диск;
+   - compose поддерживает `HHRU_PROMETHEUS_RETENTION_TIME=7d` и
+     `HHRU_PROMETHEUS_RETENTION_SIZE=8GB`; применить change на VPS и проверить
+     размер `hh_collector_prometheus_data`.
+3. Вернуться к detail throughput experiments:
+   - измерять batch/parallel режимы;
+   - фиксировать HH latency, retryable failures, terminal_404, DB growth, disk growth;
+   - не включать production search schedule до понимания устойчивого detail режима.
+4. Спроектировать research archive v1:
+   - raw payload archive как canonical `jsonl.gz`;
+   - Parquet только для аналитических normalized datasets;
+   - S3 layout, manifests, inventory и readback safety before delete.
+5. После этого переходить к supervised week/month unattended routine.
+
+## 5. Detailed Roadmap
 
 ### Stage 1. VPS first-detail measurement
 
@@ -149,8 +191,10 @@ fixed-size частями с manifest v2 и receipt, который учитыв
 Наблюдение 2026-05-23: Timeweb cold S3 снял WebDAV blocker. Dump `2269000643`
 bytes загружен в `34` parts по `67108864` bytes примерно за `82s`. Повторный запуск
 не грузил данные заново: `uploaded_backup_count=0`, `skipped_backup_count=1`.
-Remote verify прошёл: `verified_object_count=35`. Следующий шаг по этому контуру:
-запустить `make backup-offsite-restore-drill BACKUP_FILE=<dump>` на VPS.
+Remote verify прошёл: `verified_object_count=35`. Offsite restore drill из S3 copy
+прошёл: все `34` parts скачались, assembled dump прошёл checksum, restore drill
+incremented `hhru_restore_drill_run_total{status="succeeded"}`, core tables в
+`hhru_platform_restore_drill` проверены.
 
 ### Stage 5. VPS supervised detail drain
 
@@ -170,7 +214,7 @@ Go/no-go:
 2. Проверить backup, housekeeping, offsite sync, alerts, disk growth.
 3. Только после этого переходить к месячному unattended окну.
 
-## 5. Практический Вывод
+## 6. Практический Вывод
 
 Проект уже прошёл главный feasibility risk: собрать near-snapshot hh.ru search-space в рамках одного длинного sweep принципиально возможно.
 

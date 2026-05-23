@@ -198,11 +198,13 @@ Dump загружается не одним большим request, а fixed-siz
 - parts: `34`;
 - upload duration: about `82s`;
 - повторный запуск: `uploaded_backup_count=0`, `skipped_backup_count=1`.
+- remote verify: `verified_object_count=35`;
+- offsite restore drill: all `34` parts downloaded, assembled dump checksum passed,
+  restore drill succeeded, core tables exist in `hhru_platform_restore_drill`.
 
 Upload+receipt path доказывает transport и idempotency. Для production-grade
 backup contour также нужны:
 
-- offsite restore drill из S3 copy;
 - explicit local/offsite backup retention policy.
 
 ## 7. Проверить offsite copy

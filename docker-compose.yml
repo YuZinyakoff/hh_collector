@@ -204,6 +204,8 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${HHRU_PROMETHEUS_RETENTION_TIME:-7d}"
+      - "--storage.tsdb.retention.size=${HHRU_PROMETHEUS_RETENTION_SIZE:-8GB}"
       - "--web.enable-lifecycle"
 
   node-exporter:

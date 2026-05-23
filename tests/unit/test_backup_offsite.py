@@ -11,6 +11,10 @@ from hhru_platform.application.commands.sync_backup_offsite import (
     SyncBackupOffsiteCommand,
     sync_backup_offsite,
 )
+from hhru_platform.application.commands.verify_backup_offsite import (
+    VerifyBackupOffsiteCommand,
+    verify_backup_offsite,
+)
 from hhru_platform.infrastructure.backup import LocalBackupOffsiteUploadReceiptStore
 from hhru_platform.infrastructure.backup.s3_backup_offsite_uploader import (
     S3BackupOffsiteUploader,
@@ -28,9 +32,15 @@ class FakeOffsiteUploader:
 class FakeS3Client:
     def __init__(self) -> None:
         self.upload_calls: list[tuple[str, str, str, bytes]] = []
+        self.object_sizes_by_key: dict[str, int] = {}
 
     def upload_file(self, Filename: str, Bucket: str, Key: str) -> None:
-        self.upload_calls.append((Filename, Bucket, Key, Path(Filename).read_bytes()))
+        payload = Path(Filename).read_bytes()
+        self.upload_calls.append((Filename, Bucket, Key, payload))
+        self.object_sizes_by_key[Key] = len(payload)
+
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, int]:
+        return {"ContentLength": self.object_sizes_by_key[Key]}
 
 
 def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
@@ -50,6 +60,7 @@ def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
         local_file=local_file,
         remote_path="/backup.dump.parts/000001.part",
     )
+    size_bytes = uploader.get_file_size(remote_path="/backup.dump.parts/000001.part")
 
     assert client.upload_calls == [
         (
@@ -59,6 +70,79 @@ def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
             b"payload",
         )
     ]
+    assert size_bytes == 7
+
+
+def test_verify_backup_offsite_checks_manifest_and_part_sizes(
+    tmp_path: Path,
+) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    backup = backup_dir / "hhru-platform_hhru_platform_20260516T084422Z.dump"
+    backup.write_bytes(b"latest-backup")
+    manifest = Path(f"{backup.resolve()}.manifest.json")
+    manifest_payload = {
+        "manifest_version": 2,
+        "upload_mode": "parts",
+        "backup_file": backup.name,
+        "backup_size_bytes": 13,
+        "backup_sha256": "abc123",
+        "chunk_size_bytes": 6,
+        "parts": [
+            {
+                "index": 1,
+                "file": f"{backup.name}.parts/000001.part",
+                "size_bytes": 6,
+                "sha256": "part1",
+            },
+            {
+                "index": 2,
+                "file": f"{backup.name}.parts/000002.part",
+                "size_bytes": 7,
+                "sha256": "part2",
+            },
+        ],
+    }
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    remote_store = FakeRemoteStore(
+        sizes_by_remote_path={
+            manifest.name: manifest.stat().st_size,
+            f"{backup.name}.parts/000001.part": 6,
+            f"{backup.name}.parts/000002.part": 7,
+        }
+    )
+
+    result = verify_backup_offsite(
+        VerifyBackupOffsiteCommand(
+            backup_file=backup,
+            backup_dir=backup_dir,
+            offsite_url="https://s3.example.test/bucket",
+            offsite_root="/hhru-platform/backups",
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+    )
+
+    assert result.status == "succeeded"
+    assert result.backup_file == backup.resolve()
+    assert result.backup_size_bytes == 13
+    assert result.backup_sha256 == "abc123"
+    assert result.chunk_size_bytes == 6
+    assert result.part_count == 2
+    assert result.verified_object_count == 3
+    assert [verified.remote_path for verified in result.verified_objects] == [
+        manifest.name,
+        f"{backup.name}.parts/000001.part",
+        f"{backup.name}.parts/000002.part",
+    ]
+
+
+class FakeRemoteStore:
+    def __init__(self, *, sizes_by_remote_path: dict[str, int]) -> None:
+        self.sizes_by_remote_path = sizes_by_remote_path
+
+    def get_file_size(self, *, remote_path: str) -> int:
+        return self.sizes_by_remote_path[remote_path]
 
 
 def test_sync_backup_offsite_uploads_latest_backup_and_manifest_once(

@@ -15,6 +15,12 @@ from hhru_platform.application.commands.sync_backup_offsite import (
     SyncBackupOffsiteResult,
     sync_backup_offsite,
 )
+from hhru_platform.application.commands.verify_backup_offsite import (
+    BackupOffsiteRemoteStore,
+    VerifyBackupOffsiteCommand,
+    VerifyBackupOffsiteResult,
+    verify_backup_offsite,
+)
 from hhru_platform.config.settings import Settings, get_settings
 from hhru_platform.infrastructure.backup import (
     BackupService,
@@ -120,6 +126,29 @@ def register_backup_commands(
     )
     offsite_parser.set_defaults(handler=handle_sync_backup_offsite)
 
+    verify_offsite_parser = subparsers.add_parser(
+        "verify-backup-offsite",
+        help=(
+            "Verify that an off-host backup manifest and all backup parts exist "
+            "with expected sizes."
+        ),
+    )
+    verify_offsite_parser.add_argument(
+        "--backup-file",
+        type=Path,
+        default=None,
+        help="Path to the local backup dump. Defaults to the latest dump in HHRU_BACKUP_DIR.",
+    )
+    verify_offsite_parser.add_argument(
+        "--triggered-by",
+        default="verify-backup-offsite",
+        help=(
+            "Actor or subsystem that initiated off-host backup verification. "
+            "Defaults to verify-backup-offsite."
+        ),
+    )
+    verify_offsite_parser.set_defaults(handler=handle_verify_backup_offsite)
+
 
 def handle_run_backup(args: argparse.Namespace) -> int:
     try:
@@ -217,6 +246,22 @@ def handle_sync_backup_offsite(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_verify_backup_offsite(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        command, remote_store = _build_verify_backup_offsite_command_and_store(
+            args=args,
+            settings=settings,
+        )
+        result = verify_backup_offsite(command, remote_store=remote_store)
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_verify_backup_offsite_summary(result)
+    return 0
+
+
 def _build_backup_offsite_command_and_uploader(
     *,
     args: argparse.Namespace,
@@ -301,6 +346,59 @@ def _build_backup_offsite_command_and_uploader(
     return command, webdav_uploader
 
 
+def _build_verify_backup_offsite_command_and_store(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+) -> tuple[VerifyBackupOffsiteCommand, BackupOffsiteRemoteStore]:
+    backend = settings.backup_offsite_backend.strip().lower()
+    if backend != "s3":
+        raise ValueError("verify-backup-offsite currently supports only S3 backend")
+    backup_file = Path(args.backup_file) if args.backup_file is not None else _latest_backup_file(
+        Path(settings.backup_dir)
+    )
+    endpoint_url = settings.backup_offsite_s3_endpoint_url.strip()
+    bucket = settings.backup_offsite_s3_bucket.strip()
+    access_key_id = settings.backup_offsite_s3_access_key_id or ""
+    secret_access_key = settings.backup_offsite_s3_secret_access_key or ""
+    if not endpoint_url:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_ENDPOINT_URL must not be empty")
+    if not bucket:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_BUCKET must not be empty")
+    if not access_key_id or not secret_access_key:
+        raise ValueError(
+            "HHRU_BACKUP_OFFSITE_S3_ACCESS_KEY_ID and "
+            "HHRU_BACKUP_OFFSITE_S3_SECRET_ACCESS_KEY must be configured"
+        )
+    command = VerifyBackupOffsiteCommand(
+        backup_file=backup_file,
+        backup_dir=Path(settings.backup_dir),
+        offsite_url=_s3_offsite_url(endpoint_url=endpoint_url, bucket=bucket),
+        offsite_root=settings.backup_offsite_root,
+        triggered_by=str(args.triggered_by),
+    )
+    remote_store = S3BackupOffsiteUploader.with_credentials(
+        endpoint_url=endpoint_url,
+        bucket=bucket,
+        key_prefix=command.offsite_root,
+        region_name=settings.backup_offsite_s3_region,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+    )
+    return command, remote_store
+
+
+def _latest_backup_file(backup_dir: Path) -> Path:
+    backup_files = sorted(
+        (path for path in backup_dir.rglob("*.dump") if path.is_file()),
+        key=lambda path: (path.stat().st_mtime, path.name),
+        reverse=True,
+    )
+    if not backup_files:
+        raise FileNotFoundError(f"no backup dumps found in {backup_dir}")
+    return backup_files[0]
+
+
 def _s3_offsite_url(*, endpoint_url: str, bucket: str) -> str:
     return f"{endpoint_url.strip().rstrip('/')}/{bucket.strip()}"
 
@@ -335,3 +433,18 @@ def _print_sync_backup_offsite_summary(result: SyncBackupOffsiteResult) -> None:
             f"skipped={'yes' if summary.skipped else 'no'} "
             f"receipt_file={summary.receipt_file or '-'}"
         )
+
+
+def _print_verify_backup_offsite_summary(result: VerifyBackupOffsiteResult) -> None:
+    print("verified backup offsite")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"backup_file={result.backup_file}")
+    print(f"manifest_file={result.manifest_file}")
+    print(f"offsite_url={result.offsite_url}")
+    print(f"offsite_root={result.offsite_root}")
+    print(f"backup_size_bytes={result.backup_size_bytes}")
+    print(f"backup_sha256={result.backup_sha256}")
+    print(f"chunk_size_bytes={result.chunk_size_bytes}")
+    print(f"part_count={result.part_count}")
+    print(f"verified_object_count={result.verified_object_count}")

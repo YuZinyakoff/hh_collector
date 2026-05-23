@@ -7,7 +7,12 @@
 - backup создаётся через `run-backup` / `make backup`;
 - backup сразу проверяется как restorable archive;
 - restore drill всегда идёт в отдельную target DB;
+- offsite copy проверяется не только фактом upload, но и remote manifest/parts;
+- хотя бы периодически делается restore drill именно из offsite copy;
 - live destructive `restore` остаётся low-level аварийным инструментом, а не default path.
+
+Важно: PostgreSQL backup contour не является research archive. Для разделения
+storage-контуров см. [storage-contours.md](/home/yurizinyakov/projects/hh_collector/docs/ops/storage-contours.md).
 
 ## 2. Создать backup
 
@@ -185,6 +190,48 @@ Dump загружается не одним большим request, а fixed-siz
 - рядом с dump появляется `.manifest.json`
 - рядом с dump появляется `.offsite.json` receipt
 
+Проверено на VPS 2026-05-23:
+
+- backend: Timeweb cold S3, `https://s3.twcstorage.ru`;
+- dump: `2269000643` bytes;
+- chunk size: `67108864`;
+- parts: `34`;
+- upload duration: about `82s`;
+- повторный запуск: `uploaded_backup_count=0`, `skipped_backup_count=1`.
+
+Текущий upload+receipt path доказывает transport и idempotency. Для production-grade
+backup contour ещё нужны:
+
+- offsite restore drill: скачать parts из S3, склеить dump, проверить `backup_sha256`,
+  восстановить в отдельную DB;
+- explicit local/offsite backup retention policy.
+
+## 7. Проверить offsite copy
+
+После `make backup-offsite` нужно проверить, что remote manifest и все remote parts
+реально существуют и имеют размеры из manifest:
+
+```bash
+make verify-backup-offsite
+```
+
+Для конкретного dump-а:
+
+```bash
+make verify-backup-offsite BACKUP_FILE=.state/backups/<file>.dump
+```
+
+Ожидаемо:
+
+- `verified backup offsite`
+- `status=succeeded`
+- `verified_object_count = part_count + 1`
+- `backup_sha256` совпадает с local `verify-backup-file`
+
+Текущий verify проверяет remote object sizes. Полная checksum-проверка без доверия к
+локальному manifest будет частью offsite restore drill: скачать parts, склеить dump,
+посчитать `backup_sha256`, затем восстановить в отдельную DB.
+
 Порядок перед risky/long-running работами:
 
 ```bash
@@ -193,9 +240,10 @@ BACKUP_FILE="$(ls -1t .state/backups/*.dump | head -n 1)"
 make verify-backup BACKUP_FILE="$BACKUP_FILE"
 make restore-drill BACKUP_FILE="$BACKUP_FILE"
 make backup-offsite
+make verify-backup-offsite BACKUP_FILE="$BACKUP_FILE"
 ```
 
-## 7. Когда использовать low-level restore
+## 8. Когда использовать low-level restore
 
 Legacy destructive path остаётся только как аварийный инструмент:
 
@@ -210,7 +258,7 @@ make restore BACKUP_FILE=/backups/<file>.dump
 - offsite copy свежего dump-а загружена или сознательно признана недоступной;
 - понятна причина live recovery.
 
-## 8. Metrics и dashboard signals
+## 9. Metrics и dashboard signals
 
 Оператору важны:
 

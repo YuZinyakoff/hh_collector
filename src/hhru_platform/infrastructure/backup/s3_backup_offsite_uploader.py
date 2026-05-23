@@ -3,12 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypedDict, cast
+
+
+class S3HeadObjectResponse(TypedDict):
+    ContentLength: int
 
 
 class S3UploadClient(Protocol):
     def upload_file(self, Filename: str, Bucket: str, Key: str) -> None:
         """Upload one local file to an S3-compatible object key."""
+
+    def head_object(self, *, Bucket: str, Key: str) -> S3HeadObjectResponse:
+        """Return metadata for one S3-compatible object."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -56,6 +63,11 @@ class S3BackupOffsiteUploader:
     def upload_file(self, *, local_file: Path, remote_path: str) -> None:
         key = _join_object_key(self.key_prefix, remote_path)
         self.client.upload_file(str(local_file), self.bucket, key)
+
+    def get_file_size(self, *, remote_path: str) -> int:
+        key = _join_object_key(self.key_prefix, remote_path)
+        response = self.client.head_object(Bucket=self.bucket, Key=key)
+        return int(response["ContentLength"])
 
 
 def _create_s3_client(

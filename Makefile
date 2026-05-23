@@ -6,9 +6,9 @@ ARGS ?=
 .PHONY: up up-observability up-scheduler down migrate migrate-compose test lint format \
 	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop worker-detail \
 	drain-first-detail-backlog run-housekeeping \
-	run-backup verify-backup-file run-restore-drill sync-backup-offsite \
+	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite detail-worker-measurement \
 	vps-first-detail-measurement \
 	soak-test soak-test-no-build
 
@@ -84,6 +84,9 @@ run-restore-drill:
 sync-backup-offsite:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main sync-backup-offsite $(ARGS)
 
+verify-backup-offsite-cli:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-backup-offsite $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
+
 compose-health:
 	$(COMPOSE) --profile ops run --rm app health-check
 
@@ -111,6 +114,9 @@ restore-drill:
 
 backup-offsite:
 	$(COMPOSE) --profile ops run --rm app sync-backup-offsite $(ARGS)
+
+verify-backup-offsite:
+	$(COMPOSE) --profile ops run --rm app verify-backup-offsite $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
 
 soak-test:
 	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor scheduler

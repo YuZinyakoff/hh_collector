@@ -199,11 +199,10 @@ Dump загружается не одним большим request, а fixed-siz
 - upload duration: about `82s`;
 - повторный запуск: `uploaded_backup_count=0`, `skipped_backup_count=1`.
 
-Текущий upload+receipt path доказывает transport и idempotency. Для production-grade
-backup contour ещё нужны:
+Upload+receipt path доказывает transport и idempotency. Для production-grade
+backup contour также нужны:
 
-- offsite restore drill: скачать parts из S3, склеить dump, проверить `backup_sha256`,
-  восстановить в отдельную DB;
+- offsite restore drill из S3 copy;
 - explicit local/offsite backup retention policy.
 
 ## 7. Проверить offsite copy
@@ -228,9 +227,37 @@ make verify-backup-offsite BACKUP_FILE=.state/backups/<file>.dump
 - `verified_object_count = part_count + 1`
 - `backup_sha256` совпадает с local `verify-backup-file`
 
-Текущий verify проверяет remote object sizes. Полная checksum-проверка без доверия к
-локальному manifest будет частью offsite restore drill: скачать parts, склеить dump,
-посчитать `backup_sha256`, затем восстановить в отдельную DB.
+Текущий verify проверяет remote object sizes. Полная readback-проверка делается через
+offsite restore drill: скачать remote manifest и parts, склеить dump, посчитать
+`backup_sha256`, затем восстановить в отдельную DB.
+
+## 8. Выполнить offsite restore drill
+
+Offsite restore drill проверяет, что S3 copy действительно пригодна для восстановления,
+а не только присутствует по размерам:
+
+```bash
+make backup-offsite-restore-drill
+```
+
+Для конкретного dump-а:
+
+```bash
+make backup-offsite-restore-drill BACKUP_FILE=.state/backups/<file>.dump
+```
+
+Ожидаемо:
+
+- `completed backup offsite restore drill`
+- `status=succeeded`
+- `downloaded_part_count = part_count`
+- `schema_verified=yes`
+- `verified_tables=5/5`
+
+Команда не читает локальный `.dump` как источник данных. Она использует соседний
+`.manifest.json` как inventory, скачивает remote manifest и parts из S3, собирает
+temporary dump, проверяет итоговый `backup_sha256` и запускает обычный restore drill
+в отдельную target DB.
 
 Порядок перед risky/long-running работами:
 
@@ -241,9 +268,10 @@ make verify-backup BACKUP_FILE="$BACKUP_FILE"
 make restore-drill BACKUP_FILE="$BACKUP_FILE"
 make backup-offsite
 make verify-backup-offsite BACKUP_FILE="$BACKUP_FILE"
+make backup-offsite-restore-drill BACKUP_FILE="$BACKUP_FILE"
 ```
 
-## 8. Когда использовать low-level restore
+## 9. Когда использовать low-level restore
 
 Legacy destructive path остаётся только как аварийный инструмент:
 
@@ -258,7 +286,7 @@ make restore BACKUP_FILE=/backups/<file>.dump
 - offsite copy свежего dump-а загружена или сознательно признана недоступной;
 - понятна причина live recovery.
 
-## 9. Metrics и dashboard signals
+## 10. Metrics и dashboard signals
 
 Оператору важны:
 

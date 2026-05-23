@@ -57,6 +57,8 @@ Current status:
 - A 2.2 GiB dump uploaded to Timeweb cold S3 in about 82 seconds on 2026-05-23.
 - Idempotency is proven: a repeated run skipped the same dump through `.offsite.json`.
 - Remote size verification exists through `verify-backup-offsite`.
+- Offsite restore drill tooling exists through `run-backup-offsite-restore-drill` /
+  `make backup-offsite-restore-drill`; one real VPS S3 drill is still required.
 
 The DB backup contour is considered adequate only after these checks are in place:
 
@@ -161,7 +163,7 @@ trusted research archive.
 For DB backup contour:
 
 1. Run `verify-backup-offsite` after every `backup-offsite`.
-2. Add an offsite restore drill command:
+2. Run `backup-offsite-restore-drill` on the current S3 dump:
    download manifest and parts, assemble dump in a temporary local file, verify
    `backup_sha256`, then run the existing restore drill into a separate DB.
 3. Define local backup retention after successful S3 upload and restore drill.

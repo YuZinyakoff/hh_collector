@@ -26,7 +26,10 @@
 - Alertmanager + `alert-webhook` delivery до Telegram проверены на VPS;
 - in-run search transport budget добавлен для `run-once-v2` и `resume-run-v2`: transient failed search partitions переочередятся до лимитов `3` consecutive / `5` total;
 - backup offsite для DB dumps проверен на Timeweb cold S3: 2.2 GiB dump загружен
-  частями за ~82s, повторный запуск idempotent (`skipped_backup_count=1`).
+  частями за ~82s, повторный запуск idempotent (`skipped_backup_count=1`), remote
+  size verification прошёл (`verified_object_count=35`);
+- offsite restore drill tooling добавлен: команда скачивает S3 parts, собирает dump,
+  проверяет `backup_sha256` и запускает restore drill в отдельную DB.
 
 Текущий статус не равен production readiness. Корректная формулировка: full search coverage operationally validated, но `first-detail` drain, backup offsite для DB dumps и unattended production routine ещё не доказаны.
 
@@ -35,8 +38,8 @@
 - Полный first-detail drain на масштабе baseline.
 - Sustained detail throughput/storage growth на длинном supervised run.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
-- Offsite restore drill из S3 backup copy: upload и idempotency доказаны, но remote
-  verification/download/restore drill ещё нужно добавить.
+- Offsite restore drill из S3 backup copy: tooling добавлен, но нужно выполнить хотя бы
+  один VPS drill на реальном S3 dump-е.
 - Многодневная unattended stability на VPS.
 - Месячный production режим с backup, housekeeping, offsite archive и operator routine.
 
@@ -52,7 +55,7 @@
 | First-detail backlog | MVP ready | следующий шаг: VPS bounded measurement |
 | Detail worker | MVP ready | есть one-shot и loop, пока без full-scale unattended proof |
 | Backup / restore drill | VPS validated | post-baseline backup, verify и restore-drill прошли |
-| DB backup offsite | S3 upload validated | Timeweb cold S3 upload и idempotency работают; нужен remote verify и offsite restore drill |
+| DB backup offsite | S3 upload+verify validated | Timeweb cold S3 upload, idempotency и remote size verify работают; offsite restore drill command добавлен, нужен VPS run |
 | Retention archive / offsite sync | partially validated | retention bundle sync работает; нужен S3 backend, inventory и readback drill |
 | Observability | foundation ready | metrics, dashboards, alert rules есть |
 | Alert delivery | foundation ready | delivery до Telegram проверен; payloads нужно сделать информативнее |
@@ -132,9 +135,9 @@ Go/no-go:
 1. Команда `sync-backup-offsite` / `make backup-offsite` добавлена для `.state/backups/*.dump`.
 2. Проверить upload свежего post-baseline DB backup в offsite storage.
 3. Зафиксировать retention policy: сколько backup dumps держим локально и offsite.
-4. Добавить remote verification: manifest exists, all parts exist, remote sizes match.
-5. Добавить offsite restore drill: download parts from S3, assemble dump, verify sha256,
-   restore into separate DB.
+4. Remote verification добавлен: manifest exists, all parts exist, remote sizes match.
+5. Offsite restore drill command добавлен: download parts from S3, assemble dump,
+   verify sha256, restore into separate DB.
 
 Наблюдение 2026-05-15: `export-retention-archive` и `sync-retention-archive-offsite` успешно отработали, но `candidate_bundle_count=0`. Это проверяет retention archive path, а не offsite-копию свежего DB backup.
 
@@ -146,6 +149,8 @@ fixed-size частями с manifest v2 и receipt, который учитыв
 Наблюдение 2026-05-23: Timeweb cold S3 снял WebDAV blocker. Dump `2269000643`
 bytes загружен в `34` parts по `67108864` bytes примерно за `82s`. Повторный запуск
 не грузил данные заново: `uploaded_backup_count=0`, `skipped_backup_count=1`.
+Remote verify прошёл: `verified_object_count=35`. Следующий шаг по этому контуру:
+запустить `make backup-offsite-restore-drill BACKUP_FILE=<dump>` на VPS.
 
 ### Stage 5. VPS supervised detail drain
 

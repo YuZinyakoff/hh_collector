@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
 from hhru_platform.application.commands.run_backup import RunBackupCommand, run_backup
+from hhru_platform.application.commands.run_backup_offsite_restore_drill import (
+    RunBackupOffsiteRestoreDrillCommand,
+    run_backup_offsite_restore_drill,
+)
 from hhru_platform.application.commands.run_restore_drill import (
     RunRestoreDrillCommand,
     run_restore_drill,
@@ -189,6 +194,116 @@ def test_run_restore_drill_records_restore_lifecycle_metrics(tmp_path) -> None:
     assert result.status == "succeeded"
     assert 'hhru_restore_drill_run_total{status="succeeded"} 1' in rendered
     assert "hhru_restore_drill_last_success_timestamp_seconds" in rendered
+
+
+def test_run_backup_offsite_restore_drill_downloads_parts_and_restores(tmp_path) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    backup_file = backup_dir / "sample.dump"
+    parts = (b"first-part", b"second-part")
+    backup_payload = b"".join(parts)
+    backup_sha256 = hashlib.sha256(backup_payload).hexdigest()
+    manifest_file = Path(f"{backup_file.resolve()}.manifest.json")
+    manifest_payload = {
+        "manifest_version": 2,
+        "upload_mode": "parts",
+        "backup_file": backup_file.name,
+        "backup_size_bytes": len(backup_payload),
+        "backup_sha256": backup_sha256,
+        "chunk_size_bytes": 10,
+        "parts": [
+            {
+                "index": 1,
+                "file": f"{backup_file.name}.parts/000001.part",
+                "size_bytes": len(parts[0]),
+                "sha256": hashlib.sha256(parts[0]).hexdigest(),
+            },
+            {
+                "index": 2,
+                "file": f"{backup_file.name}.parts/000002.part",
+                "size_bytes": len(parts[1]),
+                "sha256": hashlib.sha256(parts[1]).hexdigest(),
+            },
+        ],
+    }
+    manifest_file.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    class FakeRemoteDownloader:
+        def __init__(self) -> None:
+            self.download_calls: list[str] = []
+            self.payloads_by_remote_path = {
+                manifest_file.name: manifest_file.read_bytes(),
+                f"{backup_file.name}.parts/000001.part": parts[0],
+                f"{backup_file.name}.parts/000002.part": parts[1],
+            }
+
+        def download_file(self, *, local_file: Path, remote_path: str) -> None:
+            self.download_calls.append(remote_path)
+            local_file.write_bytes(self.payloads_by_remote_path[remote_path])
+
+    class StubBackupService:
+        def restore_to_target_db(
+            self,
+            *,
+            backup_file: Path,
+            target_db: str,
+            drop_existing: bool = True,
+        ) -> RestoreDrillSummary:
+            assert backup_file.read_bytes() == backup_payload
+            assert target_db == "hhru_platform_restore_drill"
+            assert drop_existing is True
+            return RestoreDrillSummary(
+                backup_file=backup_file,
+                target_db=target_db,
+                archive_entry_count=11,
+                required_tables=(
+                    "crawl_run",
+                    "crawl_partition",
+                    "raw_api_payload",
+                    "vacancy_snapshot",
+                    "vacancy_current_state",
+                ),
+                present_table_count=5,
+                schema_verified=True,
+            )
+
+    remote_downloader = FakeRemoteDownloader()
+    metrics = FileBackedMetricsRegistry(tmp_path / "metrics.json")
+
+    result = run_backup_offsite_restore_drill(
+        RunBackupOffsiteRestoreDrillCommand(
+            backup_file=backup_file,
+            backup_dir=backup_dir,
+            offsite_url="https://s3.example.test/bucket",
+            offsite_root="/hhru-platform/backups",
+            target_db="hhru_platform_restore_drill",
+            drop_target_db=True,
+            triggered_by="unit-test",
+            recorded_at=datetime(2026, 5, 23, 12, 0, tzinfo=UTC),
+        ),
+        remote_downloader=remote_downloader,
+        backup_service=StubBackupService(),  # type: ignore[arg-type]
+        metrics_recorder=metrics,
+    )
+
+    assert result.status == "succeeded"
+    assert result.backup_file == backup_file.resolve()
+    assert result.manifest_file == manifest_file
+    assert result.backup_size_bytes == len(backup_payload)
+    assert result.backup_sha256 == backup_sha256
+    assert result.chunk_size_bytes == 10
+    assert result.part_count == 2
+    assert result.downloaded_part_count == 2
+    assert result.archive_entry_count == 11
+    assert result.schema_verified is True
+    assert remote_downloader.download_calls == [
+        manifest_file.name,
+        f"{backup_file.name}.parts/000001.part",
+        f"{backup_file.name}.parts/000002.part",
+    ]
+    assert 'hhru_restore_drill_run_total{status="succeeded"} 1' in (
+        metrics.render_prometheus()
+    )
 
 
 def test_backup_scripts_are_shell_syntax_valid() -> None:

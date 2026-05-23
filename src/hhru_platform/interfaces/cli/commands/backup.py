@@ -5,6 +5,12 @@ import sys
 from pathlib import Path
 
 from hhru_platform.application.commands.run_backup import RunBackupCommand, run_backup
+from hhru_platform.application.commands.run_backup_offsite_restore_drill import (
+    BackupOffsiteRemoteDownloader,
+    RunBackupOffsiteRestoreDrillCommand,
+    RunBackupOffsiteRestoreDrillResult,
+    run_backup_offsite_restore_drill,
+)
 from hhru_platform.application.commands.run_restore_drill import (
     RunRestoreDrillCommand,
     run_restore_drill,
@@ -149,6 +155,50 @@ def register_backup_commands(
     )
     verify_offsite_parser.set_defaults(handler=handle_verify_backup_offsite)
 
+    offsite_restore_parser = subparsers.add_parser(
+        "run-backup-offsite-restore-drill",
+        help=(
+            "Download a split off-host backup from S3, assemble it, verify checksum, "
+            "and run restore drill into a separate target database."
+        ),
+    )
+    offsite_restore_parser.add_argument(
+        "--backup-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the local backup dump identity. The dump itself is not read, "
+            "but the adjacent .manifest.json is required. Defaults to latest dump "
+            "in HHRU_BACKUP_DIR."
+        ),
+    )
+    offsite_restore_parser.add_argument(
+        "--target-db",
+        default=None,
+        help=(
+            "Target database name for the drill restore. Defaults to "
+            "HHRU_BACKUP_RESTORE_DRILL_TARGET_DB."
+        ),
+    )
+    offsite_restore_parser.add_argument(
+        "--drop-target-db",
+        choices=("yes", "no"),
+        default=None,
+        help=(
+            "Recreate the target database before restore. Defaults to "
+            "HHRU_BACKUP_RESTORE_DRILL_DROP_EXISTING."
+        ),
+    )
+    offsite_restore_parser.add_argument(
+        "--triggered-by",
+        default="run-backup-offsite-restore-drill",
+        help=(
+            "Actor or subsystem that initiated off-host restore drill. "
+            "Defaults to run-backup-offsite-restore-drill."
+        ),
+    )
+    offsite_restore_parser.set_defaults(handler=handle_run_backup_offsite_restore_drill)
+
 
 def handle_run_backup(args: argparse.Namespace) -> int:
     try:
@@ -259,6 +309,29 @@ def handle_verify_backup_offsite(args: argparse.Namespace) -> int:
         return 1
 
     _print_verify_backup_offsite_summary(result)
+    return 0
+
+
+def handle_run_backup_offsite_restore_drill(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        command, remote_downloader = (
+            _build_backup_offsite_restore_drill_command_and_downloader(
+                args=args,
+                settings=settings,
+            )
+        )
+        result = run_backup_offsite_restore_drill(
+            command,
+            remote_downloader=remote_downloader,
+            backup_service=BackupService(settings),
+            metrics_recorder=get_metrics_registry(),
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_backup_offsite_restore_drill_summary(result)
     return 0
 
 
@@ -388,6 +461,56 @@ def _build_verify_backup_offsite_command_and_store(
     return command, remote_store
 
 
+def _build_backup_offsite_restore_drill_command_and_downloader(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+) -> tuple[RunBackupOffsiteRestoreDrillCommand, BackupOffsiteRemoteDownloader]:
+    backend = settings.backup_offsite_backend.strip().lower()
+    if backend != "s3":
+        raise ValueError("run-backup-offsite-restore-drill currently supports only S3 backend")
+    backup_file = Path(args.backup_file) if args.backup_file is not None else _latest_backup_file(
+        Path(settings.backup_dir)
+    )
+    endpoint_url = settings.backup_offsite_s3_endpoint_url.strip()
+    bucket = settings.backup_offsite_s3_bucket.strip()
+    access_key_id = settings.backup_offsite_s3_access_key_id or ""
+    secret_access_key = settings.backup_offsite_s3_secret_access_key or ""
+    if not endpoint_url:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_ENDPOINT_URL must not be empty")
+    if not bucket:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_BUCKET must not be empty")
+    if not access_key_id or not secret_access_key:
+        raise ValueError(
+            "HHRU_BACKUP_OFFSITE_S3_ACCESS_KEY_ID and "
+            "HHRU_BACKUP_OFFSITE_S3_SECRET_ACCESS_KEY must be configured"
+        )
+    target_db = str(args.target_db or settings.backup_restore_drill_target_db)
+    drop_target_db = (
+        settings.backup_restore_drill_drop_existing
+        if args.drop_target_db is None
+        else args.drop_target_db == "yes"
+    )
+    command = RunBackupOffsiteRestoreDrillCommand(
+        backup_file=backup_file,
+        backup_dir=Path(settings.backup_dir),
+        offsite_url=_s3_offsite_url(endpoint_url=endpoint_url, bucket=bucket),
+        offsite_root=settings.backup_offsite_root,
+        target_db=target_db,
+        drop_target_db=drop_target_db,
+        triggered_by=str(args.triggered_by),
+    )
+    remote_downloader = S3BackupOffsiteUploader.with_credentials(
+        endpoint_url=endpoint_url,
+        bucket=bucket,
+        key_prefix=command.offsite_root,
+        region_name=settings.backup_offsite_s3_region,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+    )
+    return command, remote_downloader
+
+
 def _latest_backup_file(backup_dir: Path) -> Path:
     backup_files = sorted(
         (path for path in backup_dir.rglob("*.dump") if path.is_file()),
@@ -448,3 +571,29 @@ def _print_verify_backup_offsite_summary(result: VerifyBackupOffsiteResult) -> N
     print(f"chunk_size_bytes={result.chunk_size_bytes}")
     print(f"part_count={result.part_count}")
     print(f"verified_object_count={result.verified_object_count}")
+
+
+def _print_backup_offsite_restore_drill_summary(
+    result: RunBackupOffsiteRestoreDrillResult,
+) -> None:
+    print("completed backup offsite restore drill")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"recorded_at={result.recorded_at.isoformat()}")
+    print(f"backup_file={result.backup_file}")
+    print(f"manifest_file={result.manifest_file}")
+    print(f"offsite_url={result.offsite_url}")
+    print(f"offsite_root={result.offsite_root}")
+    print(f"target_db={result.target_db}")
+    print(f"backup_size_bytes={result.backup_size_bytes}")
+    print(f"backup_sha256={result.backup_sha256}")
+    print(f"chunk_size_bytes={result.chunk_size_bytes}")
+    print(f"part_count={result.part_count}")
+    print(f"downloaded_part_count={result.downloaded_part_count}")
+    print(f"archive_entry_count={result.archive_entry_count}")
+    print(f"schema_verified={'yes' if result.schema_verified else 'no'}")
+    print(
+        "verified_tables="
+        f"{result.verified_tables_count}/{len(result.checked_tables)}"
+    )
+    print(f"checked_tables={','.join(result.checked_tables)}")

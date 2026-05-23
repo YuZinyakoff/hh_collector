@@ -32,12 +32,19 @@ class FakeOffsiteUploader:
 class FakeS3Client:
     def __init__(self) -> None:
         self.upload_calls: list[tuple[str, str, str, bytes]] = []
+        self.download_calls: list[tuple[str, str, str]] = []
+        self.objects_by_key: dict[str, bytes] = {}
         self.object_sizes_by_key: dict[str, int] = {}
 
     def upload_file(self, Filename: str, Bucket: str, Key: str) -> None:
         payload = Path(Filename).read_bytes()
         self.upload_calls.append((Filename, Bucket, Key, payload))
+        self.objects_by_key[Key] = payload
         self.object_sizes_by_key[Key] = len(payload)
+
+    def download_file(self, Bucket: str, Key: str, Filename: str) -> None:
+        self.download_calls.append((Bucket, Key, Filename))
+        Path(Filename).write_bytes(self.objects_by_key[Key])
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, int]:
         return {"ContentLength": self.object_sizes_by_key[Key]}
@@ -60,6 +67,11 @@ def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
         local_file=local_file,
         remote_path="/backup.dump.parts/000001.part",
     )
+    downloaded_file = tmp_path / "downloaded" / "part.bin"
+    uploader.download_file(
+        local_file=downloaded_file,
+        remote_path="/backup.dump.parts/000001.part",
+    )
     size_bytes = uploader.get_file_size(remote_path="/backup.dump.parts/000001.part")
 
     assert client.upload_calls == [
@@ -70,6 +82,14 @@ def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
             b"payload",
         )
     ]
+    assert client.download_calls == [
+        (
+            "bucket-id",
+            "hhru-platform/backups/backup.dump.parts/000001.part",
+            str(downloaded_file),
+        )
+    ]
+    assert downloaded_file.read_bytes() == b"payload"
     assert size_bytes == 7
 
 

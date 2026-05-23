@@ -14,6 +14,9 @@ class S3UploadClient(Protocol):
     def upload_file(self, Filename: str, Bucket: str, Key: str) -> None:
         """Upload one local file to an S3-compatible object key."""
 
+    def download_file(self, Bucket: str, Key: str, Filename: str) -> None:
+        """Download one S3-compatible object key into a local file."""
+
     def head_object(self, *, Bucket: str, Key: str) -> S3HeadObjectResponse:
         """Return metadata for one S3-compatible object."""
 
@@ -63,6 +66,11 @@ class S3BackupOffsiteUploader:
     def upload_file(self, *, local_file: Path, remote_path: str) -> None:
         key = _join_object_key(self.key_prefix, remote_path)
         self.client.upload_file(str(local_file), self.bucket, key)
+
+    def download_file(self, *, local_file: Path, remote_path: str) -> None:
+        key = _join_object_key(self.key_prefix, remote_path)
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        self.client.download_file(self.bucket, key, str(local_file))
 
     def get_file_size(self, *, remote_path: str) -> int:
         key = _join_object_key(self.key_prefix, remote_path)

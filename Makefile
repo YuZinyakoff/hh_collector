@@ -7,8 +7,9 @@ ARGS ?=
 	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop worker-detail \
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli \
+	run-backup-offsite-restore-drill \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite backup-offsite-restore-drill detail-worker-measurement \
 	vps-first-detail-measurement \
 	soak-test soak-test-no-build
 
@@ -87,6 +88,9 @@ sync-backup-offsite:
 verify-backup-offsite-cli:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-backup-offsite $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
 
+run-backup-offsite-restore-drill:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
+
 compose-health:
 	$(COMPOSE) --profile ops run --rm app health-check
 
@@ -117,6 +121,9 @@ backup-offsite:
 
 verify-backup-offsite:
 	$(COMPOSE) --profile ops run --rm app verify-backup-offsite $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
+
+backup-offsite-restore-drill:
+	$(COMPOSE) --profile ops run --rm app run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
 
 soak-test:
 	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor scheduler

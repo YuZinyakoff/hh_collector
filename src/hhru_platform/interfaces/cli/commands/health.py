@@ -64,6 +64,7 @@ def handle_health_check(_: argparse.Namespace) -> int:
         f"{'yes' if settings.backup_restore_drill_drop_existing else 'no'}"
     )
     backup_offsite_auth_mode = _backup_offsite_auth_mode(settings)
+    print(f"backup_offsite_backend={settings.backup_offsite_backend}")
     print(
         "backup_offsite_configured="
         f"{'yes' if _is_backup_offsite_configured(settings, backup_offsite_auth_mode) else 'no'}"
@@ -73,6 +74,16 @@ def handle_health_check(_: argparse.Namespace) -> int:
     print(f"backup_offsite_auth_mode={backup_offsite_auth_mode}")
     print(f"backup_offsite_timeout_seconds={settings.backup_offsite_timeout_seconds}")
     print(f"backup_offsite_chunk_size_bytes={settings.backup_offsite_chunk_size_bytes}")
+    print(
+        "backup_offsite_s3_endpoint_url="
+        f"{settings.backup_offsite_s3_endpoint_url or '-'}"
+    )
+    print(f"backup_offsite_s3_bucket={settings.backup_offsite_s3_bucket or '-'}")
+    print(f"backup_offsite_s3_region={settings.backup_offsite_s3_region}")
+    print(
+        "backup_offsite_s3_access_key_configured="
+        f"{'yes' if settings.backup_offsite_s3_access_key_id else 'no'}"
+    )
     print(
         "housekeeping_raw_api_payload_retention_days="
         f"{settings.housekeeping_raw_api_payload_retention_days}"
@@ -129,14 +140,34 @@ def _is_archive_offsite_configured(settings: Settings, auth_mode: str) -> bool:
 
 
 def _is_backup_offsite_configured(settings: Settings, auth_mode: str) -> bool:
+    if settings.backup_offsite_backend.strip().lower() == "s3":
+        return bool(
+            settings.backup_offsite_s3_endpoint_url
+            and settings.backup_offsite_s3_bucket
+            and settings.backup_offsite_s3_access_key_id
+            and settings.backup_offsite_s3_secret_access_key
+        )
     return bool(_backup_offsite_url(settings)) and auth_mode != "none"
 
 
 def _backup_offsite_url(settings: Settings) -> str:
+    if settings.backup_offsite_backend.strip().lower() == "s3":
+        endpoint_url = settings.backup_offsite_s3_endpoint_url.strip().rstrip("/")
+        bucket = settings.backup_offsite_s3_bucket.strip()
+        if endpoint_url and bucket:
+            return f"{endpoint_url}/{bucket}"
+        return endpoint_url
     return settings.backup_offsite_url or settings.housekeeping_archive_offsite_url
 
 
 def _backup_offsite_auth_mode(settings: Settings) -> str:
+    if settings.backup_offsite_backend.strip().lower() == "s3":
+        if (
+            settings.backup_offsite_s3_access_key_id
+            and settings.backup_offsite_s3_secret_access_key
+        ):
+            return "s3"
+        return "none"
     if (
         settings.backup_offsite_bearer_token
         or settings.housekeeping_archive_offsite_bearer_token

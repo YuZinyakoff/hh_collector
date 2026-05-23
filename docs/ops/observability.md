@@ -14,6 +14,33 @@
 - приложение пишет JSON structured logs в stderr
 - file-backed metrics сохраняются в `HHRU_METRICS_STATE_PATH`
 
+## Prometheus retention на VPS
+
+Prometheus хранит operational telemetry, а не исследовательские данные коллектора.
+На long-running VPS его volume должен иметь жёсткий retention, иначе `node-exporter`
+и `cadvisor` быстро съедают десятки GB.
+
+Для pilot достаточно хранить недавнюю историю:
+
+- `--storage.tsdb.retention.time=7d`
+- `--storage.tsdb.retention.size=8GB`
+
+Если нужно быстро освободить место, допустимо пересоздать `hh_collector_prometheus_data`
+после применения retention-настроек. Это удалит старую историю графиков, но не затронет
+PostgreSQL, raw payloads, backups и application metrics state.
+
+VPS observation 2026-05-21:
+
+- filesystem used: `49G / 154G`;
+- `hh_collector_prometheus_data`: `21G`;
+- `hh_collector_postgres_data`: `17G`;
+- `.state/backups`: `5.8G`;
+- main database logical size: `8930 MB`;
+- restore-drill database logical size: `7458 MB`.
+
+Вывод: главная лишняя категория - Prometheus TSDB без tight retention; в PostgreSQL
+существенную часть физического volume занимает restore-drill DB.
+
 ## Основные команды
 
 Локальный snapshot метрик:

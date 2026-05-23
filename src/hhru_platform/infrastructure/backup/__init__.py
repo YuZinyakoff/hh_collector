@@ -10,6 +10,9 @@ from hhru_platform.infrastructure.backup.backup_service import (
     BackupService,
     RestoreDrillSummary,
 )
+from hhru_platform.infrastructure.backup.s3_backup_offsite_uploader import (
+    S3BackupOffsiteUploader,
+)
 
 __all__ = [
     "BACKUP_DRILL_REQUIRED_TABLES",
@@ -18,4 +21,5 @@ __all__ = [
     "BackupService",
     "LocalBackupOffsiteUploadReceiptStore",
     "RestoreDrillSummary",
+    "S3BackupOffsiteUploader",
 ]

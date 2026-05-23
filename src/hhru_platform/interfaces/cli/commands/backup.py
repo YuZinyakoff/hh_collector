@@ -10,14 +10,16 @@ from hhru_platform.application.commands.run_restore_drill import (
     run_restore_drill,
 )
 from hhru_platform.application.commands.sync_backup_offsite import (
+    BackupOffsiteUploader,
     SyncBackupOffsiteCommand,
     SyncBackupOffsiteResult,
     sync_backup_offsite,
 )
-from hhru_platform.config.settings import get_settings
+from hhru_platform.config.settings import Settings, get_settings
 from hhru_platform.infrastructure.backup import (
     BackupService,
     LocalBackupOffsiteUploadReceiptStore,
+    S3BackupOffsiteUploader,
 )
 from hhru_platform.infrastructure.housekeeping import WebDavArchiveUploader
 from hhru_platform.infrastructure.observability.metrics import get_metrics_registry
@@ -89,7 +91,7 @@ def register_backup_commands(
     offsite_parser = subparsers.add_parser(
         "sync-backup-offsite",
         help=(
-            "Upload recent PostgreSQL backup dumps plus manifests to off-host WebDAV "
+            "Upload recent PostgreSQL backup dumps plus manifests to off-host "
             "storage and keep local upload receipts."
         ),
     )
@@ -198,41 +200,10 @@ def handle_run_restore_drill(args: argparse.Namespace) -> int:
 def handle_sync_backup_offsite(args: argparse.Namespace) -> int:
     settings = get_settings()
     try:
-        command = SyncBackupOffsiteCommand(
-            backup_dir=Path(settings.backup_dir),
-            offsite_url=settings.backup_offsite_url
-            or settings.housekeeping_archive_offsite_url,
-            offsite_root=settings.backup_offsite_root,
-            username=settings.backup_offsite_username
-            or settings.housekeeping_archive_offsite_username,
-            password=settings.backup_offsite_password
-            or settings.housekeeping_archive_offsite_password,
-            bearer_token=settings.backup_offsite_bearer_token
-            or settings.housekeeping_archive_offsite_bearer_token,
-            timeout_seconds=settings.backup_offsite_timeout_seconds,
-            chunk_size_bytes=(
-                args.chunk_size_bytes
-                if args.chunk_size_bytes is not None
-                else settings.backup_offsite_chunk_size_bytes
-            ),
-            limit=args.limit,
-            triggered_by=str(args.triggered_by),
+        command, uploader = _build_backup_offsite_command_and_uploader(
+            args=args,
+            settings=settings,
         )
-        if command.auth_mode == "bearer":
-            uploader = WebDavArchiveUploader.with_bearer_token(
-                base_url=command.offsite_url,
-                remote_root=command.offsite_root,
-                bearer_token=str(command.bearer_token),
-                timeout_seconds=command.timeout_seconds,
-            )
-        else:
-            uploader = WebDavArchiveUploader.with_basic_auth(
-                base_url=command.offsite_url,
-                remote_root=command.offsite_root,
-                username=str(command.username),
-                password=str(command.password),
-                timeout_seconds=command.timeout_seconds,
-            )
         result = sync_backup_offsite(
             command,
             offsite_uploader=uploader,
@@ -244,6 +215,94 @@ def handle_sync_backup_offsite(args: argparse.Namespace) -> int:
 
     _print_sync_backup_offsite_summary(result)
     return 0
+
+
+def _build_backup_offsite_command_and_uploader(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+) -> tuple[SyncBackupOffsiteCommand, BackupOffsiteUploader]:
+    backend = settings.backup_offsite_backend.strip().lower()
+    chunk_size_bytes = (
+        args.chunk_size_bytes
+        if args.chunk_size_bytes is not None
+        else settings.backup_offsite_chunk_size_bytes
+    )
+    if backend == "s3":
+        endpoint_url = settings.backup_offsite_s3_endpoint_url.strip()
+        bucket = settings.backup_offsite_s3_bucket.strip()
+        access_key_id = settings.backup_offsite_s3_access_key_id or ""
+        secret_access_key = settings.backup_offsite_s3_secret_access_key or ""
+        if not endpoint_url:
+            raise ValueError("HHRU_BACKUP_OFFSITE_S3_ENDPOINT_URL must not be empty")
+        if not bucket:
+            raise ValueError("HHRU_BACKUP_OFFSITE_S3_BUCKET must not be empty")
+        if not access_key_id or not secret_access_key:
+            raise ValueError(
+                "HHRU_BACKUP_OFFSITE_S3_ACCESS_KEY_ID and "
+                "HHRU_BACKUP_OFFSITE_S3_SECRET_ACCESS_KEY must be configured"
+            )
+        command = SyncBackupOffsiteCommand(
+            backup_dir=Path(settings.backup_dir),
+            offsite_url=_s3_offsite_url(endpoint_url=endpoint_url, bucket=bucket),
+            offsite_root=settings.backup_offsite_root,
+            username=access_key_id,
+            password=secret_access_key,
+            auth_mode_label="s3",
+            timeout_seconds=settings.backup_offsite_timeout_seconds,
+            chunk_size_bytes=chunk_size_bytes,
+            limit=args.limit,
+            triggered_by=str(args.triggered_by),
+        )
+        s3_uploader = S3BackupOffsiteUploader.with_credentials(
+            endpoint_url=endpoint_url,
+            bucket=bucket,
+            key_prefix=command.offsite_root,
+            region_name=settings.backup_offsite_s3_region,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+        )
+        return command, s3_uploader
+
+    if backend != "webdav":
+        raise ValueError("HHRU_BACKUP_OFFSITE_BACKEND must be either webdav or s3")
+
+    command = SyncBackupOffsiteCommand(
+        backup_dir=Path(settings.backup_dir),
+        offsite_url=settings.backup_offsite_url
+        or settings.housekeeping_archive_offsite_url,
+        offsite_root=settings.backup_offsite_root,
+        username=settings.backup_offsite_username
+        or settings.housekeeping_archive_offsite_username,
+        password=settings.backup_offsite_password
+        or settings.housekeeping_archive_offsite_password,
+        bearer_token=settings.backup_offsite_bearer_token
+        or settings.housekeeping_archive_offsite_bearer_token,
+        timeout_seconds=settings.backup_offsite_timeout_seconds,
+        chunk_size_bytes=chunk_size_bytes,
+        limit=args.limit,
+        triggered_by=str(args.triggered_by),
+    )
+    if command.auth_mode == "bearer":
+        webdav_uploader = WebDavArchiveUploader.with_bearer_token(
+            base_url=command.offsite_url,
+            remote_root=command.offsite_root,
+            bearer_token=str(command.bearer_token),
+            timeout_seconds=command.timeout_seconds,
+        )
+    else:
+        webdav_uploader = WebDavArchiveUploader.with_basic_auth(
+            base_url=command.offsite_url,
+            remote_root=command.offsite_root,
+            username=str(command.username),
+            password=str(command.password),
+            timeout_seconds=command.timeout_seconds,
+        )
+    return command, webdav_uploader
+
+
+def _s3_offsite_url(*, endpoint_url: str, bucket: str) -> str:
+    return f"{endpoint_url.strip().rstrip('/')}/{bucket.strip()}"
 
 
 def _print_sync_backup_offsite_summary(result: SyncBackupOffsiteResult) -> None:

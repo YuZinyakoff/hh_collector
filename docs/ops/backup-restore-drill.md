@@ -92,6 +92,15 @@ Restore drill:
 - `schema_verified=yes`
 - `verified_tables=5/5`
 
+Restore-drill DB занимает почти столько же места, сколько live DB на момент backup-а.
+После успешного drill её можно удалить, если она больше не нужна для расследования:
+
+```bash
+docker compose exec postgres dropdb -U ${HHRU_DB_USER:-hhru} --if-exists ${HHRU_BACKUP_RESTORE_DRILL_TARGET_DB:-hhru_platform_restore_drill}
+```
+
+VPS observation 2026-05-21: live DB `8930 MB`, restore-drill DB `7458 MB`.
+
 ## 5. Проверить, что restore drill жив
 
 После успешного drill достаточно:
@@ -134,22 +143,36 @@ PYTHONPATH=src ./.venv/bin/python -m hhru_platform.interfaces.cli.main sync-back
 
 Offsite settings:
 
+- `HHRU_BACKUP_OFFSITE_BACKEND` (`webdav` или `s3`; `webdav` по умолчанию)
 - `HHRU_BACKUP_OFFSITE_URL`
 - `HHRU_BACKUP_OFFSITE_ROOT`
 - `HHRU_BACKUP_OFFSITE_USERNAME`
 - `HHRU_BACKUP_OFFSITE_PASSWORD`
 - `HHRU_BACKUP_OFFSITE_BEARER_TOKEN`
 - `HHRU_BACKUP_OFFSITE_TIMEOUT_SECONDS` (`1800` по умолчанию, потому DB dump может быть гигабайтным)
-- `HHRU_BACKUP_OFFSITE_CHUNK_SIZE_BYTES` (`67108864` по умолчанию)
+- `HHRU_BACKUP_OFFSITE_CHUNK_SIZE_BYTES` (`4194304` по умолчанию)
+
+Для S3-compatible storage:
+
+- `HHRU_BACKUP_OFFSITE_BACKEND=s3`
+- `HHRU_BACKUP_OFFSITE_S3_ENDPOINT_URL=https://s3.twcstorage.ru`
+- `HHRU_BACKUP_OFFSITE_S3_BUCKET=<bucket-name>`
+- `HHRU_BACKUP_OFFSITE_S3_REGION=ru-1`
+- `HHRU_BACKUP_OFFSITE_S3_ACCESS_KEY_ID=<access-key>`
+- `HHRU_BACKUP_OFFSITE_S3_SECRET_ACCESS_KEY=<secret-key>`
+- `HHRU_BACKUP_OFFSITE_ROOT=/hhru-platform/backups`
+- `HHRU_BACKUP_OFFSITE_CHUNK_SIZE_BYTES=67108864` для S3-пилота, чтобы не плодить
+  сотни мелких objects на один multi-GB dump.
 
 Если `HHRU_BACKUP_OFFSITE_URL` и credentials не заданы, команда использует уже настроенный
 `HHRU_HOUSEKEEPING_ARCHIVE_OFFSITE_*` WebDAV contour, но кладёт backup-и под
 `HHRU_BACKUP_OFFSITE_ROOT` (`/hhru-platform/backups` по умолчанию).
 
-Dump загружается не одним большим WebDAV request, а fixed-size частями:
+Dump загружается не одним большим request, а fixed-size частями:
 
 - части лежат в remote directory `<dump>.parts/000001.part`, `<dump>.parts/000002.part`, ...
 - `.manifest.json` содержит `backup_sha256`, `chunk_size_bytes`, список частей, размер и sha256 каждой части;
+- `.offsite.parts.json` фиксирует уже загруженные части, чтобы повторный запуск мог продолжить upload после обрыва;
 - для recovery надо скачать manifest и все parts, затем склеить parts по порядку и проверить итоговый `backup_sha256`;
 - повторный запуск пропускает backup только если локальный `.offsite.json` receipt совпадает с dump, manifest, remote path, `chunk_size_bytes` и количеством частей.
 

@@ -123,12 +123,17 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "backup_retention_days=14" in captured.out
     assert "backup_restore_drill_target_db=hhru_platform_restore_drill" in captured.out
     assert "backup_restore_drill_drop_existing=yes" in captured.out
+    assert "backup_offsite_backend=webdav" in captured.out
     assert "backup_offsite_configured=yes" in captured.out
     assert "backup_offsite_url=https://webdav.example.test" in captured.out
     assert "backup_offsite_root=/hhru-platform/backups" in captured.out
     assert "backup_offsite_auth_mode=basic" in captured.out
     assert "backup_offsite_timeout_seconds=120.0" in captured.out
     assert "backup_offsite_chunk_size_bytes=1024" in captured.out
+    assert "backup_offsite_s3_endpoint_url=-" in captured.out
+    assert "backup_offsite_s3_bucket=-" in captured.out
+    assert "backup_offsite_s3_region=ru-1" in captured.out
+    assert "backup_offsite_s3_access_key_configured=no" in captured.out
     assert "housekeeping_raw_api_payload_retention_days=90" in captured.out
     assert "housekeeping_vacancy_snapshot_retention_days=365" in captured.out
     assert "housekeeping_finished_crawl_run_retention_days=60" in captured.out

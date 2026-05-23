@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +23,9 @@ from hhru_platform.infrastructure.observability.operations import (
 LOGGER = logging.getLogger(__name__)
 
 BACKUP_OFFSITE_STATUS_SUCCEEDED = "succeeded"
-DEFAULT_BACKUP_OFFSITE_CHUNK_SIZE_BYTES = 64 * 1024 * 1024
+DEFAULT_BACKUP_OFFSITE_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
+BACKUP_OFFSITE_PART_UPLOAD_ATTEMPTS = 3
+BACKUP_OFFSITE_PART_UPLOAD_RETRY_BACKOFF_SECONDS = 5.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -33,6 +36,7 @@ class SyncBackupOffsiteCommand:
     username: str | None = None
     password: str | None = None
     bearer_token: str | None = None
+    auth_mode_label: str | None = None
     timeout_seconds: float = 60.0
     chunk_size_bytes: int = DEFAULT_BACKUP_OFFSITE_CHUNK_SIZE_BYTES
     limit: int | None = 1
@@ -47,6 +51,11 @@ class SyncBackupOffsiteCommand:
         normalized_password = self.password.strip() if self.password is not None else None
         normalized_bearer_token = (
             self.bearer_token.strip() if self.bearer_token is not None else None
+        )
+        normalized_auth_mode_label = (
+            self.auth_mode_label.strip().lower()
+            if self.auth_mode_label is not None
+            else None
         )
         if not normalized_triggered_by:
             raise ValueError("triggered_by must not be empty")
@@ -65,6 +74,8 @@ class SyncBackupOffsiteCommand:
             raise ValueError(
                 "configure either username/password basic auth or bearer_token auth"
             )
+        if normalized_auth_mode_label not in (None, "basic", "bearer", "s3"):
+            raise ValueError("auth_mode_label must be one of basic, bearer, or s3")
 
         object.__setattr__(self, "triggered_by", normalized_triggered_by)
         object.__setattr__(self, "offsite_url", normalized_offsite_url)
@@ -72,10 +83,13 @@ class SyncBackupOffsiteCommand:
         object.__setattr__(self, "username", normalized_username)
         object.__setattr__(self, "password", normalized_password)
         object.__setattr__(self, "bearer_token", normalized_bearer_token)
+        object.__setattr__(self, "auth_mode_label", normalized_auth_mode_label)
         object.__setattr__(self, "backup_dir", Path(self.backup_dir))
 
     @property
     def auth_mode(self) -> str:
+        if self.auth_mode_label:
+            return self.auth_mode_label
         if self.bearer_token:
             return "bearer"
         return "basic"
@@ -290,7 +304,11 @@ def _sync_one_backup(
             receipt_file=Path(f"{bundle.backup_file}.offsite.json"),
         )
 
-    _upload_backup_parts(bundle=bundle, offsite_uploader=offsite_uploader)
+    _upload_backup_parts(
+        bundle=bundle,
+        command=command,
+        offsite_uploader=offsite_uploader,
+    )
     offsite_uploader.upload_file(
         local_file=bundle.manifest_file,
         remote_path=bundle.remote_manifest_relative_path,
@@ -410,13 +428,31 @@ def _build_backup_parts(
 def _upload_backup_parts(
     *,
     bundle: _BackupBundle,
+    command: SyncBackupOffsiteCommand,
     offsite_uploader: BackupOffsiteUploader,
 ) -> None:
+    uploaded_part_indexes = _load_uploaded_part_indexes(bundle=bundle, command=command)
     with tempfile.TemporaryDirectory(prefix="hhru-backup-offsite-") as temporary_dir:
         temporary_root = Path(temporary_dir)
         part_count = len(bundle.parts)
         with bundle.backup_file.open("rb") as backup_handle:
             for part in bundle.parts:
+                if part.index in uploaded_part_indexes:
+                    backup_handle.seek(part.size_bytes, 1)
+                    log_event(
+                        LOGGER,
+                        logging.INFO,
+                        "sync_backup_offsite.part_upload.skipped",
+                        operation="sync_backup_offsite",
+                        status="skipped",
+                        backup_file=bundle.backup_file,
+                        part_index=part.index,
+                        part_count=part_count,
+                        part_size_bytes=part.size_bytes,
+                        remote_path=part.remote_path,
+                    )
+                    continue
+
                 log_event(
                     LOGGER,
                     logging.INFO,
@@ -446,9 +482,17 @@ def _upload_backup_parts(
                         f"backup part checksum mismatch for {part.relative_path}: "
                         f"expected={part.sha256} actual={part_sha256}"
                     )
-                offsite_uploader.upload_file(
+                _upload_part_with_retries(
+                    bundle=bundle,
+                    part=part,
                     local_file=part_file,
-                    remote_path=part.remote_relative_path,
+                    offsite_uploader=offsite_uploader,
+                )
+                uploaded_part_indexes.add(part.index)
+                _write_part_upload_receipt(
+                    bundle=bundle,
+                    command=command,
+                    uploaded_part_indexes=uploaded_part_indexes,
                 )
                 log_event(
                     LOGGER,
@@ -463,6 +507,138 @@ def _upload_backup_parts(
                     remote_path=part.remote_path,
                 )
                 part_file.unlink()
+
+
+def _upload_part_with_retries(
+    *,
+    bundle: _BackupBundle,
+    part: _BackupPart,
+    local_file: Path,
+    offsite_uploader: BackupOffsiteUploader,
+) -> None:
+    for attempt in range(1, BACKUP_OFFSITE_PART_UPLOAD_ATTEMPTS + 1):
+        try:
+            offsite_uploader.upload_file(
+                local_file=local_file,
+                remote_path=part.remote_relative_path,
+            )
+            return
+        except Exception as error:
+            log_event(
+                LOGGER,
+                logging.WARNING,
+                "sync_backup_offsite.part_upload_attempt.failed",
+                operation="sync_backup_offsite",
+                status="failed",
+                backup_file=bundle.backup_file,
+                part_index=part.index,
+                part_count=len(bundle.parts),
+                part_size_bytes=part.size_bytes,
+                remote_path=part.remote_path,
+                attempt=attempt,
+                max_attempts=BACKUP_OFFSITE_PART_UPLOAD_ATTEMPTS,
+                error_type=error.__class__.__name__,
+                error_message=str(error),
+            )
+            if attempt >= BACKUP_OFFSITE_PART_UPLOAD_ATTEMPTS:
+                raise
+            time.sleep(BACKUP_OFFSITE_PART_UPLOAD_RETRY_BACKOFF_SECONDS * attempt)
+
+
+def _load_uploaded_part_indexes(
+    *,
+    bundle: _BackupBundle,
+    command: SyncBackupOffsiteCommand,
+) -> set[int]:
+    receipt_file = _part_upload_receipt_path(bundle.backup_file)
+    if not receipt_file.exists():
+        return set()
+    payload = json.loads(receipt_file.read_text(encoding="utf-8"))
+    if not _part_upload_receipt_matches_bundle(payload=payload, bundle=bundle, command=command):
+        return set()
+
+    uploaded_part_indexes: set[int] = set()
+    parts_by_index = {part.index: part for part in bundle.parts}
+    for part_payload in payload.get("uploaded_parts", []):
+        if not isinstance(part_payload, dict):
+            continue
+        part_index = int(part_payload.get("index", 0))
+        part = parts_by_index.get(part_index)
+        if part is None:
+            continue
+        if (
+            int(part_payload.get("size_bytes", 0)) == part.size_bytes
+            and str(part_payload.get("sha256", "")) == part.sha256
+            and str(part_payload.get("remote_path", "")) == part.remote_path
+        ):
+            uploaded_part_indexes.add(part.index)
+    return uploaded_part_indexes
+
+
+def _part_upload_receipt_matches_bundle(
+    *,
+    payload: dict[str, object],
+    bundle: _BackupBundle,
+    command: SyncBackupOffsiteCommand,
+) -> bool:
+    return (
+        str(payload.get("offsite_url", "")) == command.offsite_url
+        and str(payload.get("offsite_root", "")) == command.offsite_root
+        and _payload_int(payload, "backup_size_bytes") == bundle.backup_size_bytes
+        and str(payload.get("backup_sha256", "")) == bundle.backup_sha256
+        and str(payload.get("manifest_sha256", "")) == bundle.manifest_sha256
+        and _payload_int(payload, "chunk_size_bytes") == bundle.chunk_size_bytes
+        and _payload_int(payload, "part_count") == len(bundle.parts)
+        and str(payload.get("remote_parts_path", "")) == bundle.remote_parts_path
+        and str(payload.get("remote_manifest_path", "")) == bundle.remote_manifest_path
+    )
+
+
+def _payload_int(payload: dict[str, object], key: str) -> int:
+    return int(str(payload.get(key, "0")))
+
+
+def _write_part_upload_receipt(
+    *,
+    bundle: _BackupBundle,
+    command: SyncBackupOffsiteCommand,
+    uploaded_part_indexes: set[int],
+) -> None:
+    receipt_file = _part_upload_receipt_path(bundle.backup_file)
+    uploaded_parts = [
+        {
+            "index": part.index,
+            "size_bytes": part.size_bytes,
+            "sha256": part.sha256,
+            "remote_path": part.remote_path,
+        }
+        for part in bundle.parts
+        if part.index in uploaded_part_indexes
+    ]
+    payload = {
+        "receipt_version": 1,
+        "updated_at": datetime.now(UTC).isoformat(),
+        "offsite_url": command.offsite_url,
+        "offsite_root": command.offsite_root,
+        "backup_size_bytes": bundle.backup_size_bytes,
+        "backup_sha256": bundle.backup_sha256,
+        "manifest_sha256": bundle.manifest_sha256,
+        "chunk_size_bytes": bundle.chunk_size_bytes,
+        "part_count": len(bundle.parts),
+        "remote_parts_path": bundle.remote_parts_path,
+        "remote_manifest_path": bundle.remote_manifest_path,
+        "uploaded_parts": uploaded_parts,
+    }
+    temporary_receipt_file = receipt_file.with_name(f"{receipt_file.name}.tmp")
+    temporary_receipt_file.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary_receipt_file.replace(receipt_file)
+
+
+def _part_upload_receipt_path(backup_file: Path) -> Path:
+    return Path(f"{backup_file}.offsite.parts.json")
 
 
 def _write_manifest_if_changed(*, manifest_file: Path, payload: dict[str, object]) -> None:

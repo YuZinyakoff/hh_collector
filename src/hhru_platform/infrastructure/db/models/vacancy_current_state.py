@@ -14,6 +14,10 @@ class VacancyCurrentState(Base):
         Index("idx_vacancy_current_state_last_seen_at", desc("last_seen_at")),
         Index("idx_vacancy_current_state_inactive", "is_probably_inactive"),
         Index("idx_vacancy_current_state_detail_status", "detail_fetch_status"),
+        Index(
+            "idx_vacancy_current_state_first_detail_lease_expires",
+            "first_detail_lease_expires_at",
+        ),
     )
 
     vacancy_id: Mapped[UUID] = mapped_column(
@@ -53,6 +57,10 @@ class VacancyCurrentState(Base):
         nullable=False,
         default="not_requested",
         server_default=text("'not_requested'"),
+    )
+    first_detail_lease_owner: Mapped[str | None] = mapped_column(Text)
+    first_detail_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -263,6 +263,8 @@ CREATE TABLE vacancy_current_state (
     last_detail_hash TEXT NULL,
     last_detail_fetched_at TIMESTAMPTZ NULL,
     detail_fetch_status TEXT NOT NULL DEFAULT 'not_requested',
+    first_detail_lease_owner TEXT NULL,
+    first_detail_lease_expires_at TIMESTAMPTZ NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -274,6 +276,9 @@ CREATE INDEX idx_vacancy_current_state_inactive
 
 CREATE INDEX idx_vacancy_current_state_detail_status
     ON vacancy_current_state(detail_fetch_status);
+
+CREATE INDEX idx_vacancy_current_state_first_detail_lease_expires
+    ON vacancy_current_state(first_detail_lease_expires_at);
 
 CREATE TABLE vacancy_snapshot (
     id BIGSERIAL PRIMARY KEY,

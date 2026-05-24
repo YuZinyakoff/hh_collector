@@ -301,6 +301,158 @@ def test_first_detail_backlog_repository_skips_recent_retryable_failures() -> No
         engine.dispose()
 
 
+def test_first_detail_backlog_claim_uses_lease_to_prevent_duplicate_batches() -> None:
+    engine = create_engine_from_settings()
+    session_factory = create_session_factory(engine)
+    now = datetime(2000, 1, 3, 12, 0, tzinfo=UTC)
+    first_id = uuid4()
+    second_id = uuid4()
+    third_id = uuid4()
+    vacancy_ids = (first_id, second_id, third_id)
+
+    try:
+        with engine.begin() as connection:
+            for vacancy_id in vacancy_ids:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO vacancy (
+                            id,
+                            hh_vacancy_id,
+                            name_current,
+                            source_type
+                        )
+                        VALUES (
+                            :vacancy_id,
+                            :hh_vacancy_id,
+                            'Pytest first detail claim vacancy',
+                            'hh_api'
+                        )
+                        """
+                    ),
+                    {
+                        "vacancy_id": vacancy_id,
+                        "hh_vacancy_id": f"pytest-first-detail-claim-{vacancy_id}",
+                    },
+                )
+
+            _insert_current_state(
+                connection,
+                vacancy_id=first_id,
+                first_seen_at=now - timedelta(days=3),
+                detail_fetch_status="not_requested",
+                last_detail_fetched_at=None,
+                is_probably_inactive=False,
+            )
+            _insert_current_state(
+                connection,
+                vacancy_id=second_id,
+                first_seen_at=now - timedelta(days=2),
+                detail_fetch_status="not_requested",
+                last_detail_fetched_at=None,
+                is_probably_inactive=False,
+            )
+            _insert_current_state(
+                connection,
+                vacancy_id=third_id,
+                first_seen_at=now - timedelta(days=1),
+                detail_fetch_status="not_requested",
+                last_detail_fetched_at=None,
+                is_probably_inactive=False,
+            )
+
+        with session_scope(session_factory) as session:
+            state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
+            first_claim = state_repository.claim_first_detail_backlog(
+                limit=2,
+                include_inactive=False,
+                retry_cooldown_seconds=3600,
+                max_retry_cooldown_seconds=86400,
+                now=now,
+                lease_owner="pytest-worker-a",
+                lease_expires_at=now + timedelta(hours=1),
+            )
+
+        with session_scope(session_factory) as session:
+            state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
+            second_claim = state_repository.claim_first_detail_backlog(
+                limit=2,
+                include_inactive=False,
+                retry_cooldown_seconds=3600,
+                max_retry_cooldown_seconds=86400,
+                now=now,
+                lease_owner="pytest-worker-b",
+                lease_expires_at=now + timedelta(hours=1),
+            )
+
+        assert [state.vacancy_id for state in first_claim] == [first_id, second_id]
+        assert [state.vacancy_id for state in second_claim] == [third_id]
+
+        with engine.begin() as connection:
+            lease_rows = connection.execute(
+                text(
+                    """
+                    SELECT vacancy_id, detail_fetch_status, first_detail_lease_owner
+                    FROM vacancy_current_state
+                    WHERE vacancy_id = ANY(:vacancy_ids)
+                    ORDER BY first_seen_at
+                    """
+                ),
+                {"vacancy_ids": list(vacancy_ids)},
+            ).all()
+            assert [
+                (row.detail_fetch_status, row.first_detail_lease_owner)
+                for row in lease_rows
+            ] == [
+                ("running", "pytest-worker-a"),
+                ("running", "pytest-worker-a"),
+                ("running", "pytest-worker-b"),
+            ]
+
+            connection.execute(
+                text(
+                    """
+                    UPDATE vacancy_current_state
+                    SET first_detail_lease_expires_at = :expired_at
+                    WHERE vacancy_id = ANY(:vacancy_ids)
+                    """
+                ),
+                {
+                    "expired_at": now - timedelta(seconds=1),
+                    "vacancy_ids": [first_id, second_id],
+                },
+            )
+
+        with session_scope(session_factory) as session:
+            state_repository = SqlAlchemyVacancyCurrentStateRepository(session)
+            reclaimed = state_repository.claim_first_detail_backlog(
+                limit=10,
+                include_inactive=False,
+                retry_cooldown_seconds=3600,
+                max_retry_cooldown_seconds=86400,
+                now=now,
+                lease_owner="pytest-worker-c",
+                lease_expires_at=now + timedelta(hours=1),
+            )
+
+        assert [state.vacancy_id for state in reclaimed] == [first_id, second_id]
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM detail_fetch_attempt WHERE vacancy_id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+            connection.execute(
+                text("DELETE FROM vacancy_current_state WHERE vacancy_id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+            connection.execute(
+                text("DELETE FROM vacancy WHERE id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+        engine.dispose()
+
+
 def _insert_current_state(
     connection,
     *,

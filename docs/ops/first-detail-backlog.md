@@ -214,8 +214,8 @@ make drain-first-detail-backlog ARGS="--limit 100 --retry-cooldown-seconds 3600 
 
 - `hhru_first_detail_backlog_size{scope="active"}` для стандартного режима.
 - `hhru_first_detail_backlog_size{scope="all"}` для режима `--include-inactive yes`.
-- `hhru_first_detail_ready_backlog_size{scope}` для items, которые можно брать прямо сейчас.
-- `hhru_first_detail_cooldown_backlog_size{scope}` для retryable failures, временно пропущенных cooldown-ом.
+- `hhru_first_detail_ready_backlog_size{scope}` для items, которые можно брать прямо сейчас: без active lease и без retry cooldown.
+- `hhru_first_detail_cooldown_backlog_size{scope}` для backlog items, временно пропущенных cooldown-ом или active lease.
 - `hhru_first_detail_drain_attempt_total{scope,outcome}`.
 - `hhru_first_detail_drain_selected_total{scope}`.
 - `hhru_first_detail_drain_succeeded_total{scope}`.
@@ -226,10 +226,45 @@ make drain-first-detail-backlog ARGS="--limit 100 --retry-cooldown-seconds 3600 
 
 ## Current Limits
 
-- Это MVP без Redis queue: admission идёт через deterministic DB selection.
+- Это MVP без Redis queue: admission идёт через DB claim/lease поверх
+  `vacancy_current_state`.
 - Есть first-detail backlog metrics, alert rules и Grafana panels.
 - Есть per-vacancy exponential cooldown после repeated non-terminal failures.
 - HTTP 404 detail responses закрываются как `terminal_404`.
 - Нет отдельной политики для archived/inactive vacancies кроме исключения `is_probably_inactive=false` по умолчанию.
+- Atomic claim/lease реализован через короткую transaction с row lock /
+  `SKIP LOCKED`; network fetch выполняется после commit, чтобы не держать locks
+  весь batch.
+- `first_detail_lease_expires_at` возвращает crashed/aborted rows в ready backlog
+  после timeout; успешный/terminal/failed detail outcome очищает lease.
 
-Следующий hardening slice: production alert delivery и более длинный supervised `detail-worker` run для уточнения throughput/storage growth.
+## Parallel Worker Gate
+
+Перед длительным запуском двух и более `detail-worker` нужно провести controlled
+parallel worker test на VPS.
+
+Текущая claim/lease semantics:
+
+- короткая transaction выбирает candidates через row lock / `SKIP LOCKED`;
+- выбранные rows помечаются `running`, `first_detail_lease_owner` и
+  `first_detail_lease_expires_at`;
+- network fetch выполняется после commit, чтобы не держать locks весь batch;
+- lease имеет timeout, чтобы crash worker-а не оставлял rows навсегда занятыми;
+- retry cooldown продолжает применяться к retryable failures;
+- `succeeded` и `terminal_404` остаются закрывающими outcomes.
+
+Go/no-go для parallelism:
+
+- два worker-а не делают duplicate detail fetches для одного selected row;
+- crash/restart worker-а возвращает leased rows в ready backlog после timeout;
+- `ready_backlog_size` и `cooldown_backlog_size` остаются объяснимыми;
+- metrics/log summary показывают selected/claimed/fetched/resolved counts.
+
+VPS observation 2026-05-23:
+
+- `batch=500`, `interval=60` дал устойчивый single-worker baseline без роста
+  retryable failures;
+- sustained duration после нескольких часов: около `950-1130s` на `500` selected;
+- restart worker-а не сбросил duration, поэтому это больше похоже на sustained
+  upstream/time-of-day latency, чем на локальный leak;
+- следующий hardening slice: controlled 2-worker measurement на claim/lease.

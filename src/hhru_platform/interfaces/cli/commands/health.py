@@ -132,6 +132,22 @@ def handle_health_check(_: argparse.Namespace) -> int:
         "housekeeping_delete_limit_per_target="
         f"{settings.housekeeping_delete_limit_per_target}"
     )
+    print(f"detail_worker_batch_size={settings.detail_worker_batch_size}")
+    print(f"detail_worker_interval_seconds={settings.detail_worker_interval_seconds}")
+    print(
+        "detail_worker_include_inactive="
+        f"{'yes' if settings.detail_worker_include_inactive else 'no'}"
+    )
+    print(f"detail_worker_triggered_by={settings.detail_worker_triggered_by}")
+    print(
+        "detail_worker_retry_cooldown_seconds="
+        f"{settings.detail_worker_retry_cooldown_seconds}"
+    )
+    print(
+        "detail_worker_max_retry_cooldown_seconds="
+        f"{settings.detail_worker_max_retry_cooldown_seconds}"
+    )
+    print(f"detail_worker_lease_seconds={settings.detail_worker_lease_seconds}")
     return 0
 
 

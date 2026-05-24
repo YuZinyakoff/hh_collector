@@ -25,6 +25,8 @@ class InMemoryVacancyCurrentStateRepository:
     ) -> None:
         self._states = list(states)
         self._cooling_down_vacancy_ids = cooling_down_vacancy_ids or set()
+        self.claim_calls: list[tuple[str, datetime]] = []
+        self._lease_expires_at_by_vacancy_id: dict[UUID, datetime] = {}
 
     def count_first_detail_backlog(self, *, include_inactive: bool) -> int:
         return len(
@@ -47,22 +49,43 @@ class InMemoryVacancyCurrentStateRepository:
         now: datetime,
     ) -> int:
         return len(
-            self.list_first_detail_backlog(
+            self._list_ready_candidates(
                 limit=len(self._states),
                 include_inactive=include_inactive,
                 retry_cooldown_seconds=retry_cooldown_seconds,
-                max_retry_cooldown_seconds=max_retry_cooldown_seconds,
                 now=now,
             )
         )
 
-    def list_first_detail_backlog(
+    def claim_first_detail_backlog(
         self,
         *,
         limit: int,
         include_inactive: bool,
         retry_cooldown_seconds: int,
         max_retry_cooldown_seconds: int,
+        now: datetime,
+        lease_owner: str,
+        lease_expires_at: datetime,
+    ) -> list[VacancyCurrentState]:
+        candidates = self._list_ready_candidates(
+            limit=limit,
+            include_inactive=include_inactive,
+            retry_cooldown_seconds=retry_cooldown_seconds,
+            now=now,
+        )
+        self.claim_calls.append((lease_owner, lease_expires_at))
+        for state in candidates:
+            state.detail_fetch_status = DetailFetchStatus.RUNNING.value
+            self._lease_expires_at_by_vacancy_id[state.vacancy_id] = lease_expires_at
+        return candidates
+
+    def _list_ready_candidates(
+        self,
+        *,
+        limit: int,
+        include_inactive: bool,
+        retry_cooldown_seconds: int,
         now: datetime,
     ) -> list[VacancyCurrentState]:
         candidates = [
@@ -76,6 +99,10 @@ class InMemoryVacancyCurrentStateRepository:
                 retry_cooldown_seconds <= 0
                 or state.vacancy_id not in self._cooling_down_vacancy_ids
             )
+            and (
+                self._lease_expires_at_by_vacancy_id.get(state.vacancy_id) is None
+                or self._lease_expires_at_by_vacancy_id[state.vacancy_id] <= now
+            )
         ]
         candidates.sort(key=lambda state: (state.first_seen_at, str(state.vacancy_id)))
         return candidates[:limit]
@@ -86,6 +113,7 @@ class InMemoryVacancyCurrentStateRepository:
                 state.last_detail_fetched_at = recorded_at
                 state.detail_fetch_status = DetailFetchStatus.SUCCEEDED.value
                 state.last_detail_hash = f"detail-{vacancy_id}"
+                self._lease_expires_at_by_vacancy_id.pop(vacancy_id, None)
                 return
         raise AssertionError(f"state not found: {vacancy_id}")
 
@@ -94,8 +122,13 @@ class InMemoryVacancyCurrentStateRepository:
             if state.vacancy_id == vacancy_id:
                 state.last_detail_fetched_at = recorded_at
                 state.detail_fetch_status = DetailFetchStatus.TERMINAL_404.value
+                self._lease_expires_at_by_vacancy_id.pop(vacancy_id, None)
                 return
         raise AssertionError(f"state not found: {vacancy_id}")
+
+    def is_leased(self, vacancy_id: UUID, *, at: datetime) -> bool:
+        lease_expires_at = self._lease_expires_at_by_vacancy_id.get(vacancy_id)
+        return lease_expires_at is not None and lease_expires_at > at
 
 
 class InMemoryDetailFetchAttemptRepository:
@@ -130,6 +163,7 @@ def test_drain_first_detail_backlog_fetches_limited_batch_and_recounts() -> None
 
     def fetch_step(command: FetchVacancyDetailCommand) -> FetchVacancyDetailResult:
         commands.append(command)
+        assert current_state_repository.is_leased(command.vacancy_id, at=now)
         current_state_repository.mark_detail_succeeded(command.vacancy_id, now)
         return _build_detail_result(command.vacancy_id)
 
@@ -141,6 +175,10 @@ def test_drain_first_detail_backlog_fetches_limited_batch_and_recounts() -> None
     )
 
     assert result.status == "succeeded"
+    assert result.lease_owner == "pytest"
+    assert result.lease_seconds == 7200
+    assert len(current_state_repository.claim_calls) == 1
+    assert current_state_repository.claim_calls[0][0] == "pytest"
     assert result.backlog_size_before == 3
     assert result.selected_count == 2
     assert result.detail_fetch_attempted == 2
@@ -271,6 +309,44 @@ def test_drain_first_detail_backlog_skips_recent_failed_items_in_cooldown() -> N
     assert result.ready_backlog_size_after == 0
     assert result.cooldown_skipped_after == 1
     assert [command.vacancy_id for command in commands] == [ready_vacancy]
+
+
+def test_first_detail_claim_hides_active_lease_until_timeout() -> None:
+    now = datetime(2026, 4, 25, 12, 0, tzinfo=UTC)
+    vacancy_id = uuid4()
+    current_state_repository = InMemoryVacancyCurrentStateRepository(
+        [_build_state(vacancy_id=vacancy_id, first_seen_at=now)]
+    )
+
+    claimed_states = current_state_repository.claim_first_detail_backlog(
+        limit=10,
+        include_inactive=False,
+        retry_cooldown_seconds=3600,
+        max_retry_cooldown_seconds=86400,
+        now=now,
+        lease_owner="pytest-worker",
+        lease_expires_at=now + timedelta(minutes=5),
+    )
+
+    assert [state.vacancy_id for state in claimed_states] == [vacancy_id]
+    assert (
+        current_state_repository.count_first_detail_backlog_ready(
+            include_inactive=False,
+            retry_cooldown_seconds=3600,
+            max_retry_cooldown_seconds=86400,
+            now=now + timedelta(minutes=4),
+        )
+        == 0
+    )
+    assert (
+        current_state_repository.count_first_detail_backlog_ready(
+            include_inactive=False,
+            retry_cooldown_seconds=3600,
+            max_retry_cooldown_seconds=86400,
+            now=now + timedelta(minutes=5, seconds=1),
+        )
+        == 1
+    )
 
 
 def _is_first_detail_backlog_item(

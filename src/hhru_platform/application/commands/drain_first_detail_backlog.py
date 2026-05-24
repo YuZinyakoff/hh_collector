@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -25,6 +25,7 @@ DRAIN_FIRST_DETAIL_BACKLOG_STATUS_SUCCEEDED = "succeeded"
 DRAIN_FIRST_DETAIL_BACKLOG_STATUS_COMPLETED_WITH_FAILURES = "completed_with_failures"
 DEFAULT_FIRST_DETAIL_RETRY_COOLDOWN_SECONDS = 3600
 DEFAULT_FIRST_DETAIL_MAX_RETRY_COOLDOWN_SECONDS = 86400
+DEFAULT_FIRST_DETAIL_LEASE_SECONDS = 7200
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,17 +35,24 @@ class DrainFirstDetailBacklogCommand:
     include_inactive: bool = False
     retry_cooldown_seconds: int = DEFAULT_FIRST_DETAIL_RETRY_COOLDOWN_SECONDS
     max_retry_cooldown_seconds: int = DEFAULT_FIRST_DETAIL_MAX_RETRY_COOLDOWN_SECONDS
+    lease_owner: str = ""
+    lease_seconds: int = DEFAULT_FIRST_DETAIL_LEASE_SECONDS
 
     def __post_init__(self) -> None:
         normalized_triggered_by = self.triggered_by.strip()
+        normalized_lease_owner = self.lease_owner.strip() or normalized_triggered_by
         if self.limit < 0:
             raise ValueError("limit must be greater than or equal to zero")
         if not normalized_triggered_by:
             raise ValueError("triggered_by must not be empty")
+        if not normalized_lease_owner:
+            raise ValueError("lease_owner must not be empty")
         if self.retry_cooldown_seconds < 0:
             raise ValueError("retry_cooldown_seconds must be greater than or equal to zero")
         if self.max_retry_cooldown_seconds < 0:
             raise ValueError("max_retry_cooldown_seconds must be greater than or equal to zero")
+        if self.lease_seconds <= 0:
+            raise ValueError("lease_seconds must be greater than zero")
         if (
             self.retry_cooldown_seconds > 0
             and self.max_retry_cooldown_seconds < self.retry_cooldown_seconds
@@ -55,6 +63,7 @@ class DrainFirstDetailBacklogCommand:
             )
 
         object.__setattr__(self, "triggered_by", normalized_triggered_by)
+        object.__setattr__(self, "lease_owner", normalized_lease_owner)
 
 
 @dataclass(slots=True, frozen=True)
@@ -96,6 +105,8 @@ class DrainFirstDetailBacklogResult:
     limit: int
     retry_cooldown_seconds: int
     max_retry_cooldown_seconds: int
+    lease_owner: str
+    lease_seconds: int
     backlog_size_before: int
     ready_backlog_size_before: int
     backlog_size_after: int
@@ -149,7 +160,7 @@ class VacancyCurrentStateRepository(Protocol):
     ) -> int:
         """Return first-detail backlog rows that are not currently cooling down."""
 
-    def list_first_detail_backlog(
+    def claim_first_detail_backlog(
         self,
         *,
         limit: int,
@@ -157,8 +168,10 @@ class VacancyCurrentStateRepository(Protocol):
         retry_cooldown_seconds: int,
         max_retry_cooldown_seconds: int,
         now: datetime,
+        lease_owner: str,
+        lease_expires_at: datetime,
     ) -> list[VacancyCurrentState]:
-        """Return a bounded deterministic first-detail backlog batch ready to fetch."""
+        """Atomically claim a bounded deterministic first-detail backlog batch."""
 
 
 class DetailFetchAttemptRepository(Protocol):
@@ -214,6 +227,8 @@ def drain_first_detail_backlog(
         include_inactive=command.include_inactive,
         retry_cooldown_seconds=command.retry_cooldown_seconds,
         max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
+        lease_owner=command.lease_owner,
+        lease_seconds=command.lease_seconds,
         triggered_by=command.triggered_by,
     )
     try:
@@ -228,12 +243,14 @@ def drain_first_detail_backlog(
                 now=now,
             )
         )
-        candidate_states = vacancy_current_state_repository.list_first_detail_backlog(
+        candidate_states = vacancy_current_state_repository.claim_first_detail_backlog(
             limit=command.limit,
             include_inactive=command.include_inactive,
             retry_cooldown_seconds=command.retry_cooldown_seconds,
             max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
             now=now,
+            lease_owner=command.lease_owner,
+            lease_expires_at=now + timedelta(seconds=command.lease_seconds),
         )
         latest_attempt_numbers = (
             detail_fetch_attempt_repository.latest_attempt_numbers_by_vacancy_ids(
@@ -259,7 +276,7 @@ def drain_first_detail_backlog(
                 include_inactive=command.include_inactive,
                 retry_cooldown_seconds=command.retry_cooldown_seconds,
                 max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
-                now=now,
+                now=datetime.now(UTC),
             )
         )
     except Exception as error:
@@ -273,6 +290,8 @@ def drain_first_detail_backlog(
             include_inactive=command.include_inactive,
             retry_cooldown_seconds=command.retry_cooldown_seconds,
             max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
+            lease_owner=command.lease_owner,
+            lease_seconds=command.lease_seconds,
             triggered_by=command.triggered_by,
         )
         raise
@@ -289,6 +308,8 @@ def drain_first_detail_backlog(
         limit=command.limit,
         retry_cooldown_seconds=command.retry_cooldown_seconds,
         max_retry_cooldown_seconds=command.max_retry_cooldown_seconds,
+        lease_owner=command.lease_owner,
+        lease_seconds=command.lease_seconds,
         backlog_size_before=backlog_size_before,
         ready_backlog_size_before=ready_backlog_size_before,
         backlog_size_after=backlog_size_after,
@@ -322,6 +343,8 @@ def drain_first_detail_backlog(
             limit=result.limit,
             include_inactive=result.include_inactive,
             triggered_by=result.triggered_by,
+            lease_owner=result.lease_owner,
+            lease_seconds=result.lease_seconds,
             backlog_size_before=result.backlog_size_before,
             ready_backlog_size_before=result.ready_backlog_size_before,
             cooldown_skipped_before=result.cooldown_skipped_before,
@@ -344,6 +367,8 @@ def drain_first_detail_backlog(
         include_inactive=result.include_inactive,
         retry_cooldown_seconds=result.retry_cooldown_seconds,
         max_retry_cooldown_seconds=result.max_retry_cooldown_seconds,
+        lease_owner=result.lease_owner,
+        lease_seconds=result.lease_seconds,
         triggered_by=result.triggered_by,
         backlog_size_before=result.backlog_size_before,
         ready_backlog_size_before=result.ready_backlog_size_before,

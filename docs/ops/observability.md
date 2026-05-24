@@ -290,8 +290,8 @@ Local caveat:
   `hhru_scheduler_last_observed_run_status{status}` для liveness/timing и outcome visibility.
 - `hhru_detail_repair_backlog_size` теперь показывает текущий remaining backlog по run; `hhru_detail_repair_attempt_total`, `hhru_detail_repair_repaired_total` и `hhru_detail_repair_still_failing_total` показывают repair activity без ручного CLI refresh.
 - `hhru_first_detail_backlog_size{scope="active"}` показывает глобальный first-detail backlog для активных вакансий. `scope="all"` используется только если drain запущен с `--include-inactive yes`.
-- `hhru_first_detail_ready_backlog_size{scope="active"}` показывает часть backlog, которую worker может брать прямо сейчас.
-- `hhru_first_detail_cooldown_backlog_size{scope="active"}` показывает retryable failures, временно пропущенные из-за cooldown/backoff.
+- `hhru_first_detail_ready_backlog_size{scope="active"}` показывает часть backlog, которую worker может брать прямо сейчас: без active lease и без retry cooldown.
+- `hhru_first_detail_cooldown_backlog_size{scope="active"}` показывает backlog, временно не готовый к выборке: retryable failures в cooldown/backoff и rows с active first-detail lease.
 - `hhru_first_detail_drain_terminal_total` считает terminal outcomes, например detail HTTP 404, которые закрывают first-detail backlog item без detail snapshot и без retryable failure.
 - В `Collector Overview` панели `Scheduler Overlap Skips In Range`, `Scheduler Active-Run Skips In Range`, `Scheduler Last Tick`, `Scheduler Last Triggered Run` и `Scheduler Last Observed Run Status` позволяют быстро понять, жив ли loop, не упирается ли он в admission conflicts и чем закончился последний admitted run.
 - Для recovery path операторское чтение теперь такое:

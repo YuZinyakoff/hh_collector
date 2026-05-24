@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import and_, bindparam, func, not_, or_, select, text, true
+from sqlalchemy import update as sqlalchemy_update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
@@ -116,6 +117,8 @@ class SqlAlchemyVacancyCurrentStateRepository:
                     "last_detail_hash": detail_hash,
                     "last_detail_fetched_at": recorded_at if should_record_fetch_time else None,
                     "detail_fetch_status": detail_fetch_status,
+                    "first_detail_lease_owner": None,
+                    "first_detail_lease_expires_at": None,
                     "updated_at": recorded_at,
                 }
             ]
@@ -134,6 +137,8 @@ class SqlAlchemyVacancyCurrentStateRepository:
                     else VacancyCurrentStateModel.last_detail_fetched_at
                 ),
                 "detail_fetch_status": insert_statement.excluded.detail_fetch_status,
+                "first_detail_lease_owner": None,
+                "first_detail_lease_expires_at": None,
                 "updated_at": func.now(),
             },
         )
@@ -168,6 +173,7 @@ class SqlAlchemyVacancyCurrentStateRepository:
         max_retry_cooldown_seconds: int = 0,
         now: datetime | None = None,
     ) -> int:
+        selection_time = now or datetime.now(UTC)
         latest_failed_attempts = _latest_failed_detail_attempts_subquery()
         statement = (
             select(func.count())
@@ -183,8 +189,9 @@ class SqlAlchemyVacancyCurrentStateRepository:
                     latest_failed_attempts=latest_failed_attempts,
                     retry_cooldown_seconds=retry_cooldown_seconds,
                     max_retry_cooldown_seconds=max_retry_cooldown_seconds,
-                    now=now or datetime.now(UTC),
+                    now=selection_time,
                 ),
+                _first_detail_lease_ready_filter(now=selection_time),
             )
         )
         return int(self._session.scalar(statement) or 0)
@@ -201,6 +208,7 @@ class SqlAlchemyVacancyCurrentStateRepository:
         if limit <= 0:
             return []
 
+        selection_time = now or datetime.now(UTC)
         latest_failed_attempts = _latest_failed_detail_attempts_subquery()
         statement = (
             select(VacancyCurrentStateModel)
@@ -215,9 +223,10 @@ class SqlAlchemyVacancyCurrentStateRepository:
                     latest_failed_attempts=latest_failed_attempts,
                     retry_cooldown_seconds=retry_cooldown_seconds,
                     max_retry_cooldown_seconds=max_retry_cooldown_seconds,
-                    now=now or datetime.now(UTC),
+                    now=selection_time,
                 )
             )
+            .where(_first_detail_lease_ready_filter(now=selection_time))
             .order_by(
                 VacancyCurrentStateModel.first_seen_at,
                 VacancyCurrentStateModel.last_seen_at.desc(),
@@ -226,6 +235,72 @@ class SqlAlchemyVacancyCurrentStateRepository:
             .limit(limit)
         )
         return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def claim_first_detail_backlog(
+        self,
+        *,
+        limit: int,
+        include_inactive: bool,
+        retry_cooldown_seconds: int = 0,
+        max_retry_cooldown_seconds: int = 0,
+        now: datetime | None = None,
+        lease_owner: str,
+        lease_expires_at: datetime,
+    ) -> list[VacancyCurrentStateEntity]:
+        if limit <= 0:
+            return []
+
+        claim_started_at = now or datetime.now(UTC)
+        latest_failed_attempts = _latest_failed_detail_attempts_subquery()
+        candidate_ids = (
+            select(VacancyCurrentStateModel.vacancy_id)
+            .outerjoin(
+                latest_failed_attempts,
+                VacancyCurrentStateModel.vacancy_id
+                == latest_failed_attempts.c.vacancy_id,
+            )
+            .where(
+                *_first_detail_backlog_filters(include_inactive=include_inactive),
+                _detail_retry_ready_filter(
+                    latest_failed_attempts=latest_failed_attempts,
+                    retry_cooldown_seconds=retry_cooldown_seconds,
+                    max_retry_cooldown_seconds=max_retry_cooldown_seconds,
+                    now=claim_started_at,
+                ),
+                _first_detail_lease_ready_filter(now=claim_started_at),
+            )
+            .order_by(
+                VacancyCurrentStateModel.first_seen_at,
+                VacancyCurrentStateModel.last_seen_at.desc(),
+                VacancyCurrentStateModel.vacancy_id,
+            )
+            .limit(limit)
+            .with_for_update(
+                of=VacancyCurrentStateModel,
+                skip_locked=True,
+            )
+            .cte("first_detail_backlog_claim_candidates")
+        )
+        statement = (
+            sqlalchemy_update(VacancyCurrentStateModel)
+            .where(
+                VacancyCurrentStateModel.vacancy_id.in_(
+                    select(candidate_ids.c.vacancy_id)
+                )
+            )
+            .values(
+                detail_fetch_status=DetailFetchStatus.RUNNING.value,
+                first_detail_lease_owner=lease_owner,
+                first_detail_lease_expires_at=lease_expires_at,
+                updated_at=claim_started_at,
+            )
+            .returning(VacancyCurrentStateModel)
+        )
+        claimed_entities = [
+            self._to_entity(model) for model in self._session.scalars(statement)
+        ]
+        self._session.commit()
+        return sorted(claimed_entities, key=_first_detail_backlog_sort_key)
 
     def apply_reconciliation_updates(
         self,
@@ -348,4 +423,22 @@ def _detail_retry_ready_filter(
         latest_failed_attempts.c.attempted_at
         <= bindparam("detail_retry_now", now)
         - (cooldown_seconds * text("INTERVAL '1 second'")),
+    )
+
+
+def _first_detail_lease_ready_filter(*, now: datetime) -> ColumnElement[bool]:
+    return or_(
+        VacancyCurrentStateModel.first_detail_lease_expires_at.is_(None),
+        VacancyCurrentStateModel.first_detail_lease_expires_at
+        <= bindparam("first_detail_lease_now", now),
+    )
+
+
+def _first_detail_backlog_sort_key(
+    state: VacancyCurrentStateEntity,
+) -> tuple[datetime, float, str]:
+    return (
+        state.first_seen_at,
+        -state.last_seen_at.timestamp(),
+        str(state.vacancy_id),
     )

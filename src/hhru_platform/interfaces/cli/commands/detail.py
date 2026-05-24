@@ -105,6 +105,7 @@ def register_detail_commands(
     settings = get_settings()
     retry_cooldown_seconds = settings.detail_worker_retry_cooldown_seconds
     max_retry_cooldown_seconds = settings.detail_worker_max_retry_cooldown_seconds
+    lease_seconds = settings.detail_worker_lease_seconds
     drain_parser.add_argument(
         "--retry-cooldown-seconds",
         type=int,
@@ -122,6 +123,23 @@ def register_detail_commands(
         help=(
             "Maximum cooldown cap for repeated retryable detail failures. "
             f"Defaults to {max_retry_cooldown_seconds}."
+        ),
+    )
+    drain_parser.add_argument(
+        "--lease-owner",
+        default="",
+        help=(
+            "Lease owner recorded on claimed rows. "
+            "Defaults to --triggered-by when omitted."
+        ),
+    )
+    drain_parser.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=lease_seconds,
+        help=(
+            "Seconds before claimed rows become claimable again after a crash. "
+            f"Defaults to {lease_seconds}."
         ),
     )
     drain_parser.set_defaults(handler=handle_drain_first_detail_backlog)
@@ -222,6 +240,8 @@ def handle_drain_first_detail_backlog(args: argparse.Namespace) -> int:
         triggered_by=str(args.triggered_by),
         retry_cooldown_seconds=int(args.retry_cooldown_seconds),
         max_retry_cooldown_seconds=int(args.max_retry_cooldown_seconds),
+        lease_owner=str(args.lease_owner),
+        lease_seconds=int(args.lease_seconds),
     )
     api_client = HHApiClient.from_settings()
 
@@ -334,6 +354,8 @@ def _print_drain_first_detail_backlog_summary(
     print(f"limit={result.limit}")
     print(f"retry_cooldown_seconds={result.retry_cooldown_seconds}")
     print(f"max_retry_cooldown_seconds={result.max_retry_cooldown_seconds}")
+    print(f"lease_owner={result.lease_owner}")
+    print(f"lease_seconds={result.lease_seconds}")
     print(f"backlog_size_before={result.backlog_size_before}")
     print(f"ready_backlog_size_before={result.ready_backlog_size_before}")
     print(f"cooldown_skipped_before={result.cooldown_skipped_before}")

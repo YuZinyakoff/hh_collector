@@ -95,7 +95,10 @@ validated, но `first-detail` throughput, storage routine, research archive con
      `HHRU_PROMETHEUS_RETENTION_SIZE=8GB`; применить change на VPS и проверить
      размер `hh_collector_prometheus_data`.
 3. Вернуться к detail throughput experiments:
-   - измерять batch/parallel режимы;
+   - зафиксировать sustained single-worker baseline для `batch=500`, `interval=60`;
+   - применить migration с first-detail claim/lease на VPS;
+   - провести controlled 2-worker test только после проверки `ready_backlog`
+     и отсутствия duplicate selected rows;
    - фиксировать HH latency, retryable failures, terminal_404, DB growth, disk growth;
    - не включать production search schedule до понимания устойчивого detail режима.
 4. Спроектировать research archive v1:
@@ -200,13 +203,32 @@ incremented `hhru_restore_drill_run_total{status="succeeded"}`, core tables в
 
 1. Включить bounded first-detail drain отдельно от baseline.
 2. Расширять batch/interval только после измерения storage и failure mix.
-3. Считать first-detail backlog trend.
+3. First-detail claim/lease реализован как prerequisite для нескольких worker-ов:
+   - короткая transaction выбирает candidates через row lock / `SKIP LOCKED`;
+   - выбранные rows помечаются `running`, `first_detail_lease_owner` и
+     `first_detail_lease_expires_at`;
+   - fetch идёт уже после commit, чтобы не держать locks на весь network batch;
+   - lease timeout возвращает crashed/aborted rows в ready backlog.
+4. Следующий шаг: controlled 2-worker measurement на VPS после migration.
+5. Считать first-detail backlog trend.
+
+VPS observation 2026-05-23:
+
+- `batch=500`, `interval=60` стабилен по error mix: retryable failures не растут,
+  terminal_404 около `1-2%`;
+- sustained duration после нескольких часов около `950-1130s` на batch `500`,
+  то есть примерно `1.6k-2k selected/hour`;
+- restart worker-а не сбросил duration, поэтому это больше похоже на sustained
+  upstream/time-of-day latency, чем на локальный leak;
+- claim/lease снимает known duplicate-selection blocker, но длительная
+  параллельность ещё должна быть проверена controlled 2-worker run-ом.
 
 Go/no-go:
 
 - first-detail backlog убывает быстрее, чем растёт;
 - search baseline не деградирует из-за detail drain;
 - alert delivery уже включена.
+- parallelism не создаёт duplicate detail fetches for the same selected rows.
 
 ### Stage 6. Week / Month unattended
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import socket
 import time
 
 from hhru_platform.application.commands.drain_first_detail_backlog import (
@@ -41,6 +43,7 @@ def main() -> int:
         default_triggered_by=settings.detail_worker_triggered_by,
         default_retry_cooldown_seconds=settings.detail_worker_retry_cooldown_seconds,
         default_max_retry_cooldown_seconds=settings.detail_worker_max_retry_cooldown_seconds,
+        default_lease_seconds=settings.detail_worker_lease_seconds,
     )
     args = parser.parse_args()
     return _run_loop(args)
@@ -54,6 +57,7 @@ def _build_parser(
     default_triggered_by: str,
     default_retry_cooldown_seconds: int,
     default_max_retry_cooldown_seconds: int,
+    default_lease_seconds: int,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hhru-detail-worker",
@@ -115,6 +119,15 @@ def _build_parser(
             f"Defaults to {default_max_retry_cooldown_seconds}."
         ),
     )
+    parser.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=default_lease_seconds,
+        help=(
+            "Seconds before claimed first-detail rows become claimable again "
+            f"after a worker crash. Defaults to {default_lease_seconds}."
+        ),
+    )
     return parser
 
 
@@ -126,6 +139,8 @@ def _run_loop(args: argparse.Namespace) -> int:
     triggered_by = str(args.triggered_by)
     retry_cooldown_seconds = int(args.retry_cooldown_seconds)
     max_retry_cooldown_seconds = int(args.max_retry_cooldown_seconds)
+    lease_seconds = int(args.lease_seconds)
+    lease_owner = _build_lease_owner(triggered_by)
     api_client = HHApiClient.from_settings()
 
     tick = 0
@@ -137,6 +152,8 @@ def _run_loop(args: argparse.Namespace) -> int:
             triggered_by=triggered_by,
             retry_cooldown_seconds=retry_cooldown_seconds,
             max_retry_cooldown_seconds=max_retry_cooldown_seconds,
+            lease_owner=lease_owner,
+            lease_seconds=lease_seconds,
             api_client=api_client,
         )
         _print_tick_summary(tick=tick, result=result)
@@ -155,6 +172,8 @@ def _drain_once(
     triggered_by: str,
     retry_cooldown_seconds: int,
     max_retry_cooldown_seconds: int,
+    lease_owner: str,
+    lease_seconds: int,
     api_client: HHApiClient,
 ) -> DrainFirstDetailBacklogResult:
     with session_scope() as session:
@@ -165,6 +184,8 @@ def _drain_once(
                 triggered_by=triggered_by,
                 retry_cooldown_seconds=retry_cooldown_seconds,
                 max_retry_cooldown_seconds=max_retry_cooldown_seconds,
+                lease_owner=lease_owner,
+                lease_seconds=lease_seconds,
             ),
             vacancy_current_state_repository=SqlAlchemyVacancyCurrentStateRepository(session),
             detail_fetch_attempt_repository=SqlAlchemyDetailFetchAttemptRepository(session),
@@ -228,6 +249,8 @@ def _print_tick_summary(*, tick: int, result: DrainFirstDetailBacklogResult) -> 
             "cooldown_skipped_after": result.cooldown_skipped_after,
             "retry_cooldown_seconds": result.retry_cooldown_seconds,
             "max_retry_cooldown_seconds": result.max_retry_cooldown_seconds,
+            "lease_owner": result.lease_owner,
+            "lease_seconds": result.lease_seconds,
         },
     )
 
@@ -239,6 +262,10 @@ def _parse_yes_no(value: str) -> bool:
     if normalized_value == "no":
         return False
     raise ValueError("value must be either yes or no")
+
+
+def _build_lease_owner(triggered_by: str) -> str:
+    return f"{triggered_by}:{socket.gethostname()}:{os.getpid()}"
 
 
 if __name__ == "__main__":

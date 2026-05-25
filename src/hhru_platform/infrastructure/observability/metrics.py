@@ -543,7 +543,7 @@ class FileBackedMetricsRegistry:
         status_class = _status_class(status_code=status_code, error_type=error_type)
         try:
             with self._mutating_state() as state:
-                key = _composite_key(endpoint, status_class)
+                key = _composite_key(_normalize_upstream_endpoint(endpoint), status_class)
                 state["upstream_request_total"][key] = (
                     state["upstream_request_total"].get(key, 0) + 1
                 )
@@ -1284,14 +1284,16 @@ def _deserialize_state(raw_state: str) -> MetricsState:
         housekeeping_deleted_total=_coerce_int_map(
             loaded.get("housekeeping_deleted_total")
         ),
-        upstream_request_total=_coerce_int_map(loaded.get("upstream_request_total")),
-        upstream_request_duration_bucket=_coerce_int_map(
+        upstream_request_total=_normalize_upstream_composite_int_map(
+            loaded.get("upstream_request_total")
+        ),
+        upstream_request_duration_bucket=_normalize_upstream_bucket_int_map(
             loaded.get("upstream_request_duration_bucket")
         ),
-        upstream_request_duration_count=_coerce_int_map(
+        upstream_request_duration_count=_normalize_upstream_composite_int_map(
             loaded.get("upstream_request_duration_count")
         ),
-        upstream_request_duration_sum=_coerce_float_map(
+        upstream_request_duration_sum=_normalize_upstream_composite_float_map(
             loaded.get("upstream_request_duration_sum")
         ),
     )
@@ -1337,6 +1339,48 @@ def _observe_duration(
         if duration_seconds <= bucket:
             bucket_key = _bucket_key(key, bucket)
             bucket_map[bucket_key] = bucket_map.get(bucket_key, 0) + 1
+
+
+def _normalize_upstream_composite_int_map(raw_map: object) -> dict[str, int]:
+    return _normalize_upstream_composite_map(_coerce_int_map(raw_map))
+
+
+def _normalize_upstream_composite_float_map(raw_map: object) -> dict[str, float]:
+    return _normalize_upstream_composite_map(_coerce_float_map(raw_map))
+
+
+def _normalize_upstream_composite_map[T: int | float](raw_map: dict[str, T]) -> dict[str, T]:
+    normalized: dict[str, T] = {}
+    for key, value in raw_map.items():
+        try:
+            endpoint, status_class = _split_composite_key(key)
+        except ValueError:
+            normalized[key] = normalized.get(key, 0) + value
+            continue
+        normalized_key = _composite_key(_normalize_upstream_endpoint(endpoint), status_class)
+        normalized[normalized_key] = normalized.get(normalized_key, 0) + value
+    return normalized
+
+
+def _normalize_upstream_bucket_int_map(raw_map: object) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for key, value in _coerce_int_map(raw_map).items():
+        try:
+            endpoint, status_class, bucket = key.split("|", maxsplit=2)
+        except ValueError:
+            normalized[key] = normalized.get(key, 0) + value
+            continue
+        normalized_key = (
+            f"{_composite_key(_normalize_upstream_endpoint(endpoint), status_class)}|{bucket}"
+        )
+        normalized[normalized_key] = normalized.get(normalized_key, 0) + value
+    return normalized
+
+
+def _normalize_upstream_endpoint(endpoint: str) -> str:
+    if endpoint.startswith("/vacancies/"):
+        return "/vacancies/{vacancy_id}"
+    return endpoint
 
 
 def _status_class(*, status_code: int, error_type: str | None) -> str:

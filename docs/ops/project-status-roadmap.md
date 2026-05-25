@@ -223,6 +223,39 @@ VPS observation 2026-05-23:
 - claim/lease снимает known duplicate-selection blocker, но длительная
   параллельность ещё должна быть проверена controlled 2-worker run-ом.
 
+VPS observation 2026-05-24:
+
+- controlled 2-worker run после claim/lease прошёл safety checks:
+  `expired_leases=0`, `failed_states=0`, duplicate selection не наблюдался;
+- throughput gain от `scale=2` не подтвердился: observed drain остался около
+  `800-900/hour`, то есть не лучше single-worker baseline;
+- в client code нет явного общего detail rate limiter: `HHApiClient` использует
+  sync `urlopen`, а `fetch_vacancy_detail` делает `5s` sleep только после
+  transport failure retry;
+- текущая leading hypothesis: HH/upstream/IP/auth/network path имеет общий
+  sustained budget, который несколько worker-ов делят между собой.
+
+VPS observation 2026-05-25:
+
+- `detail-worker --once --batch-size 100` under profiler completed `100` details
+  in about `15s`, so the active fetch path is not inherently limited to
+  `~600-1300/hour`;
+- sustained service-mode still showed lower throughput (`~1260/hour`) and growing
+  gaps, while profile exposed significant `metrics._mutating_state` overhead;
+- root cause candidate tightened to high-cardinality upstream metrics:
+  detail requests were recorded under real `/vacancies/<hh_id>` endpoints, causing
+  the file-backed metrics state to grow with every vacancy. The fix is to collapse
+  detail upstream metrics to `/vacancies/{vacancy_id}` and compact existing state
+  on read/write.
+
+Next experiment plan:
+
+1. Не делить backlog на lanes/run/priority до ясной telemetry картины.
+2. Измерить latency/gap baseline на `scale=1`, `batch=100`, application token.
+3. Сравнить `scale=1/2/3` при одинаковом batch и 60-90 минутном window.
+4. Сравнить `batch=50/100/250/500` отдельно от scale.
+5. Проверить search interference: detail-worker on/off during controlled search.
+
 Go/no-go:
 
 - first-detail backlog убывает быстрее, чем растёт;

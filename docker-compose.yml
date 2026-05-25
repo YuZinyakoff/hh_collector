@@ -63,12 +63,19 @@ x-app-env: &app-env
   HHRU_DETAIL_WORKER_MAX_RETRY_COOLDOWN_SECONDS: ${HHRU_DETAIL_WORKER_MAX_RETRY_COOLDOWN_SECONDS:-86400}
   HHRU_DETAIL_WORKER_LEASE_SECONDS: ${HHRU_DETAIL_WORKER_LEASE_SECONDS:-7200}
 
+x-app-logging: &app-logging
+  driver: "json-file"
+  options:
+    max-size: "${HHRU_DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${HHRU_DOCKER_LOG_MAX_FILE:-5}"
+
 x-app-image: &app-image
   image: hh_collector-app
   build:
     context: .
     dockerfile: docker/app.Dockerfile
   environment: *app-env
+  logging: *app-logging
   depends_on:
     postgres:
       condition: service_healthy

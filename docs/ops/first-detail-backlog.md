@@ -268,3 +268,66 @@ VPS observation 2026-05-23:
 - restart worker-а не сбросил duration, поэтому это больше похоже на sustained
   upstream/time-of-day latency, чем на локальный leak;
 - следующий hardening slice: controlled 2-worker measurement на claim/lease.
+
+VPS observation 2026-05-24:
+
+- atomic claim/lease прошёл controlled 2-worker safety test: два разных
+  `first_detail_lease_owner`, `expired_leases=0`, `failed_states=0`;
+- duplicate selection blocker снят, но 2 worker-а не дали throughput gain;
+- observed backlog drain за несколько часов был около `800-900/hour`, то есть не
+  лучше single-worker baseline;
+- likely bottleneck находится не в DB claim и не в явном client-side throttle:
+  `HHApiClient` выполняет sync `urlopen` без общего rate limiter; единственный
+  `sleep` в detail path - `5s` transport retry backoff, который не активен при
+  `detail_fetch_failed=0`;
+- hypothesis: HH/upstream/IP/auth/network path даёт общий sustained budget, который
+  несколько worker-ов делят между собой.
+
+## Parallelism Experiment Plan
+
+Пока не делим backlog на lanes/run/priority. Это отдельное решение с риском
+изменить research semantics, его нужно принимать после измерений.
+
+Эксперименты должны отвечать на один вопрос за раз:
+
+1. Measure baseline with better telemetry.
+   - режим: `scale=1`, `batch=100`, `interval=60`, application token enabled;
+   - цель: короткие cycles, быстрый feedback;
+   - метрики: batch duration, selected/hour, `detail_fetch_failed`,
+     terminal_404 rate, p50/p95 `api_request_log.latency_ms`, gap between
+     consecutive detail requests.
+2. Compare scale without changing batch.
+   - режимы: `scale=1`, `scale=2`, optionally `scale=3`;
+   - batch одинаковый, measurement window минимум 60-90 минут на режим;
+   - stop condition: `failed_states > 0`, `expired_leases > 0`,
+     sustained `drain_first_detail_backlog.failed`, captcha/403/5xx growth.
+3. Compare batch size.
+   - режимы: `batch=50`, `batch=100`, `batch=250`, `batch=500`;
+   - цель: понять, есть ли degradation от long batch lifetime или DB/write
+     accumulation внутри process.
+4. Auth vs anonymous.
+   - application token легален и доступен, поэтому отдельно сравнить authenticated
+     detail contour с anonymous только коротким bounded test;
+   - не смешивать с scale test в одном window.
+5. Search interference test.
+   - перед production weekly schedule проверить, ухудшает ли detail-worker search
+     latency/error mix;
+   - режим: controlled search-only or low-detail run with detail-worker on/off.
+
+Decision rules:
+
+- Если `scale=2/3` не увеличивает selected/hour минимум на `25%` без роста
+  failures, production default остаётся `scale=1`.
+- Если small `batch=100` даёт такой же throughput, но быстрее обнаруживает
+  failures, использовать его для experiments; для steady drain можно вернуть
+  `batch=500`.
+- Если p50/p95 latency растёт пропорционально scale, bottleneck считается upstream
+  sustained budget, а не local worker implementation.
+- Если между `fetch_vacancy_detail.succeeded` и следующим
+  `fetch_vacancy_detail.started` есть large unexplained gaps, искать local DB/logging
+  overhead.
+- Если `.state/metrics/metrics.json` быстро растёт, проверить upstream metric
+  cardinality. Detail endpoint metrics должны агрегироваться как
+  `/vacancies/{vacancy_id}`, а не как `/vacancies/<hh_id>`, иначе каждый detail
+  request создаёт новую time series и file-backed registry начинает всё дороже
+  читать/перезаписывать state-файл.

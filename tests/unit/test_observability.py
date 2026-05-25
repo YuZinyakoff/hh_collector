@@ -206,6 +206,81 @@ def test_file_backed_metrics_registry_recovers_from_zero_filled_state(tmp_path) 
     )
 
 
+def test_file_backed_metrics_registry_normalizes_vacancy_detail_upstream_endpoint(
+    tmp_path,
+) -> None:
+    registry = FileBackedMetricsRegistry(tmp_path / "metrics.json")
+
+    registry.record_upstream_request(
+        endpoint="/vacancies/100",
+        status_code=200,
+        duration_seconds=0.1,
+    )
+    registry.record_upstream_request(
+        endpoint="/vacancies/200",
+        status_code=404,
+        duration_seconds=0.2,
+    )
+
+    rendered = registry.render_prometheus()
+
+    assert (
+        'hhru_upstream_request_total{endpoint="/vacancies/{vacancy_id}",status_class="2xx"} 1'
+        in rendered
+    )
+    assert (
+        'hhru_upstream_request_total{endpoint="/vacancies/{vacancy_id}",status_class="4xx"} 1'
+        in rendered
+    )
+    assert 'endpoint="/vacancies/100"' not in rendered
+    assert 'endpoint="/vacancies/200"' not in rendered
+
+
+def test_file_backed_metrics_registry_compacts_existing_vacancy_detail_upstream_metrics(
+    tmp_path,
+) -> None:
+    metrics_file = tmp_path / "metrics.json"
+    metrics_file.write_text(
+        json.dumps(
+            {
+                "upstream_request_total": {
+                    "/vacancies/100|2xx": 1,
+                    "/vacancies/200|2xx": 2,
+                },
+                "upstream_request_duration_count": {
+                    "/vacancies/100|2xx": 1,
+                    "/vacancies/200|2xx": 2,
+                },
+                "upstream_request_duration_sum": {
+                    "/vacancies/100|2xx": 0.1,
+                    "/vacancies/200|2xx": 0.4,
+                },
+                "upstream_request_duration_bucket": {
+                    "/vacancies/100|2xx|0.25": 1,
+                    "/vacancies/200|2xx|0.25": 2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = FileBackedMetricsRegistry(metrics_file)
+
+    registry.record_upstream_request(
+        endpoint="/vacancies/300",
+        status_code=200,
+        duration_seconds=0.2,
+    )
+    rendered = registry.render_prometheus()
+
+    assert (
+        'hhru_upstream_request_total{endpoint="/vacancies/{vacancy_id}",status_class="2xx"} 4'
+        in rendered
+    )
+    assert 'endpoint="/vacancies/100"' not in rendered
+    assert 'endpoint="/vacancies/200"' not in rendered
+    assert 'endpoint="/vacancies/300"' not in rendered
+
+
 def test_json_log_formatter_keeps_structured_fields() -> None:
     output = StringIO()
     handler = logging.StreamHandler(output)

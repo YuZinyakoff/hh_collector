@@ -1,4 +1,4 @@
-м# Yandex Disk offsite backup support template
+# Yandex Disk offsite backup support template
 
 Use this template when contacting Yandex support about WebDAV / REST API upload behavior for
 large PostgreSQL backup files.

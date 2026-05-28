@@ -62,6 +62,10 @@ Current status:
 - One real VPS S3 drill succeeded on 2026-05-23: remote parts were downloaded,
   assembled dump passed `backup_sha256`, and core tables were restored into
   `hhru_platform_restore_drill`.
+- Post-detail-drain milestone backup on 2026-05-28 succeeded locally and offsite:
+  dump `13232097458` bytes, sha256
+  `46d485f21765df90dec9edbdef1362f5bacfd4848008d48e5941c2c5c456de86`,
+  `198` S3 data parts and `verified_object_count=199`.
 - Local dump retention exists through `HHRU_BACKUP_RETENTION_DAYS` and runs when
   a new backup is created.
 - S3/offsite retention delete policy is not automated yet.
@@ -117,6 +121,15 @@ s3://<bucket>/hhru-platform/research-archive/v1/
 
 The archive should keep raw payloads as first-class data. Normalized analytical
 tables can be regenerated if raw payloads and transformation code are preserved.
+
+Current status:
+
+- Local Archive v1 export/verify smoke passed on VPS on 2026-05-28 with
+  `archive_kind=tool_validation`.
+- Smoke bundle: `6000` rows, `13` chunks, `5212503` data bytes, `13/13`
+  manifests verified.
+- S3 upload, remote verification and readback for research archive bundles are
+  not implemented yet.
 
 ## 4. Parquet policy
 
@@ -236,7 +249,8 @@ For DB backup contour:
 
 For research archive contour:
 
-1. Run small Archive v1 local smoke with `export-research-archive --limit-per-dataset`.
+1. Local Archive v1 smoke passed on 2026-05-28; repeat it after archive schema or
+   serialization changes.
 2. Keep JSONL.GZ as the canonical raw Archive v1 format.
 3. Add S3 upload and remote verification for research archive bundles.
 4. Keep append-only archive inventory.

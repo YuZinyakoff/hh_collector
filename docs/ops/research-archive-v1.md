@@ -441,6 +441,27 @@ Status on 2026-05-27:
 - S3 upload/readback is not implemented yet.
 - Research analytics, Parquet and gold datasets remain intentionally out of scope.
 
+VPS smoke on 2026-05-28:
+
+```bash
+make export-research-archive ARGS="--limit-per-dataset 1000 --chunk-size 500 --archive-kind tool_validation --triggered-by vps-archive-smoke"
+make verify-research-archive ARGS="--limit 20 --triggered-by vps-archive-smoke-verify"
+```
+
+Result:
+
+- export succeeded with `6000` rows, `13` chunks and `5212503` data bytes;
+- local verification succeeded for `13/13` manifests;
+- archive size was about `5.2M`, with `27` files;
+- dataset coverage was the Stage A foundation set:
+  `bronze/raw_api_payload`, `silver/api_request_log`, `silver/vacancy`,
+  `silver/vacancy_snapshot`, `silver/vacancy_seen_event`,
+  `silver/vacancy_current_state`.
+
+This smoke proves local Archive v1 export/verify mechanics. It does not make the
+pilot corpus canonical production data, and it does not prove S3 upload/readback
+for research archive bundles.
+
 ### Stage C: S3 upload and verification
 
 - Reuse S3 client patterns from backup offsite tooling.

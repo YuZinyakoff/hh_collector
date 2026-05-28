@@ -1,6 +1,6 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-05-27.
+Дата среза: 2026-05-29.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -21,7 +21,8 @@
 ## 1. Где Мы Сейчас
 
 Проект находится после successful VPS `search-only` baseline, S3 backup/offsite
-restore validation и в фазе supervised `first-detail` throughput/storage experiments.
+restore validation, полного drain-а pilot `first-detail` backlog и первого local
+smoke research archive v1.
 
 Уже доказано:
 
@@ -35,7 +36,7 @@ restore validation и в фазе supervised `first-detail` throughput/storage e
 - backup/verify/restore-drill path есть;
 - post-baseline backup/verify/restore-drill на VPS прошёл успешно; backup `.state/backups/hhru-platform_hhru_platform_20260515T084422Z.dump`, `1596355292` bytes, sha256 `192cd44693f49bbdcf76832a011b1648b0b5ed1ff748a912eb0c324cb27513cf`;
 - retention archive и WebDAV offsite sync проверены на Yandex Disk;
-- first-detail backlog MVP реализован: backlog selector, drain command, `detail_worker`, terminal `404`, retry cooldown, metrics, alerts, Grafana panels;
+- first-detail backlog foundation реализован: backlog selector, drain command, `detail_worker`, terminal `404`, retry cooldown, metrics, alerts, Grafana panels;
 - controlled first-detail worker tick прошёл чисто: `24` successful detail snapshots, `1` terminal_404, `0` retryable failures;
 - local detail-worker measurement `100` items прошёл clean: `100/100` successful details, active backlog `766389 -> 766289`, DB delta около `2.28 MB`;
 - Alertmanager + `alert-webhook` delivery до Telegram проверены на VPS;
@@ -54,12 +55,24 @@ restore validation и в фазе supervised `first-detail` throughput/storage e
 - `scale=3`, `batch=100`, `interval=60` validated как catch-up режим:
   sustained throughput около `14k detail requests/hour`, `expired_leases=0`,
   `failed_states=0`, metrics file остаётся килобайтным.
+- pilot first-detail backlog полностью drained на VPS: active/all backlog `0`,
+  `848056` successful detail snapshots, `17812` terminal_404, workers stopped.
+- post-detail-drain DB backup verified локально: dump
+  `.state/backups/hhru-platform_hhru_platform_20260528T112018Z.dump`,
+  `13232097458` bytes, sha256
+  `46d485f21765df90dec9edbdef1362f5bacfd4848008d48e5941c2c5c456de86`,
+  `archive_entry_count=134`;
+- post-detail-drain backup uploaded и verified в Timeweb cold S3: `198` data
+  parts по `67108864` bytes, manifest uploaded, `verified_object_count=199`;
+- research archive v1 local smoke прошёл на VPS как `archive_kind=tool_validation`:
+  `6000` rows, `13` chunks, `5212503` data bytes, `13/13` manifests verified,
+  local archive size около `5.2M`.
 
 Текущий статус не равен full production readiness. Корректная формулировка:
 full search coverage operationally validated, backup/offsite restore contour
-operationally validated, first-detail catch-up throughput предварительно
-validated на `scale=3`, но storage routine, research archive contour и
-unattended production routine ещё не доказаны.
+operationally validated, first-detail pilot backlog drained, research archive v1
+local export/verify smoke validated, но research archive S3 upload/readback,
+production storage routine и unattended production routine ещё не доказаны.
 
 Важное ограничение текущего корпуса: данные на VPS являются pilot/test corpus,
 полученным из не свежего search snapshot и серии operational experiments. Его
@@ -71,6 +84,8 @@ corpus.
 ## 2. Что Ещё Не Доказано
 
 - Полный first-detail drain на масштабе свежего production search snapshot.
+  Pilot/test backlog already drained; это не заменяет proof на clean production
+  corpus.
 - Sustained detail throughput/storage growth на production routine, а не только
   на pilot/test corpus.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
@@ -85,16 +100,17 @@ corpus.
 
 | Контур | Статус | Комментарий |
 | --- | --- | --- |
-| DB schema / migrations | ready for MVP | core operational tables есть, миграции и tests покрывают основной путь |
+| DB schema / migrations | foundation ready | core operational tables есть, миграции и tests покрывают основной путь |
 | Search planner v2 | VPS validated | full VPS baseline снял planner completeness blocker |
 | Search runtime | validated, partially hardened | search-only baseline successful; HH `502` показал gap в 5xx retry/classification |
-| Resume failed search run | MVP ready | умеет продолжать failed terminal search branches |
+| Resume failed search run | foundation ready | умеет продолжать failed terminal search branches |
 | Detail same-run budget | ready as bounded contour | не является completeness guarantee |
 | First-detail backlog | VPS catch-up validated on pilot corpus | `scale=3`, `batch=100` validated as supervised catch-up mode |
-| Detail worker | MVP ready, supervised scale=3 validated | есть one-shot и loop, пока без multi-day unattended proof |
+| Detail worker | foundation ready, supervised scale=3 validated | есть one-shot и loop, пока без multi-day unattended proof |
 | Backup / restore drill | VPS validated | post-baseline backup, verify и restore-drill прошли |
-| DB backup offsite | S3 end-to-end validated | Timeweb cold S3 upload, idempotency, remote size verify и offsite restore drill работают |
+| DB backup offsite | S3 end-to-end validated | Timeweb cold S3 upload, idempotency, remote size verify, offsite restore drill и post-detail-drain 13GB upload/verify работают |
 | Retention archive / offsite sync | partially validated | retention bundle sync работает; нужен S3 backend, inventory и readback drill |
+| Research archive v1 | local smoke validated | local export/verify прошли на VPS tool-validation bundle; S3 upload/readback ещё open |
 | Observability | foundation ready | metrics, dashboards, alert rules есть |
 | Alert delivery | foundation ready | delivery до Telegram проверен; payloads нужно сделать информативнее |
 | VPS deploy | validated | search-only pilot completed on Timeweb VPS |
@@ -104,13 +120,14 @@ corpus.
 
 Непосредственный порядок работ после S3 offsite restore drill:
 
-1. Закончить текущий first-detail pilot measurement без смешивания контуров:
-   - `detail-worker scale=3`, `batch=100`, `interval=60` можно оставить до
-     завершения pilot backlog или до следующего контрольного окна;
+1. Pilot first-detail drain закрыт:
+   - active/all backlog `0`;
+   - workers stopped;
    - использовать результат как throughput/storage evidence, а не как production
      dataset;
-   - после завершения или остановки pilot drain снизить steady mode до
-     `scale=1-2`, если нет свежего production backlog.
+   - для свежего production backlog режим `scale=3`, `batch=100`,
+     `interval=60` можно считать supervised catch-up candidate, но не постоянным
+     steady mode без search interference proof.
 2. Закрыть backup contour hygiene:
    - факт successful VPS offsite restore drill записан;
    - restore-drill DB уже отсутствует на VPS check 2026-05-26;
@@ -132,8 +149,8 @@ corpus.
 5. Реализовать archive foundation, без research analytics:
    - local export, manifest, inventory реализованы в коде;
    - local validation реализована через `verify-research-archive`;
-   - next: small smoke на pilot corpus с `--limit-per-dataset`;
-   - next: S3 upload/verify/readback;
+   - small VPS smoke на pilot corpus с `--limit-per-dataset` прошёл;
+   - next: S3 upload/verify/readback for research archive bundles;
    - tiny proof-of-read smoke only;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
@@ -329,14 +346,30 @@ VPS observation 2026-05-26:
   but production collection should start from a clean or explicitly separated
   state.
 
+VPS observation 2026-05-28:
+
+- pilot first-detail backlog fully drained: `active_backlog_size=0`,
+  `active_ready_backlog_size=0`, `active_cooldown_backlog_size=0`;
+- final pilot detail counts: `848056` succeeded details, `17812` terminal_404,
+  `16` failed attempts in attempt history, no current failed backlog;
+- detail workers were stopped after drain; cleanup query updated `0` active
+  running leases;
+- post-drain DB size was about `29.1GB`;
+- post-drain local backup verified: `13232097458` bytes, sha256
+  `46d485f21765df90dec9edbdef1362f5bacfd4848008d48e5941c2c5c456de86`;
+- post-drain backup offsite upload/verify succeeded in Timeweb cold S3:
+  `198` data parts, `verified_object_count=199`;
+- Archive v1 local smoke passed as `archive_kind=tool_validation`: `6000` rows,
+  `13` chunks, `5212503` data bytes, `13/13` manifests verified.
+
 Next experiment plan:
 
-1. Не делить backlog на lanes/run/priority до ясной telemetry картины.
-2. Дать `scale=3` завершить или остановить pilot drain, если дальнейший test corpus
-   не нужен.
-3. Закрыть Prometheus и backup retention.
-4. Спроектировать research archive v1 и clean production start procedure.
-5. Проверить search interference: detail-worker on/off during controlled search.
+1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
+2. Реализовать S3 upload/verify/readback для research archive bundles.
+3. Закрыть S3 backup retention delete and sidecar cleanup.
+4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
+5. Проверить search interference: detail-worker on/off during controlled search
+   on fresh production routine.
 
 Go/no-go:
 

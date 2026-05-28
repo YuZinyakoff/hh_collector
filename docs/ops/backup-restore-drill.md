@@ -207,6 +207,49 @@ backup contour также нужны:
 
 - explicit local/offsite backup retention policy.
 
+## 6.1. Backup retention status
+
+Status на 2026-05-26:
+
+- Local dump retention уже реализован в `scripts/backup/backup_postgres.sh`.
+- Retention управляется `HHRU_BACKUP_RETENTION_DAYS`, default `7`.
+- Cleanup выполняется при создании нового backup-а и удаляет matching
+  `.state/backups/${HHRU_BACKUP_PREFIX}_${HHRU_DB_NAME}_*.dump` старше заданного
+  `mtime`.
+- Это local operational cleanup, а не S3/offsite retention.
+- Текущий local cleanup удаляет `.dump`; sidecar receipts/manifests могут
+  оставаться и должны рассматриваться как маленький hygiene gap, пока не добавлен
+  dedicated backup cleanup command.
+- S3/offsite retention delete policy ещё не реализован в tooling. До реализации
+  remote retention считается manual/operator policy: хранить минимум последние
+  verified production backups и периодически удалять старые remote objects после
+  successful newer offsite restore drill.
+
+Practical policy before production:
+
+- local: держать `HHRU_BACKUP_RETENTION_DAYS=7` или `14`, в зависимости от
+  свободного диска;
+- offsite/S3: автоматизировать bounded generations, а не хранить все DB dumps
+  бесконечно: последние `3` successful verified backups, последние `4` weekly
+  backups и отдельные milestone backups;
+- перед удалением local pilot dump-а убедиться, что есть successful
+  `verify-backup-offsite` и хотя бы один successful `backup-offsite-restore-drill`
+  для более свежего или нужного dump-а;
+- restore-drill DB удалить после расследования, потому она может занимать почти
+  размер live DB.
+
+VPS check 2026-05-26:
+
+- `backup_retention_days=14`;
+- backend: Timeweb S3, `backup_offsite_backend=s3`,
+  `backup_offsite_configured=yes`;
+- S3 chunk size: `67108864`;
+- local `.state/backups` size: `5.8G`;
+- local dumps present: 2026-05-13, 2026-05-14, 2026-05-15 x2,
+  2026-05-17;
+- restore-drill DB `hhru_platform_restore_drill` absent, so no lingering
+  restore-drill storage cost at that check.
+
 ## 7. Проверить offsite copy
 
 После `make backup-offsite` нужно проверить, что remote manifest и все remote parts

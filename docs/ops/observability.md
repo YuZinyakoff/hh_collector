@@ -52,6 +52,24 @@ VPS observation 2026-05-21:
 Вывод: главная лишняя категория - Prometheus TSDB без tight retention; в PostgreSQL
 существенную часть физического volume занимает restore-drill DB.
 
+Status на 2026-05-26:
+
+- Compose уже прокидывает Prometheus retention flags.
+- `.env.example` уже содержит recommended values: `7d` и `8GB`.
+- Operationally надо проверить, что VPS `.env` не переопределяет эти значения
+  слишком широко, и что running container стартовал с нужными flags.
+- Если старый `hh_collector_prometheus_data` уже раздулся, допустимо удалить
+  volume после остановки Prometheus. Это удаляет только графики/TSDB, не collector
+  data.
+
+VPS check 2026-05-26:
+
+- running Prometheus args include `--storage.tsdb.retention.time=7d`;
+- running Prometheus args include `--storage.tsdb.retention.size=8GB`;
+- `hh_collector_prometheus_data` size: `5.5G`;
+- вывод: Prometheus retention применён и не требует volume reset на момент
+  проверки.
+
 ## Основные команды
 
 Локальный snapshot метрик:

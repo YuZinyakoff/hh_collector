@@ -17,6 +17,9 @@ from hhru_platform.interfaces.cli.commands.partition import register_partition_c
 from hhru_platform.interfaces.cli.commands.reconcile import register_reconcile_commands
 from hhru_platform.interfaces.cli.commands.reporting import register_reporting_commands
 from hhru_platform.interfaces.cli.commands.research import register_research_commands
+from hhru_platform.interfaces.cli.commands.research_archive import (
+    register_research_archive_commands,
+)
 from hhru_platform.interfaces.cli.commands.run import register_run_commands
 from hhru_platform.interfaces.cli.commands.run_once import register_run_once_commands
 from hhru_platform.interfaces.cli.commands.scheduler import register_scheduler_commands
@@ -39,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_detail_commands(subparsers)
     register_reconcile_commands(subparsers)
     register_research_commands(subparsers)
+    register_research_archive_commands(subparsers)
     register_observability_commands(subparsers)
     return parser
 

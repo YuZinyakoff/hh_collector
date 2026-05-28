@@ -3,7 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -11,7 +11,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import time
-from typing import Final, TypedDict
+from typing import Final, TypedDict, cast
 
 from hhru_platform.config.settings import get_settings
 
@@ -83,12 +83,8 @@ RUN_TREE_COVERAGE_METRIC_HELP: Final[dict[str, str]] = {
     "hhru_run_tree_split_partitions": (
         "Number of split or saturated partitions in a crawl_run tree."
     ),
-    "hhru_run_tree_unresolved_partitions": (
-        "Number of unresolved partitions in a crawl_run tree."
-    ),
-    "hhru_run_tree_failed_partitions": (
-        "Number of failed partitions in a crawl_run tree."
-    ),
+    "hhru_run_tree_unresolved_partitions": ("Number of unresolved partitions in a crawl_run tree."),
+    "hhru_run_tree_failed_partitions": ("Number of failed partitions in a crawl_run tree."),
 }
 
 SCHEDULER_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
@@ -104,34 +100,20 @@ SCHEDULER_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
     ),
 }
 
-RUN_TERMINAL_STATUS_TIMESTAMP_METRIC: Final[str] = (
-    "hhru_run_terminal_status_last_timestamp_seconds"
-)
-BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC: Final[str] = (
-    "hhru_backup_last_success_timestamp_seconds"
-)
+RUN_TERMINAL_STATUS_TIMESTAMP_METRIC: Final[str] = "hhru_run_terminal_status_last_timestamp_seconds"
+BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC: Final[str] = "hhru_backup_last_success_timestamp_seconds"
 RESTORE_DRILL_LAST_SUCCESS_TIMESTAMP_METRIC: Final[str] = (
     "hhru_restore_drill_last_success_timestamp_seconds"
 )
-SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC: Final[str] = (
-    "hhru_scheduler_last_observed_run_status"
-)
+SCHEDULER_LAST_OBSERVED_RUN_STATUS_METRIC: Final[str] = "hhru_scheduler_last_observed_run_status"
 DETAIL_REPAIR_BACKLOG_METRIC: Final[str] = "hhru_detail_repair_backlog_size"
 FIRST_DETAIL_BACKLOG_METRIC: Final[str] = "hhru_first_detail_backlog_size"
 FIRST_DETAIL_READY_BACKLOG_METRIC: Final[str] = "hhru_first_detail_ready_backlog_size"
-FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC: Final[str] = (
-    "hhru_first_detail_cooldown_backlog_size"
-)
-HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC: Final[str] = (
-    "hhru_housekeeping_last_run_timestamp_seconds"
-)
-HOUSEKEEPING_LAST_ACTION_COUNT_METRIC: Final[str] = (
-    "hhru_housekeeping_last_action_count"
-)
+FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC: Final[str] = "hhru_first_detail_cooldown_backlog_size"
+HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC: Final[str] = "hhru_housekeeping_last_run_timestamp_seconds"
+HOUSEKEEPING_LAST_ACTION_COUNT_METRIC: Final[str] = "hhru_housekeeping_last_action_count"
 DETAIL_REPAIR_TOTAL_METRIC_HELP: Final[dict[str, str]] = {
-    "hhru_detail_repair_retried_total": (
-        "Total number of backlog detail fetch retries attempted."
-    ),
+    "hhru_detail_repair_retried_total": ("Total number of backlog detail fetch retries attempted."),
     "hhru_detail_repair_repaired_total": (
         "Total number of backlog detail fetches repaired successfully."
     ),
@@ -178,9 +160,7 @@ BACKUP_RUN_STATUSES: Final[tuple[str, ...]] = (
     "failed",
 )
 BACKUP_GAUGE_METRIC_HELP: Final[dict[str, str]] = {
-    BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC: (
-        "Timestamp of the latest successful PostgreSQL backup."
-    ),
+    BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC: ("Timestamp of the latest successful PostgreSQL backup."),
     RESTORE_DRILL_LAST_SUCCESS_TIMESTAMP_METRIC: (
         "Timestamp of the latest successful restore drill."
     ),
@@ -245,13 +225,11 @@ class FileBackedMetricsRegistry:
     ) -> None:
         try:
             with self._mutating_state() as state:
-                state["backup_run_total"][status] = (
-                    state["backup_run_total"].get(status, 0) + 1
-                )
+                state["backup_run_total"][status] = state["backup_run_total"].get(status, 0) + 1
                 if status == "succeeded":
-                    state["backup_gauge"][
-                        BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC
-                    ] = recorded_at.timestamp()
+                    state["backup_gauge"][BACKUP_LAST_SUCCESS_TIMESTAMP_METRIC] = (
+                        recorded_at.timestamp()
+                    )
         except Exception as error:
             LOGGER.warning("metrics backup run update failed: %s", error)
 
@@ -267,9 +245,9 @@ class FileBackedMetricsRegistry:
                     state["restore_drill_run_total"].get(status, 0) + 1
                 )
                 if status == "succeeded":
-                    state["restore_drill_gauge"][
-                        RESTORE_DRILL_LAST_SUCCESS_TIMESTAMP_METRIC
-                    ] = recorded_at.timestamp()
+                    state["restore_drill_gauge"][RESTORE_DRILL_LAST_SUCCESS_TIMESTAMP_METRIC] = (
+                        recorded_at.timestamp()
+                    )
         except Exception as error:
             LOGGER.warning("metrics restore drill update failed: %s", error)
 
@@ -289,12 +267,8 @@ class FileBackedMetricsRegistry:
         metric_values = {
             "hhru_run_tree_coverage_ratio": max(coverage_ratio, 0.0),
             "hhru_run_tree_total_partitions": float(max(total_partitions, 0)),
-            "hhru_run_tree_covered_terminal_partitions": float(
-                max(covered_terminal_partitions, 0)
-            ),
-            "hhru_run_tree_pending_terminal_partitions": float(
-                max(pending_terminal_partitions, 0)
-            ),
+            "hhru_run_tree_covered_terminal_partitions": float(max(covered_terminal_partitions, 0)),
+            "hhru_run_tree_pending_terminal_partitions": float(max(pending_terminal_partitions, 0)),
             "hhru_run_tree_split_partitions": float(max(split_partitions, 0)),
             "hhru_run_tree_unresolved_partitions": float(max(unresolved_partitions, 0)),
             "hhru_run_tree_failed_partitions": float(max(failed_partitions, 0)),
@@ -340,9 +314,9 @@ class FileBackedMetricsRegistry:
                 state["scheduler_tick_total"][outcome] = (
                     state["scheduler_tick_total"].get(outcome, 0) + 1
                 )
-                state["scheduler_gauge"][
-                    "hhru_scheduler_last_tick_timestamp_seconds"
-                ] = ticked_at.timestamp()
+                state["scheduler_gauge"]["hhru_scheduler_last_tick_timestamp_seconds"] = (
+                    ticked_at.timestamp()
+                )
                 if run_started_at is not None:
                     state["scheduler_gauge"][
                         "hhru_scheduler_last_run_started_timestamp_seconds"
@@ -372,9 +346,7 @@ class FileBackedMetricsRegistry:
         try:
             with self._mutating_state() as state:
                 key = _composite_key(run_type, outcome)
-                state["resume_attempt_total"][key] = (
-                    state["resume_attempt_total"].get(key, 0) + 1
-                )
+                state["resume_attempt_total"][key] = state["resume_attempt_total"].get(key, 0) + 1
         except Exception as error:
             LOGGER.warning("metrics resume attempt update failed: %s", error)
 
@@ -433,9 +405,7 @@ class FileBackedMetricsRegistry:
         try:
             with self._mutating_state() as state:
                 state["first_detail_backlog_gauge"][scope] = float(max(backlog_size, 0))
-                state["first_detail_ready_backlog_gauge"][scope] = float(
-                    max(ready_backlog_size, 0)
-                )
+                state["first_detail_ready_backlog_gauge"][scope] = float(max(ready_backlog_size, 0))
                 state["first_detail_cooldown_backlog_gauge"][scope] = float(
                     max(cooldown_backlog_size, 0)
                 )
@@ -487,9 +457,9 @@ class FileBackedMetricsRegistry:
                 state["housekeeping_run_total"][key] = (
                     state["housekeeping_run_total"].get(key, 0) + 1
                 )
-                state["housekeeping_gauge"][
-                    HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC
-                ] = recorded_at.timestamp()
+                state["housekeeping_gauge"][HOUSEKEEPING_LAST_RUN_TIMESTAMP_METRIC] = (
+                    recorded_at.timestamp()
+                )
                 for recorded_status in HOUSEKEEPING_RUN_STATUSES:
                     state["housekeeping_status_gauge"][recorded_status] = (
                         1.0 if recorded_status == status else 0.0
@@ -644,10 +614,7 @@ class FileBackedMetricsRegistry:
             ]
         )
         for status, value in sorted(state["backup_run_total"].items()):
-            lines.append(
-                "hhru_backup_run_total"
-                f'{{status="{_label_value(status)}"}} {value}'
-            )
+            lines.append(f'hhru_backup_run_total{{status="{_label_value(status)}"}} {value}')
 
         lines.extend(
             [
@@ -656,10 +623,7 @@ class FileBackedMetricsRegistry:
             ]
         )
         for status, value in sorted(state["restore_drill_run_total"].items()):
-            lines.append(
-                "hhru_restore_drill_run_total"
-                f'{{status="{_label_value(status)}"}} {value}'
-            )
+            lines.append(f'hhru_restore_drill_run_total{{status="{_label_value(status)}"}} {value}')
 
         for metric_name, help_text in BACKUP_GAUGE_METRIC_HELP.items():
             lines.extend(
@@ -733,10 +697,7 @@ class FileBackedMetricsRegistry:
             ]
         )
         for outcome, value in sorted(state["scheduler_tick_total"].items()):
-            lines.append(
-                "hhru_scheduler_tick_total"
-                f'{{outcome="{_label_value(outcome)}"}} {value}'
-            )
+            lines.append(f'hhru_scheduler_tick_total{{outcome="{_label_value(outcome)}"}} {value}')
 
         for metric_name, help_text in SCHEDULER_GAUGE_METRIC_HELP.items():
             lines.extend(
@@ -827,11 +788,7 @@ class FileBackedMetricsRegistry:
                 recorded_metric_name, run_type = _split_composite_key(key)
                 if recorded_metric_name != metric_name:
                     continue
-                lines.append(
-                    f"{metric_name}"
-                    f'{{run_type="{_label_value(run_type)}"}} '
-                    f"{value}"
-                )
+                lines.append(f'{metric_name}{{run_type="{_label_value(run_type)}"}} {value}')
 
         lines.extend(
             [
@@ -844,8 +801,7 @@ class FileBackedMetricsRegistry:
         )
         for scope, gauge_value in sorted(state["first_detail_backlog_gauge"].items()):
             lines.append(
-                f"{FIRST_DETAIL_BACKLOG_METRIC}"
-                f'{{scope="{_label_value(scope)}"}} {gauge_value:.6f}'
+                f'{FIRST_DETAIL_BACKLOG_METRIC}{{scope="{_label_value(scope)}"}} {gauge_value:.6f}'
             )
         lines.extend(
             [
@@ -870,9 +826,7 @@ class FileBackedMetricsRegistry:
                 f"# TYPE {FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC} gauge",
             ]
         )
-        for scope, gauge_value in sorted(
-            state["first_detail_cooldown_backlog_gauge"].items()
-        ):
+        for scope, gauge_value in sorted(state["first_detail_cooldown_backlog_gauge"].items()):
             lines.append(
                 f"{FIRST_DETAIL_COOLDOWN_BACKLOG_METRIC}"
                 f'{{scope="{_label_value(scope)}"}} {gauge_value:.6f}'
@@ -906,11 +860,7 @@ class FileBackedMetricsRegistry:
                 recorded_metric_name, scope = _split_composite_key(key)
                 if recorded_metric_name != metric_name:
                     continue
-                lines.append(
-                    f"{metric_name}"
-                    f'{{scope="{_label_value(scope)}"}} '
-                    f"{value}"
-                )
+                lines.append(f'{metric_name}{{scope="{_label_value(scope)}"}} {value}')
 
         lines.extend(
             [
@@ -965,8 +915,7 @@ class FileBackedMetricsRegistry:
         )
         for mode, gauge_value in sorted(state["housekeeping_mode_gauge"].items()):
             lines.append(
-                "hhru_housekeeping_last_run_mode"
-                f'{{mode="{_label_value(mode)}"}} {gauge_value:.1f}'
+                f'hhru_housekeeping_last_run_mode{{mode="{_label_value(mode)}"}} {gauge_value:.1f}'
             )
 
         lines.extend(
@@ -997,8 +946,7 @@ class FileBackedMetricsRegistry:
         )
         for target, value in sorted(state["housekeeping_deleted_total"].items()):
             lines.append(
-                f"{HOUSEKEEPING_DELETED_TOTAL_METRIC}"
-                f'{{target="{_label_value(target)}"}} {value}'
+                f'{HOUSEKEEPING_DELETED_TOTAL_METRIC}{{target="{_label_value(target)}"}} {value}'
             )
 
         lines.extend(
@@ -1252,14 +1200,10 @@ def _deserialize_state(raw_state: str) -> MetricsState:
         scheduler_gauge=_coerce_float_map(loaded.get("scheduler_gauge")),
         scheduler_status_gauge=_coerce_float_map(loaded.get("scheduler_status_gauge")),
         resume_attempt_total=_coerce_int_map(loaded.get("resume_attempt_total")),
-        detail_repair_attempt_total=_coerce_int_map(
-            loaded.get("detail_repair_attempt_total")
-        ),
+        detail_repair_attempt_total=_coerce_int_map(loaded.get("detail_repair_attempt_total")),
         detail_repair_gauge=_coerce_float_map(loaded.get("detail_repair_gauge")),
         detail_repair_total=_coerce_int_map(loaded.get("detail_repair_total")),
-        first_detail_backlog_gauge=_coerce_float_map(
-            loaded.get("first_detail_backlog_gauge")
-        ),
+        first_detail_backlog_gauge=_coerce_float_map(loaded.get("first_detail_backlog_gauge")),
         first_detail_ready_backlog_gauge=_coerce_float_map(
             loaded.get("first_detail_ready_backlog_gauge")
         ),
@@ -1269,21 +1213,13 @@ def _deserialize_state(raw_state: str) -> MetricsState:
         first_detail_drain_attempt_total=_coerce_int_map(
             loaded.get("first_detail_drain_attempt_total")
         ),
-        first_detail_drain_total=_coerce_int_map(
-            loaded.get("first_detail_drain_total")
-        ),
+        first_detail_drain_total=_coerce_int_map(loaded.get("first_detail_drain_total")),
         housekeeping_run_total=_coerce_int_map(loaded.get("housekeeping_run_total")),
         housekeeping_gauge=_coerce_float_map(loaded.get("housekeeping_gauge")),
-        housekeeping_status_gauge=_coerce_float_map(
-            loaded.get("housekeeping_status_gauge")
-        ),
+        housekeeping_status_gauge=_coerce_float_map(loaded.get("housekeeping_status_gauge")),
         housekeeping_mode_gauge=_coerce_float_map(loaded.get("housekeeping_mode_gauge")),
-        housekeeping_action_gauge=_coerce_float_map(
-            loaded.get("housekeeping_action_gauge")
-        ),
-        housekeeping_deleted_total=_coerce_int_map(
-            loaded.get("housekeeping_deleted_total")
-        ),
+        housekeeping_action_gauge=_coerce_float_map(loaded.get("housekeeping_action_gauge")),
+        housekeeping_deleted_total=_coerce_int_map(loaded.get("housekeeping_deleted_total")),
         upstream_request_total=_normalize_upstream_composite_int_map(
             loaded.get("upstream_request_total")
         ),
@@ -1342,15 +1278,17 @@ def _observe_duration(
 
 
 def _normalize_upstream_composite_int_map(raw_map: object) -> dict[str, int]:
-    return _normalize_upstream_composite_map(_coerce_int_map(raw_map))
+    return cast(dict[str, int], _normalize_upstream_composite_map(_coerce_int_map(raw_map)))
 
 
 def _normalize_upstream_composite_float_map(raw_map: object) -> dict[str, float]:
-    return _normalize_upstream_composite_map(_coerce_float_map(raw_map))
+    return cast(dict[str, float], _normalize_upstream_composite_map(_coerce_float_map(raw_map)))
 
 
-def _normalize_upstream_composite_map[T: int | float](raw_map: dict[str, T]) -> dict[str, T]:
-    normalized: dict[str, T] = {}
+def _normalize_upstream_composite_map(
+    raw_map: Mapping[str, int | float],
+) -> dict[str, int | float]:
+    normalized: dict[str, int | float] = {}
     for key, value in raw_map.items():
         try:
             endpoint, status_class = _split_composite_key(key)

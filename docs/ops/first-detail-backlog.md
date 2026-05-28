@@ -90,6 +90,54 @@ HOST_DB_HOST=localhost BATCH_SIZE=100 MAX_TICKS=1 make detail-worker-measurement
 - `db_size_delta_bytes`
 - `first_detail_attempt_status.*` в postflight report
 
+## VPS Catch-Up Mode
+
+Validated baseline на 2026-05-25 после фикса high-cardinality upstream metrics:
+
+- worker config: `batch=100`, `interval=60`, application token enabled;
+- `scale=1`: `4545.1 detail requests/hour`, `latency_p50=126ms`,
+  `latency_p95=349ms`, `gap_p50=0.157s`, `gap_p95=0.418s`;
+- `scale=2`: `8875.3 detail requests/hour`, `latency_p50=125ms`,
+  `latency_p95=319ms`, `gap_p50=0.108s`, `gap_p95=0.254s`;
+- `scale=3`: `14396.6 detail requests/hour` overnight and `14014.2`
+  detail requests/hour on later live control, `latency_p50=96ms`,
+  `latency_p95=180-235ms`, `gap_p95≈0.21s`;
+- safety after `scale=2`: `expired_leases=0`, `failed_states=0`,
+  metrics state file about `3.2K`;
+- safety after `scale=3`: `expired_leases=0`, `failed_states=0`,
+  active cooldown backlog `0`, metrics state file about `4.1K`.
+
+Current recommendation: use `scale=3` as supervised pilot catch-up mode while the
+current pilot backlog is intentionally being drained. Treat the current corpus as
+pilot/test data, not canonical production data. After pilot drain completes or is
+stopped, reduce steady mode to `scale=1-2` unless a fresh production backlog needs
+catch-up.
+
+Control check during catch-up:
+
+```bash
+cd /opt/hh_collector
+
+docker compose logs --since=2h detail-worker \
+  | grep 'detail_worker_tick' \
+  | tail -n 20
+
+docker compose --profile ops run --rm --entrypoint python app \
+  scripts/dev/write_detail_backlog_report.py
+
+docker compose exec postgres psql -U "${HHRU_DB_USER:-hhru}" -d "${HHRU_DB_NAME:-hhru_platform}" -P pager=off -c "
+select
+  count(*) filter (where first_detail_lease_expires_at > now()) as active_leases,
+  count(*) filter (where first_detail_lease_expires_at <= now()) as expired_leases,
+  count(*) filter (where detail_fetch_status = 'failed') as failed_states
+from vacancy_current_state
+where first_detail_lease_expires_at is not null
+   or detail_fetch_status = 'failed';
+"
+
+ls -lh .state/metrics/metrics.json
+```
+
 ## VPS First Measurement
 
 После successful VPS `search-only` baseline следующий безопасный шаг - bounded one-shot drain на `100` items, без включения long-running `detail-worker` service.

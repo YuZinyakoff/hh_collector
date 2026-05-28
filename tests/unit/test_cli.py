@@ -35,6 +35,8 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "run-housekeeping" in captured.out
     assert "export-retention-archive" in captured.out
     assert "sync-retention-archive-offsite" in captured.out
+    assert "export-research-archive" in captured.out
+    assert "verify-research-archive" in captured.out
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "run-once-v2" in captured.out
@@ -101,6 +103,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             housekeeping_archive_offsite_password="secret",
             housekeeping_archive_offsite_timeout_seconds=90.0,
             housekeeping_delete_limit_per_target=5000,
+            research_archive_dir=".state/archive/research",
         ),
     )
     monkeypatch.setattr("sys.argv", ["hhru-platform", "health-check"])
@@ -149,6 +152,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "housekeeping_archive_offsite_auth_mode=basic" in captured.out
     assert "housekeeping_archive_offsite_timeout_seconds=90.0" in captured.out
     assert "housekeeping_delete_limit_per_target=5000" in captured.out
+    assert "research_archive_dir=.state/archive/research" in captured.out
 
 
 def test_run_once_cli_prints_summary(monkeypatch, capsys) -> None:
@@ -1233,13 +1237,11 @@ def test_show_run_tree_cli_prints_nested_partition_rows(monkeypatch, capsys) -> 
     assert "shown_rows=2" in captured.out
     assert (
         "partition="
-        f"{root_partition_id} parent=- depth=0 scope_key=area:113 status=split_done"
-        in captured.out
+        f"{root_partition_id} parent=- depth=0 scope_key=area:113 status=split_done" in captured.out
     )
     assert (
         "  partition="
-        f"{child_partition_id} parent={root_partition_id} depth=1 scope_key=area:1"
-        in captured.out
+        f"{child_partition_id} parent={root_partition_id} depth=1 scope_key=area:1" in captured.out
     )
 
 
@@ -1599,8 +1601,7 @@ def test_run_list_engine_v2_cli_prints_run_summary(monkeypatch, capsys) -> None:
         assert command.partition_limit == 2
         assert crawl_run_repository.__class__.__name__ == "_SessionlessCrawlRunRepository"
         assert (
-            crawl_partition_repository.__class__.__name__
-            == "_SessionlessCrawlPartitionRepository"
+            crawl_partition_repository.__class__.__name__ == "_SessionlessCrawlPartitionRepository"
         )
         assert callable(process_partition_v2_step)
         return SimpleNamespace(
@@ -2164,7 +2165,9 @@ def test_export_retention_archive_cli_prints_summary(monkeypatch, capsys) -> Non
                     archive_size_bytes=512,
                     archive_sha256="abc123",
                     archive_file=Path(".state/archive/retention/raw_api_payload/chunk.jsonl.gz"),
-                    manifest_file=Path(".state/archive/retention/raw_api_payload/chunk.manifest.json"),
+                    manifest_file=Path(
+                        ".state/archive/retention/raw_api_payload/chunk.manifest.json"
+                    ),
                     limited=True,
                 ),
                 SimpleNamespace(
@@ -2177,7 +2180,9 @@ def test_export_retention_archive_cli_prints_summary(monkeypatch, capsys) -> Non
                     archive_size_bytes=256,
                     archive_sha256="def456",
                     archive_file=Path(".state/archive/retention/vacancy_snapshot/chunk.jsonl.gz"),
-                    manifest_file=Path(".state/archive/retention/vacancy_snapshot/chunk.manifest.json"),
+                    manifest_file=Path(
+                        ".state/archive/retention/vacancy_snapshot/chunk.manifest.json"
+                    ),
                     limited=False,
                 ),
             ),

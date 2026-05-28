@@ -62,6 +62,9 @@ Current status:
 - One real VPS S3 drill succeeded on 2026-05-23: remote parts were downloaded,
   assembled dump passed `backup_sha256`, and core tables were restored into
   `hhru_platform_restore_drill`.
+- Local dump retention exists through `HHRU_BACKUP_RETENTION_DAYS` and runs when
+  a new backup is created.
+- S3/offsite retention delete policy is not automated yet.
 
 The DB backup contour is considered adequate only after these checks are in place:
 
@@ -82,6 +85,8 @@ artifact, so the right format is PostgreSQL custom dump plus manifest and checks
 Purpose: preserve the long-term dataset for future analysis independently from
 the live operational database.
 
+Format contract: [research-archive-v1.md](/home/yurizinyakov/projects/hh_collector/docs/ops/research-archive-v1.md).
+
 This is the data product of the project. It must be:
 
 - append-only or immutable by convention;
@@ -94,22 +99,18 @@ Candidate S3 layout:
 
 ```text
 s3://<bucket>/hhru-platform/research-archive/v1/
-  raw_api_payload/
-    year=2026/month=05/day=23/
-      chunk-000001.jsonl.gz
-      chunk-000001.manifest.json
-  vacancy_snapshot/
-    year=2026/month=05/day=23/
-      chunk-000001.parquet
-      chunk-000001.manifest.json
-  vacancy_current_state/
+  bronze/raw_api_payload/
+    request_type=vacancy_detail/year=2026/month=05/day=23/
+      20260523T000000Z-chunk-000001.jsonl.gz
+      20260523T000000Z-chunk-000001.manifest.json
+  silver/vacancy_snapshot/
+    snapshot_type=detail/year=2026/month=05/day=23/
+      20260523T000000Z-chunk-000001.jsonl.gz
+      20260523T000000Z-chunk-000001.manifest.json
+  silver/vacancy_current_state/
     snapshot_date=2026-05-23/
-      chunk-000001.parquet
-      chunk-000001.manifest.json
-  detail_fetch_attempt/
-    year=2026/month=05/
-      chunk-000001.parquet
-      chunk-000001.manifest.json
+      20260523T000000Z-chunk-000001.jsonl.gz
+      20260523T000000Z-chunk-000001.manifest.json
   inventory/
     archive-inventory.jsonl
 ```
@@ -161,19 +162,82 @@ Live DB rows may be deleted by housekeeping only after the archive contour prove
 Until this exists, S3 should be treated as backup/offsite storage, not as the
 trusted research archive.
 
-## 6. Immediate next steps
+## 6. S3 retention policy decision
+
+Decision on 2026-05-26: S3 must be automated, but backup retention and research
+archive retention are intentionally different policies.
+
+### DB backup offsite policy
+
+DB backups are operational recovery artifacts for live PostgreSQL. They are not
+the long-term research dataset.
+
+Use S3 backups for:
+
+- disaster recovery after VPS/DB loss;
+- rollback point before schema migrations;
+- rollback point before destructive cleanup;
+- milestone evidence after major production sweeps.
+
+Recommended automation:
+
+- upload and verify a DB backup after important events: successful search sweep,
+  large detail drain, schema migration, before destructive cleanup;
+- during active production periods, run periodic backup/offsite, e.g. daily;
+- during quiet steady mode, weekly may be enough;
+- keep bounded generations, not all dumps forever:
+  - last `3` verified backups;
+  - last `4` weekly backups;
+  - explicitly marked milestone backups;
+- do not delete an old remote backup unless newer backup upload and remote verify
+  succeeded, and periodic offsite restore drill remains green.
+
+Open tooling item: implement S3 backup retention delete for the `backups/` prefix,
+including safe deletion of `*.parts/`, remote manifest and local sidecar receipts.
+
+### Research archive policy
+
+Research archive is the cold, long-term data product. It should not use DB dump
+retention semantics.
+
+Use S3 research archive for:
+
+- settled raw API payloads as canonical `jsonl.gz`;
+- manifests, checksums and source row ranges;
+- inventory of archive bundles;
+- later analytical Parquet datasets generated from canonical raw/normalized data.
+
+Recommended automation:
+
+- write only completed/settled bundles: completed search run, completed detail
+  catch-up, or time partitions older than a safety window;
+- verify remote manifest, sizes and checksums/readback before considering live DB
+  cleanup;
+- treat bundles as immutable by convention;
+- do not age-delete normal research archive data. Delete only explicitly bad,
+  superseded or test bundles after operator review.
+
+Pilot/test corpus policy:
+
+- current VPS corpus is evidence for throughput/storage/restore behavior;
+- it may be preserved as one milestone backup/archive evidence bundle;
+- it must not be mixed into canonical production archive without explicit labeling.
+
+## 7. Immediate next steps
 
 For DB backup contour:
 
 1. Run `verify-backup-offsite` after every `backup-offsite`.
 2. Run `backup-offsite-restore-drill` periodically, especially after changing backup
    format, S3 settings, Postgres version, or retention policy.
-3. Define local backup retention after successful S3 upload and restore drill.
+3. Keep local backup retention enabled through `HHRU_BACKUP_RETENTION_DAYS`.
+4. Define and automate S3/offsite backup retention after production backup cadence
+   is finalized.
 
 For research archive contour:
 
-1. Write `research-archive-v1` format contract.
-2. Keep current JSONL.GZ retention export as the canonical raw archive MVP.
-3. Add S3 backend to retention archive offsite sync.
-4. Add archive inventory.
+1. Run small Archive v1 local smoke with `export-research-archive --limit-per-dataset`.
+2. Keep JSONL.GZ as the canonical raw Archive v1 format.
+3. Add S3 upload and remote verification for research archive bundles.
+4. Keep append-only archive inventory.
 5. Add Parquet export only after the v1 dataset schemas are named and stable.

@@ -7,9 +7,9 @@ ARGS ?=
 	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop worker-detail \
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli \
-	run-backup-offsite-restore-drill \
+	run-backup-offsite-restore-drill run-export-research-archive run-verify-research-archive \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite backup-offsite-restore-drill detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive detail-worker-measurement \
 	vps-first-detail-measurement \
 	soak-test soak-test-no-build
 
@@ -91,6 +91,12 @@ verify-backup-offsite-cli:
 run-backup-offsite-restore-drill:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
 
+run-export-research-archive:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main export-research-archive $(ARGS)
+
+run-verify-research-archive:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-research-archive $(ARGS)
+
 compose-health:
 	$(COMPOSE) --profile ops run --rm app health-check
 
@@ -124,6 +130,12 @@ verify-backup-offsite:
 
 backup-offsite-restore-drill:
 	$(COMPOSE) --profile ops run --rm app run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
+
+export-research-archive:
+	$(COMPOSE) --profile ops run --rm app export-research-archive $(ARGS)
+
+verify-research-archive:
+	$(COMPOSE) --profile ops run --rm app verify-research-archive $(ARGS)
 
 soak-test:
 	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor scheduler

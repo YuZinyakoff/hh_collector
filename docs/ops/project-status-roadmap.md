@@ -1,6 +1,6 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-05-23.
+Дата среза: 2026-05-27.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -11,8 +11,9 @@
 1. `project-status-roadmap.md` - текущий статус, порядок работ и ближайшие решения.
 2. `backup-restore-drill.md` - operator runbook для backup, S3 offsite и restore drill.
 3. `storage-contours.md` - разделение provider snapshot, PostgreSQL backup и research archive.
-4. `first-detail-backlog.md` - detail backlog и worker semantics.
-5. `observability.md` - alerts, metrics, Prometheus/Grafana contour.
+4. `research-archive-v1.md` - contract для компактного и анализируемого archive layer.
+5. `first-detail-backlog.md` - detail backlog и worker semantics.
+6. `observability.md` - alerts, metrics, Prometheus/Grafana contour.
 
 Остальные документы являются detail plans или historical context. Если они конфликтуют
 с этим roadmap, приоритет у этого файла.
@@ -43,21 +44,40 @@ restore validation и в фазе supervised `first-detail` throughput/storage e
   загружен частями за ~82s, повторный запуск idempotent (`skipped_backup_count=1`),
   remote size verification прошёл (`verified_object_count=35`), offsite restore drill
   из S3 copy успешно восстановил core schema в отдельную DB.
+- first-detail worker bottleneck найден и исправлен: high-cardinality upstream
+  metrics по `/vacancies/<hh_id>` раздували file-backed metrics state и тормозили
+  service-mode detail drain;
+- после normalizing detail upstream endpoint до `/vacancies/{vacancy_id}` VPS
+  measurement показал `~4.5k detail requests/hour` на `scale=1` и
+  `~8.9k detail requests/hour` на `scale=2`, без retryable failures, expired
+  leases и роста metrics file.
+- `scale=3`, `batch=100`, `interval=60` validated как catch-up режим:
+  sustained throughput около `14k detail requests/hour`, `expired_leases=0`,
+  `failed_states=0`, metrics file остаётся килобайтным.
 
-Текущий статус не равен production readiness. Корректная формулировка: full search
-coverage operationally validated, backup/offsite restore contour operationally
-validated, но `first-detail` throughput, storage routine, research archive contour
-и unattended production routine ещё не доказаны.
+Текущий статус не равен full production readiness. Корректная формулировка:
+full search coverage operationally validated, backup/offsite restore contour
+operationally validated, first-detail catch-up throughput предварительно
+validated на `scale=3`, но storage routine, research archive contour и
+unattended production routine ещё не доказаны.
+
+Важное ограничение текущего корпуса: данные на VPS являются pilot/test corpus,
+полученным из не свежего search snapshot и серии operational experiments. Его
+можно использовать для проверки throughput, storage growth, backup/restore и
+archive tooling, но нельзя считать canonical production dataset. Перед sustained
+production collection нужен clean production start или явно отделённый pilot
+corpus.
 
 ## 2. Что Ещё Не Доказано
 
-- Полный first-detail drain на масштабе baseline.
-- Sustained detail throughput/storage growth на длинном supervised run.
+- Полный first-detail drain на масштабе свежего production search snapshot.
+- Sustained detail throughput/storage growth на production routine, а не только
+  на pilot/test corpus.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
 - Backup retention и cleanup routine: backup/offsite contour работает, но retention
-  policy и operator cleanup ещё нужно зафиксировать.
-- Prometheus retention: текущий Prometheus volume уже может съедать десятки GiB,
-  retention должен быть ограничен как технический observability контур.
+  policy для S3/offsite и sidecar cleanup ещё нужно зафиксировать.
+- Prometheus retention: фактически применён на VPS, volume в пределах configured
+  size limit.
 - Многодневная unattended stability на VPS.
 - Месячный production режим с backup, housekeeping, offsite archive и operator routine.
 
@@ -70,8 +90,8 @@ validated, но `first-detail` throughput, storage routine, research archive con
 | Search runtime | validated, partially hardened | search-only baseline successful; HH `502` показал gap в 5xx retry/classification |
 | Resume failed search run | MVP ready | умеет продолжать failed terminal search branches |
 | Detail same-run budget | ready as bounded contour | не является completeness guarantee |
-| First-detail backlog | MVP ready | следующий шаг: VPS bounded measurement |
-| Detail worker | MVP ready | есть one-shot и loop, пока без full-scale unattended proof |
+| First-detail backlog | VPS catch-up validated on pilot corpus | `scale=3`, `batch=100` validated as supervised catch-up mode |
+| Detail worker | MVP ready, supervised scale=3 validated | есть one-shot и loop, пока без multi-day unattended proof |
 | Backup / restore drill | VPS validated | post-baseline backup, verify и restore-drill прошли |
 | DB backup offsite | S3 end-to-end validated | Timeweb cold S3 upload, idempotency, remote size verify и offsite restore drill работают |
 | Retention archive / offsite sync | partially validated | retention bundle sync работает; нужен S3 backend, inventory и readback drill |
@@ -84,28 +104,57 @@ validated, но `first-detail` throughput, storage routine, research archive con
 
 Непосредственный порядок работ после S3 offsite restore drill:
 
-1. Закрыть backup contour hygiene:
+1. Закончить текущий first-detail pilot measurement без смешивания контуров:
+   - `detail-worker scale=3`, `batch=100`, `interval=60` можно оставить до
+     завершения pilot backlog или до следующего контрольного окна;
+   - использовать результат как throughput/storage evidence, а не как production
+     dataset;
+   - после завершения или остановки pilot drain снизить steady mode до
+     `scale=1-2`, если нет свежего production backlog.
+2. Закрыть backup contour hygiene:
    - факт successful VPS offsite restore drill записан;
-   - удалить `hhru_platform_restore_drill`, если DB не нужна для расследования;
-   - зафиксировать local/S3 backup retention policy.
-2. Ограничить Prometheus retention:
-   - Prometheus является техническим observability contour, не research archive;
-   - старые графики можно потерять, чтобы не сжигать диск;
-   - compose поддерживает `HHRU_PROMETHEUS_RETENTION_TIME=7d` и
-     `HHRU_PROMETHEUS_RETENTION_SIZE=8GB`; применить change на VPS и проверить
-     размер `hh_collector_prometheus_data`.
-3. Вернуться к detail throughput experiments:
-   - зафиксировать sustained single-worker baseline для `batch=500`, `interval=60`;
-   - применить migration с first-detail claim/lease на VPS;
-   - провести controlled 2-worker test только после проверки `ready_backlog`
-     и отсутствия duplicate selected rows;
-   - фиксировать HH latency, retryable failures, terminal_404, DB growth, disk growth;
-   - не включать production search schedule до понимания устойчивого detail режима.
+   - restore-drill DB уже отсутствует на VPS check 2026-05-26;
+   - local dump retention уже реализован и на VPS настроен на `14` дней;
+   - S3/offsite backup upload/verify/restore-drill проверены;
+   - S3/offsite policy decision: automate bounded backup generations, not
+     infinite DB dump storage;
+   - open tooling item: implement S3 backup retention delete and sidecar cleanup.
+3. Prometheus retention считается закрытым на 2026-05-26:
+   - running flags: `7d` и `8GB`;
+   - `hh_collector_prometheus_data`: `5.5G`;
+   - volume reset не требуется.
 4. Спроектировать research archive v1:
+   - contract записан в `research-archive-v1.md`;
    - raw payload archive как canonical `jsonl.gz`;
-   - Parquet только для аналитических normalized datasets;
+   - silver/index datasets для анализа без full raw JSON scans;
+   - Parquet только как later analytical layer;
    - S3 layout, manifests, inventory и readback safety before delete.
-5. После этого переходить к supervised week/month unattended routine.
+5. Реализовать archive foundation, без research analytics:
+   - local export, manifest, inventory реализованы в коде;
+   - local validation реализована через `verify-research-archive`;
+   - next: small smoke на pilot corpus с `--limit-per-dataset`;
+   - next: S3 upload/verify/readback;
+   - tiny proof-of-read smoke only;
+   - не делать text features, AI exposure, panels, econometrics или Parquet в
+     первом implementation slice.
+6. Проверить search interference:
+   - controlled search with detail-worker off/on;
+   - подтвердить, что detail catch-up не деградирует search coverage и runtime.
+7. Зафиксировать clean production start procedure:
+   - решить, что делать с pilot/test corpus: оставить как archived evidence,
+     снести live DB после verified backup/offsite, или поднять новую production DB;
+   - destructive cleanup допустим только после backup, verify, offsite upload,
+     offsite verify и restore drill;
+   - новый production run должен стартовать из явно чистого состояния или с
+     явно помеченной историей, чтобы не смешивать pilot и production metrics/data.
+8. После этого переходить к supervised multi-day unattended routine:
+   - 3-7 дней без ручного вмешательства;
+   - должны штатно работать search/detail/backup/offsite/alerts/retention;
+   - контролировать failed states, expired leases, stale scheduler, disk,
+     Prometheus volume, logs, metrics file и throughput degradation.
+9. После successful multi-day proof запускать sustained production collection
+   с нуля: регулярный search, параллельный detail catch-up, backups, offsite,
+   alerts, retention и operator runbook.
 
 ## 5. Detailed Roadmap
 
@@ -234,6 +283,8 @@ VPS observation 2026-05-24:
   transport failure retry;
 - текущая leading hypothesis: HH/upstream/IP/auth/network path имеет общий
   sustained budget, который несколько worker-ов делят между собой.
+- этот вывод был superseded 2026-05-25: основным bottleneck оказался
+  high-cardinality metrics state, а не внешний upstream budget.
 
 VPS observation 2026-05-25:
 
@@ -247,13 +298,44 @@ VPS observation 2026-05-25:
   the file-backed metrics state to grow with every vacancy. The fix is to collapse
   detail upstream metrics to `/vacancies/{vacancy_id}` and compact existing state
   on read/write.
+- after deploying the metrics fix, controlled `scale=1`, `batch=100`,
+  `interval=60` measurement showed `2200` requests in about `29m`,
+  `4545.1 requests/hour`, `latency_p50=126ms`, `latency_p95=349ms`,
+  `gap_p50=0.157s`, `gap_p95=0.418s`, metrics file about `3.1K`;
+- controlled `scale=2`, same batch/interval, showed `4434` requests in about
+  `30m`, `8875.3 requests/hour`, `latency_p50=125ms`, `latency_p95=319ms`,
+  `gap_p50=0.108s`, `gap_p95=0.254s`;
+- safety checks after the `scale=2` measurement: `expired_leases=0`,
+  `failed_states=0`, metrics file about `3.2K`;
+- preliminary production catch-up mode is favorable at `scale=2`; with backlog
+  around `674k`, expected cold backlog drain time is roughly `3.1-3.3 days`
+  if the rate holds.
+
+VPS observation 2026-05-26:
+
+- controlled `scale=3`, `batch=100`, `interval=60` night run showed `171500`
+  requests from `2026-05-25T20:06:36Z` to `2026-05-26T08:01:21Z`,
+  `14396.6 requests/hour`, `latency_p50=96ms`, `latency_p95=180ms`,
+  `gap_p50=0.111s`, `gap_p95=0.209s`;
+- safety checks: `expired_leases=0`, `failed_states=0`, active cooldown backlog
+  `0`, metrics file about `4.1K`;
+- later live control still held: last `30m` throughput `14014.2 requests/hour`,
+  `latency_p50=96ms`, `latency_p95=235ms`, `expired_leases=0`,
+  `failed_states=0`, metrics file about `4.1K`;
+- `scale=3` is validated as pilot catch-up mode. It should not automatically
+  become steady mode after pilot backlog is drained; steady mode should be
+  right-sized after measuring fresh production search + detail interference.
+- current corpus is pilot/test data. It is useful evidence for system behavior,
+  but production collection should start from a clean or explicitly separated
+  state.
 
 Next experiment plan:
 
 1. Не делить backlog на lanes/run/priority до ясной telemetry картины.
-2. Измерить latency/gap baseline на `scale=1`, `batch=100`, application token.
-3. Сравнить `scale=1/2/3` при одинаковом batch и 60-90 минутном window.
-4. Сравнить `batch=50/100/250/500` отдельно от scale.
+2. Дать `scale=3` завершить или остановить pilot drain, если дальнейший test corpus
+   не нужен.
+3. Закрыть Prometheus и backup retention.
+4. Спроектировать research archive v1 и clean production start procedure.
 5. Проверить search interference: detail-worker on/off during controlled search.
 
 Go/no-go:
@@ -280,5 +362,6 @@ Go/no-go:
 - [current-readiness.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-readiness.md)
 - [vps-pilot-checklist.md](/home/yurizinyakov/projects/hh_collector/docs/ops/vps-pilot-checklist.md)
 - [first-detail-backlog.md](/home/yurizinyakov/projects/hh_collector/docs/ops/first-detail-backlog.md)
+- [research-archive-v1.md](/home/yurizinyakov/projects/hh_collector/docs/ops/research-archive-v1.md)
 - [hh-api-completeness-implementation-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-completeness-implementation-plan.md)
 - [testing-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/testing-plan.md)

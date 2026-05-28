@@ -27,6 +27,9 @@ from hhru_platform.infrastructure.db.repositories.professional_role_repo import 
 from hhru_platform.infrastructure.db.repositories.raw_payload_repo import (
     SqlAlchemyRawApiPayloadRepository,
 )
+from hhru_platform.infrastructure.db.repositories.research_archive_repo import (
+    SqlAlchemyResearchArchiveRepository,
+)
 from hhru_platform.infrastructure.db.repositories.vacancy_current_state_repo import (
     SqlAlchemyVacancyCurrentStateRepository,
 )
@@ -56,6 +59,7 @@ __all__ = [
     "SqlAlchemyHousekeepingRepository",
     "SqlAlchemyProfessionalRoleRepository",
     "SqlAlchemyRawApiPayloadRepository",
+    "SqlAlchemyResearchArchiveRepository",
     "SqlAlchemyVacancyCurrentStateRepository",
     "SqlAlchemyVacancyProfessionalRoleRepository",
     "SqlAlchemyVacancyRepository",

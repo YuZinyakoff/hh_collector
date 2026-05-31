@@ -13,11 +13,20 @@ from hhru_platform.application.commands.export_research_archive import (
     ExportResearchArchiveCommand,
     export_research_archive,
 )
+from hhru_platform.application.commands.sync_research_archive_offsite import (
+    SyncResearchArchiveOffsiteCommand,
+    sync_research_archive_offsite,
+)
 from hhru_platform.application.commands.verify_research_archive import (
     VerifyResearchArchiveCommand,
     verify_research_archive,
 )
+from hhru_platform.application.commands.verify_research_archive_offsite import (
+    VerifyResearchArchiveOffsiteCommand,
+    verify_research_archive_offsite,
+)
 from hhru_platform.infrastructure.research_archive import (
+    LocalResearchArchiveOffsiteUploadReceiptStore,
     LocalResearchArchiveStore,
     ResearchArchiveManifestVerifier,
 )
@@ -75,6 +84,25 @@ class FakeResearchArchiveRepository:
             }
         else:
             raise AssertionError(f"unexpected dataset: {dataset}")
+
+
+class FakeResearchArchiveRemoteStore:
+    def __init__(self) -> None:
+        self.upload_calls: list[tuple[str, bytes]] = []
+        self.download_calls: list[tuple[str, str]] = []
+        self.objects_by_remote_path: dict[str, bytes] = {}
+
+    def upload_file(self, *, local_file: Path, remote_path: str) -> None:
+        payload = local_file.read_bytes()
+        self.upload_calls.append((remote_path, payload))
+        self.objects_by_remote_path[remote_path] = payload
+
+    def get_file_size(self, *, remote_path: str) -> int:
+        return len(self.objects_by_remote_path[remote_path])
+
+    def download_file(self, *, local_file: Path, remote_path: str) -> None:
+        self.download_calls.append((remote_path, str(local_file)))
+        local_file.write_bytes(self.objects_by_remote_path[remote_path])
 
 
 def test_export_research_archive_writes_manifest_inventory_and_verifies(
@@ -152,6 +180,153 @@ def test_export_research_archive_writes_manifest_inventory_and_verifies(
     assert verify_result.scanned_manifest_count == 2
     assert verify_result.verified_manifest_count == 2
     assert verify_result.total_row_count == 2
+
+
+def test_sync_and_verify_research_archive_offsite(
+    tmp_path: Path,
+) -> None:
+    repository = FakeResearchArchiveRepository()
+    archive_dir = tmp_path / "research"
+    export_result = export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload", "silver/vacancy_current_state"),
+            chunk_size=10,
+            batch_size=100,
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        ),
+        research_archive_repository=repository,
+        research_archive_store=LocalResearchArchiveStore(),
+    )
+    remote_store = FakeResearchArchiveRemoteStore()
+    receipt_store = LocalResearchArchiveOffsiteUploadReceiptStore()
+
+    result = sync_research_archive_offsite(
+        SyncResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+            synced_at=datetime(2026, 5, 28, 10, 0, tzinfo=UTC),
+        ),
+        offsite_uploader=remote_store,
+        receipt_store=receipt_store,
+    )
+
+    manifest_paths = {
+        manifest.relative_to(archive_dir).as_posix()
+        for summary in export_result.summaries
+        for manifest in summary.manifest_files
+    }
+    data_paths = {
+        data_file.relative_to(archive_dir).as_posix()
+        for summary in export_result.summaries
+        for data_file in summary.data_files
+    }
+    assert result.status == "succeeded"
+    assert result.scanned_manifest_count == 2
+    assert result.uploaded_manifest_count == 2
+    assert result.skipped_manifest_count == 0
+    assert result.inventory_uploaded is True
+    assert {remote_path for remote_path, _ in remote_store.upload_calls} == {
+        *manifest_paths,
+        *data_paths,
+        "v1/inventory/archive-inventory.jsonl",
+    }
+    assert all(
+        Path(f"{summary.manifest_file}.offsite.json").exists() for summary in result.summaries
+    )
+
+    second_result = sync_research_archive_offsite(
+        SyncResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+            synced_at=datetime(2026, 5, 28, 11, 0, tzinfo=UTC),
+        ),
+        offsite_uploader=remote_store,
+        receipt_store=receipt_store,
+    )
+
+    assert second_result.uploaded_manifest_count == 0
+    assert second_result.skipped_manifest_count == 2
+    assert second_result.inventory_uploaded is True
+
+    verify_result = verify_research_archive_offsite(
+        VerifyResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            readback_limit=1,
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+    )
+
+    assert verify_result.status == "succeeded"
+    assert verify_result.scanned_manifest_count == 2
+    assert verify_result.verified_manifest_count == 2
+    assert verify_result.verified_object_count == 5
+    assert verify_result.readback_count == 1
+    assert verify_result.readbacks[0].row_count == 1
+
+
+def test_limited_research_archive_offsite_sync_does_not_upload_inventory(
+    tmp_path: Path,
+) -> None:
+    repository = FakeResearchArchiveRepository()
+    archive_dir = tmp_path / "research"
+    export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload", "silver/vacancy_current_state"),
+            chunk_size=10,
+            batch_size=100,
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        ),
+        research_archive_repository=repository,
+        research_archive_store=LocalResearchArchiveStore(),
+    )
+    remote_store = FakeResearchArchiveRemoteStore()
+
+    sync_result = sync_research_archive_offsite(
+        SyncResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            limit=1,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+        ),
+        offsite_uploader=remote_store,
+        receipt_store=LocalResearchArchiveOffsiteUploadReceiptStore(),
+    )
+
+    assert sync_result.scanned_manifest_count == 1
+    assert sync_result.inventory_uploaded is False
+    assert "v1/inventory/archive-inventory.jsonl" not in remote_store.objects_by_remote_path
+
+    verify_result = verify_research_archive_offsite(
+        VerifyResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            limit=1,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            readback_limit=1,
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+    )
+
+    assert verify_result.scanned_manifest_count == 1
+    assert verify_result.verified_object_count == 2
+    assert verify_result.readback_count == 1
 
 
 def test_verify_research_archive_detects_checksum_mismatch(tmp_path: Path) -> None:

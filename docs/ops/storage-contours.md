@@ -128,8 +128,11 @@ Current status:
   `archive_kind=tool_validation`.
 - Smoke bundle: `6000` rows, `13` chunks, `5212503` data bytes, `13/13`
   manifests verified.
-- S3 upload, remote verification and readback for research archive bundles are
-  not implemented yet.
+- S3 upload, remote verification and bounded readback tooling is implemented in
+  code on 2026-05-29, but VPS remote smoke has not been run yet.
+- Inventory is uploaded only on full sync. Partial syncs with `--limit` or
+  explicit manifests upload data/manifest objects only, to avoid a remote
+  inventory that references chunks not yet present in S3.
 
 ## 4. Parquet policy
 
@@ -252,6 +255,6 @@ For research archive contour:
 1. Local Archive v1 smoke passed on 2026-05-28; repeat it after archive schema or
    serialization changes.
 2. Keep JSONL.GZ as the canonical raw Archive v1 format.
-3. Add S3 upload and remote verification for research archive bundles.
+3. Run S3 upload/remote verification/readback smoke for research archive bundles.
 4. Keep append-only archive inventory.
 5. Add Parquet export only after the v1 dataset schemas are named and stable.

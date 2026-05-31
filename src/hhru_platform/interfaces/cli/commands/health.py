@@ -49,16 +49,10 @@ def handle_health_check(_: argparse.Namespace) -> int:
         "alert_webhook_endpoint="
         f"http://{settings.alert_webhook_host}:{settings.alert_webhook_port}/alertmanager"
     )
-    print(
-        "alert_telegram_configured="
-        f"{'yes' if _is_alert_telegram_configured(settings) else 'no'}"
-    )
+    print(f"alert_telegram_configured={'yes' if _is_alert_telegram_configured(settings) else 'no'}")
     print(f"backup_dir={settings.backup_dir}")
     print(f"backup_retention_days={settings.backup_retention_days}")
-    print(
-        "backup_restore_drill_target_db="
-        f"{settings.backup_restore_drill_target_db}"
-    )
+    print(f"backup_restore_drill_target_db={settings.backup_restore_drill_target_db}")
     print(
         "backup_restore_drill_drop_existing="
         f"{'yes' if settings.backup_restore_drill_drop_existing else 'no'}"
@@ -74,10 +68,7 @@ def handle_health_check(_: argparse.Namespace) -> int:
     print(f"backup_offsite_auth_mode={backup_offsite_auth_mode}")
     print(f"backup_offsite_timeout_seconds={settings.backup_offsite_timeout_seconds}")
     print(f"backup_offsite_chunk_size_bytes={settings.backup_offsite_chunk_size_bytes}")
-    print(
-        "backup_offsite_s3_endpoint_url="
-        f"{settings.backup_offsite_s3_endpoint_url or '-'}"
-    )
+    print(f"backup_offsite_s3_endpoint_url={settings.backup_offsite_s3_endpoint_url or '-'}")
     print(f"backup_offsite_s3_bucket={settings.backup_offsite_s3_bucket or '-'}")
     print(f"backup_offsite_s3_region={settings.backup_offsite_s3_region}")
     print(
@@ -104,10 +95,7 @@ def handle_health_check(_: argparse.Namespace) -> int:
         "housekeeping_report_artifact_retention_days="
         f"{settings.housekeeping_report_artifact_retention_days}"
     )
-    print(
-        "housekeeping_report_artifact_dir="
-        f"{settings.housekeeping_report_artifact_dir}"
-    )
+    print(f"housekeeping_report_artifact_dir={settings.housekeeping_report_artifact_dir}")
     print(f"housekeeping_archive_dir={settings.housekeeping_archive_dir}")
     auth_mode = "none"
     if settings.housekeeping_archive_offsite_bearer_token:
@@ -128,11 +116,27 @@ def handle_health_check(_: argparse.Namespace) -> int:
         "housekeeping_archive_offsite_timeout_seconds="
         f"{settings.housekeeping_archive_offsite_timeout_seconds}"
     )
-    print(
-        "housekeeping_delete_limit_per_target="
-        f"{settings.housekeeping_delete_limit_per_target}"
-    )
+    print(f"housekeeping_delete_limit_per_target={settings.housekeeping_delete_limit_per_target}")
     print(f"research_archive_dir={settings.research_archive_dir}")
+    research_archive_offsite_auth_mode = _research_archive_offsite_auth_mode(settings)
+    print(f"research_archive_offsite_backend={settings.research_archive_offsite_backend}")
+    print(
+        "research_archive_offsite_configured="
+        f"{'yes' if _is_research_archive_offsite_configured(settings) else 'no'}"
+    )
+    print(f"research_archive_offsite_url={_research_archive_offsite_url(settings) or '-'}")
+    print(f"research_archive_offsite_root={settings.research_archive_offsite_root}")
+    print(f"research_archive_offsite_auth_mode={research_archive_offsite_auth_mode}")
+    print(
+        "research_archive_offsite_s3_endpoint_url="
+        f"{_research_archive_s3_endpoint_url(settings) or '-'}"
+    )
+    print(f"research_archive_offsite_s3_bucket={_research_archive_s3_bucket(settings) or '-'}")
+    print(f"research_archive_offsite_s3_region={_research_archive_s3_region(settings)}")
+    print(
+        "research_archive_offsite_s3_access_key_configured="
+        f"{'yes' if _research_archive_s3_access_key_id(settings) else 'no'}"
+    )
     print(f"detail_worker_batch_size={settings.detail_worker_batch_size}")
     print(f"detail_worker_interval_seconds={settings.detail_worker_interval_seconds}")
     print(
@@ -140,10 +144,7 @@ def handle_health_check(_: argparse.Namespace) -> int:
         f"{'yes' if settings.detail_worker_include_inactive else 'no'}"
     )
     print(f"detail_worker_triggered_by={settings.detail_worker_triggered_by}")
-    print(
-        "detail_worker_retry_cooldown_seconds="
-        f"{settings.detail_worker_retry_cooldown_seconds}"
-    )
+    print(f"detail_worker_retry_cooldown_seconds={settings.detail_worker_retry_cooldown_seconds}")
     print(
         "detail_worker_max_retry_cooldown_seconds="
         f"{settings.detail_worker_max_retry_cooldown_seconds}"
@@ -185,19 +186,75 @@ def _backup_offsite_auth_mode(settings: Settings) -> str:
         ):
             return "s3"
         return "none"
-    if (
-        settings.backup_offsite_bearer_token
-        or settings.housekeeping_archive_offsite_bearer_token
-    ):
+    if settings.backup_offsite_bearer_token or settings.housekeeping_archive_offsite_bearer_token:
         return "bearer"
-    if (
-        settings.backup_offsite_username and settings.backup_offsite_password
-    ) or (
+    if (settings.backup_offsite_username and settings.backup_offsite_password) or (
         settings.housekeeping_archive_offsite_username
         and settings.housekeeping_archive_offsite_password
     ):
         return "basic"
     return "none"
+
+
+def _is_research_archive_offsite_configured(settings: Settings) -> bool:
+    if settings.research_archive_offsite_backend.strip().lower() != "s3":
+        return False
+    return bool(
+        _research_archive_s3_endpoint_url(settings)
+        and _research_archive_s3_bucket(settings)
+        and _research_archive_s3_access_key_id(settings)
+        and _research_archive_s3_secret_access_key(settings)
+    )
+
+
+def _research_archive_offsite_url(settings: Settings) -> str:
+    if settings.research_archive_offsite_backend.strip().lower() != "s3":
+        return ""
+    endpoint_url = _research_archive_s3_endpoint_url(settings).strip().rstrip("/")
+    bucket = _research_archive_s3_bucket(settings).strip()
+    if endpoint_url and bucket:
+        return f"{endpoint_url}/{bucket}"
+    return endpoint_url
+
+
+def _research_archive_offsite_auth_mode(settings: Settings) -> str:
+    if settings.research_archive_offsite_backend.strip().lower() != "s3":
+        return "none"
+    if _research_archive_s3_access_key_id(settings) and _research_archive_s3_secret_access_key(
+        settings
+    ):
+        return "s3"
+    return "none"
+
+
+def _research_archive_s3_endpoint_url(settings: Settings) -> str:
+    return (
+        settings.research_archive_offsite_s3_endpoint_url or settings.backup_offsite_s3_endpoint_url
+    )
+
+
+def _research_archive_s3_bucket(settings: Settings) -> str:
+    return settings.research_archive_offsite_s3_bucket or settings.backup_offsite_s3_bucket
+
+
+def _research_archive_s3_region(settings: Settings) -> str:
+    return (
+        settings.research_archive_offsite_s3_region or settings.backup_offsite_s3_region or "ru-1"
+    )
+
+
+def _research_archive_s3_access_key_id(settings: Settings) -> str | None:
+    return (
+        settings.research_archive_offsite_s3_access_key_id
+        or settings.backup_offsite_s3_access_key_id
+    )
+
+
+def _research_archive_s3_secret_access_key(settings: Settings) -> str | None:
+    return (
+        settings.research_archive_offsite_s3_secret_access_key
+        or settings.backup_offsite_s3_secret_access_key
+    )
 
 
 def _is_alert_telegram_configured(settings: Settings) -> bool:

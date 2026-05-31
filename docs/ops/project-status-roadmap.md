@@ -150,7 +150,8 @@ corpus.
    - local export, manifest, inventory реализованы в коде;
    - local validation реализована через `verify-research-archive`;
    - small VPS smoke на pilot corpus с `--limit-per-dataset` прошёл;
-   - next: S3 upload/verify/readback for research archive bundles;
+   - S3 upload/verify/readback tooling реализован для research archive bundles;
+   - next: VPS S3 smoke на `tool_validation` bundle;
    - tiny proof-of-read smoke only;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
@@ -365,7 +366,7 @@ VPS observation 2026-05-28:
 Next experiment plan:
 
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
-2. Реализовать S3 upload/verify/readback для research archive bundles.
+2. Прогнать VPS S3 upload/verify/readback smoke для research archive bundles.
 3. Закрыть S3 backup retention delete and sidecar cleanup.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search

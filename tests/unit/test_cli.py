@@ -37,6 +37,8 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "sync-retention-archive-offsite" in captured.out
     assert "export-research-archive" in captured.out
     assert "verify-research-archive" in captured.out
+    assert "sync-research-archive-offsite" in captured.out
+    assert "verify-research-archive-offsite" in captured.out
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "run-once-v2" in captured.out
@@ -104,6 +106,7 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
             housekeeping_archive_offsite_timeout_seconds=90.0,
             housekeeping_delete_limit_per_target=5000,
             research_archive_dir=".state/archive/research",
+            research_archive_offsite_root="/hhru-platform/research-archive",
         ),
     )
     monkeypatch.setattr("sys.argv", ["hhru-platform", "health-check"])
@@ -153,6 +156,15 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "housekeeping_archive_offsite_timeout_seconds=90.0" in captured.out
     assert "housekeeping_delete_limit_per_target=5000" in captured.out
     assert "research_archive_dir=.state/archive/research" in captured.out
+    assert "research_archive_offsite_backend=s3" in captured.out
+    assert "research_archive_offsite_configured=no" in captured.out
+    assert "research_archive_offsite_url=-" in captured.out
+    assert "research_archive_offsite_root=/hhru-platform/research-archive" in captured.out
+    assert "research_archive_offsite_auth_mode=none" in captured.out
+    assert "research_archive_offsite_s3_endpoint_url=-" in captured.out
+    assert "research_archive_offsite_s3_bucket=-" in captured.out
+    assert "research_archive_offsite_s3_region=ru-1" in captured.out
+    assert "research_archive_offsite_s3_access_key_configured=no" in captured.out
 
 
 def test_run_once_cli_prints_summary(monkeypatch, capsys) -> None:

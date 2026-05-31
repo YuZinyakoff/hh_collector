@@ -70,6 +70,16 @@ class Settings(BaseSettings):
     housekeeping_archive_offsite_timeout_seconds: float = 60.0
     housekeeping_delete_limit_per_target: int = 10_000
     research_archive_dir: str = ".state/archive/research"
+    research_archive_offsite_backend: str = "s3"
+    research_archive_offsite_root: str = "/hhru-platform/research-archive"
+    research_archive_offsite_s3_endpoint_url: str = ""
+    research_archive_offsite_s3_bucket: str = ""
+    research_archive_offsite_s3_region: str = ""
+    research_archive_offsite_s3_access_key_id: str | None = None
+    research_archive_offsite_s3_secret_access_key: str | None = Field(
+        default=None,
+        repr=False,
+    )
     detail_worker_batch_size: int = 100
     detail_worker_interval_seconds: float = 300.0
     detail_worker_include_inactive: bool = False

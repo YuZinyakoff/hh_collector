@@ -8,8 +8,9 @@ ARGS ?=
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli \
 	run-backup-offsite-restore-drill run-export-research-archive run-verify-research-archive \
+	run-sync-research-archive-offsite run-verify-research-archive-offsite \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite detail-worker-measurement \
 	vps-first-detail-measurement \
 	soak-test soak-test-no-build
 
@@ -97,6 +98,12 @@ run-export-research-archive:
 run-verify-research-archive:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-research-archive $(ARGS)
 
+run-sync-research-archive-offsite:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main sync-research-archive-offsite $(ARGS)
+
+run-verify-research-archive-offsite:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-research-archive-offsite $(ARGS)
+
 compose-health:
 	$(COMPOSE) --profile ops run --rm app health-check
 
@@ -136,6 +143,12 @@ export-research-archive:
 
 verify-research-archive:
 	$(COMPOSE) --profile ops run --rm app verify-research-archive $(ARGS)
+
+sync-research-archive-offsite:
+	$(COMPOSE) --profile ops run --rm app sync-research-archive-offsite $(ARGS)
+
+verify-research-archive-offsite:
+	$(COMPOSE) --profile ops run --rm app verify-research-archive-offsite $(ARGS)
 
 soak-test:
 	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor scheduler

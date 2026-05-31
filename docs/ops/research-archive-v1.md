@@ -459,21 +459,49 @@ Result:
   `silver/vacancy_current_state`.
 
 This smoke proves local Archive v1 export/verify mechanics. It does not make the
-pilot corpus canonical production data, and it does not prove S3 upload/readback
-for research archive bundles.
+pilot corpus canonical production data.
 
 ### Stage C: S3 upload and verification
 
-- Reuse S3 client patterns from backup offsite tooling.
-- Upload data files, manifests and inventory.
-- Verify remote existence and sizes.
-- Add readback command or readback mode.
-- Keep uploads idempotent through local receipts.
+- Implemented commands:
+  - `sync-research-archive-offsite`
+  - `verify-research-archive-offsite`
+- S3 client patterns are reused from backup offsite tooling.
+- Sync uploads data files and manifests; full sync also uploads inventory.
+- Partial sync via `--limit` or explicit `--manifest-file` deliberately does not
+  upload inventory, because inventory would point at chunks that may not yet be
+  present remotely.
+- Verify checks remote object sizes for selected manifests.
+- Verify performs bounded readback through `--readback-limit`: downloaded chunks
+  are checked for size, sha256 and gzip JSONL row count.
+- Uploads are idempotent through local per-manifest receipts:
+  `<chunk>.manifest.json.offsite.json`.
+
+VPS S3 smoke command for the existing small tool-validation bundle:
+
+```bash
+make sync-research-archive-offsite ARGS="--triggered-by vps-archive-offsite-smoke"
+make verify-research-archive-offsite ARGS="--readback-limit 2 --triggered-by vps-archive-offsite-smoke-verify"
+```
+
+For a bounded remote smoke on a large archive, use `--limit N`; note that this
+will not upload or verify inventory:
+
+```bash
+make sync-research-archive-offsite ARGS="--limit 5 --triggered-by vps-archive-offsite-smoke"
+make verify-research-archive-offsite ARGS="--limit 5 --readback-limit 2 --triggered-by vps-archive-offsite-smoke-verify"
+```
+
+Status on 2026-05-29:
+
+- Code and unit tests for S3 sync/verify/readback are implemented.
+- VPS remote smoke has not been run yet.
 
 ### Stage D: proof-of-read smoke
 
 This is not analytics product work. It only proves the archive is usable as a
-dataset.
+dataset. `verify-research-archive-offsite --readback-limit` is the first bounded
+proof-of-read smoke.
 
 - Read one `silver` chunk.
 - Print row count, min/max observed date and one or two distinct-count sanity

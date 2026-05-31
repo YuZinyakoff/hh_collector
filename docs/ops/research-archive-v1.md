@@ -433,12 +433,12 @@ make run-export-research-archive ARGS="--limit-per-dataset 1000 --chunk-size 500
 make run-verify-research-archive
 ```
 
-Status on 2026-05-27:
+Status after Stage B on 2026-05-27:
 
 - `export-research-archive` exists for the Stage A foundation datasets.
 - `verify-research-archive` exists for local manifest, gzip, checksum, row count
   and inventory validation.
-- S3 upload/readback is not implemented yet.
+- S3 upload/readback was not implemented yet at this stage.
 - Research analytics, Parquet and gold datasets remain intentionally out of scope.
 
 VPS smoke on 2026-05-28:
@@ -492,16 +492,30 @@ make sync-research-archive-offsite ARGS="--limit 5 --triggered-by vps-archive-of
 make verify-research-archive-offsite ARGS="--limit 5 --readback-limit 2 --triggered-by vps-archive-offsite-smoke-verify"
 ```
 
-Status on 2026-05-29:
+Status on 2026-05-31:
 
 - Code and unit tests for S3 sync/verify/readback are implemented.
-- VPS remote smoke has not been run yet.
+- VPS full S3 sync passed for the existing `tool_validation` bundle:
+  `uploaded_manifest_count=13`; data files, manifests and inventory were
+  uploaded under `/hhru-platform/research-archive`.
+- VPS remote verify passed: `verified_manifest_count=13`,
+  `verified_object_count=27`.
+- Bounded readback passed for `2/2` selected chunks: remote download, size,
+  sha256, gzip JSONL parse and row count were checked.
+- Repeated full sync was idempotent:
+  `candidate_manifest_count=0`, `uploaded_manifest_count=0`,
+  `skipped_manifest_count=13`. Full sync still refreshes inventory by design.
 
 ### Stage D: proof-of-read smoke
 
 This is not analytics product work. It only proves the archive is usable as a
 dataset. `verify-research-archive-offsite --readback-limit` is the first bounded
 proof-of-read smoke.
+
+Minimum object-level proof passed on VPS on 2026-05-31 with
+`--readback-limit 2`. A later silver semantic sanity read may be added when the
+first production archive bundle exists; it is not a blocker for the current
+archive foundation.
 
 - Read one `silver` chunk.
 - Print row count, min/max observed date and one or two distinct-count sanity

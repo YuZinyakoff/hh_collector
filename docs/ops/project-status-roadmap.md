@@ -1,6 +1,6 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-05-29.
+Дата среза: 2026-05-31.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -21,7 +21,7 @@
 ## 1. Где Мы Сейчас
 
 Проект находится после successful VPS `search-only` baseline, S3 backup/offsite
-restore validation, полного drain-а pilot `first-detail` backlog и первого local
+restore validation, полного drain-а pilot `first-detail` backlog и local/S3
 smoke research archive v1.
 
 Уже доказано:
@@ -67,12 +67,19 @@ smoke research archive v1.
 - research archive v1 local smoke прошёл на VPS как `archive_kind=tool_validation`:
   `6000` rows, `13` chunks, `5212503` data bytes, `13/13` manifests verified,
   local archive size около `5.2M`.
+- research archive v1 S3 offsite smoke прошёл на VPS для того же
+  `tool_validation` bundle: full sync загрузил `13` data objects, `13` manifests
+  и inventory; remote verify подтвердил `13/13` manifests и `27` remote objects;
+  bounded readback скачал и полностью проверил `2/2` chunks; повторный full sync
+  был idempotent: `candidate_manifest_count=0`, `uploaded_manifest_count=0`,
+  `skipped_manifest_count=13`, inventory штатно обновлён.
 
 Текущий статус не равен full production readiness. Корректная формулировка:
 full search coverage operationally validated, backup/offsite restore contour
 operationally validated, first-detail pilot backlog drained, research archive v1
-local export/verify smoke validated, но research archive S3 upload/readback,
-production storage routine и unattended production routine ещё не доказаны.
+local export/verify и S3 upload/verify/readback smoke validated на
+`tool_validation` bundle, но production archive cadence, production storage
+routine и unattended production routine ещё не доказаны.
 
 Важное ограничение текущего корпуса: данные на VPS являются pilot/test corpus,
 полученным из не свежего search snapshot и серии operational experiments. Его
@@ -91,6 +98,9 @@ corpus.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
 - Backup retention и cleanup routine: backup/offsite contour работает, но retention
   policy для S3/offsite и sidecar cleanup ещё нужно зафиксировать.
+- Production research archive routine: S3 mechanics доказаны на
+  `tool_validation` bundle, но cadence settled bundles и archive-before-delete
+  receipts ещё нужно зафиксировать.
 - Prometheus retention: фактически применён на VPS, volume в пределах configured
   size limit.
 - Многодневная unattended stability на VPS.
@@ -109,8 +119,8 @@ corpus.
 | Detail worker | foundation ready, supervised scale=3 validated | есть one-shot и loop, пока без multi-day unattended proof |
 | Backup / restore drill | VPS validated | post-baseline backup, verify и restore-drill прошли |
 | DB backup offsite | S3 end-to-end validated | Timeweb cold S3 upload, idempotency, remote size verify, offsite restore drill и post-detail-drain 13GB upload/verify работают |
-| Retention archive / offsite sync | partially validated | retention bundle sync работает; нужен S3 backend, inventory и readback drill |
-| Research archive v1 | local smoke validated | local export/verify прошли на VPS tool-validation bundle; S3 upload/readback ещё open |
+| Retention archive / offsite sync | partially validated | legacy retention bundle sync работает; long-term research archive S3 contour валидирован отдельно |
+| Research archive v1 | S3 smoke validated | local export/verify, S3 sync, remote verify, bounded readback и idempotency прошли на VPS tool-validation bundle; production cadence ещё open |
 | Observability | foundation ready | metrics, dashboards, alert rules есть |
 | Alert delivery | foundation ready | delivery до Telegram проверен; payloads нужно сделать информативнее |
 | VPS deploy | validated | search-only pilot completed on Timeweb VPS |
@@ -151,8 +161,10 @@ corpus.
    - local validation реализована через `verify-research-archive`;
    - small VPS smoke на pilot corpus с `--limit-per-dataset` прошёл;
    - S3 upload/verify/readback tooling реализован для research archive bundles;
-   - next: VPS S3 smoke на `tool_validation` bundle;
-   - tiny proof-of-read smoke only;
+   - VPS S3 smoke на `tool_validation` bundle прошёл: `13/13` manifests,
+     `27` objects, `2/2` bounded readbacks, повторный sync idempotent;
+   - next: определить production cadence settled bundles и archive-before-delete
+     receipts;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:
@@ -363,11 +375,24 @@ VPS observation 2026-05-28:
 - Archive v1 local smoke passed as `archive_kind=tool_validation`: `6000` rows,
   `13` chunks, `5212503` data bytes, `13/13` manifests verified.
 
+VPS observation 2026-05-31:
+
+- Archive v1 S3 offsite sync passed for the `tool_validation` bundle:
+  `uploaded_manifest_count=13`, inventory uploaded;
+- remote verify passed: `verified_manifest_count=13`,
+  `verified_object_count=27`;
+- bounded readback passed for `2/2` selected chunks with size, sha256, gzip JSONL
+  parse and row-count checks;
+- repeated full sync was idempotent: `candidate_manifest_count=0`,
+  `uploaded_manifest_count=0`, `skipped_manifest_count=13`; inventory refresh on
+  full sync remained enabled by design.
+
 Next experiment plan:
 
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
-2. Прогнать VPS S3 upload/verify/readback smoke для research archive bundles.
-3. Закрыть S3 backup retention delete and sidecar cleanup.
+2. Закрыть S3 backup retention delete and sidecar cleanup.
+3. Зафиксировать production cadence settled research archive bundles и
+   archive-before-delete receipts.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

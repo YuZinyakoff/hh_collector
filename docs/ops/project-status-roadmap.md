@@ -97,7 +97,7 @@ corpus.
   на pilot/test corpus.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
 - Backup retention и cleanup routine: backup/offsite contour работает, но retention
-  cleanup tooling ещё нужно проверить VPS dry-run/apply smoke.
+  apply smoke ещё нужно проверить на реальном безопасном deletion candidate.
 - Production research archive routine: S3 mechanics доказаны на
   `tool_validation` bundle, но cadence settled bundles и archive-before-delete
   receipts ещё нужно зафиксировать.
@@ -147,7 +147,10 @@ corpus.
      infinite DB dump storage;
    - S3 backup retention delete and sidecar cleanup реализованы как отдельная
      dry-run-first команда `cleanup-backup-offsite`;
-   - next: VPS dry-run, review plan, затем bounded apply smoke.
+   - VPS dry-run прошёл на real S3 state: milestone retained, older unverified
+     generation skipped fail-safe, deletion candidates `0`;
+   - next: bounded apply smoke только после появления реального безопасного
+     deletion candidate.
 3. Prometheus retention считается закрытым на 2026-05-26:
    - running flags: `7d` и `8GB`;
    - `hh_collector_prometheus_data`: `5.5G`;
@@ -388,12 +391,18 @@ VPS observation 2026-05-31:
 - repeated full sync was idempotent: `candidate_manifest_count=0`,
   `uploaded_manifest_count=0`, `skipped_manifest_count=13`; inventory refresh on
   full sync remained enabled by design.
+- S3 DB backup retention dry-run passed against real state:
+  post-detail-drain milestone dump verified with `198` parts and
+  `verified_object_count=199`, `.offsite.verified.json` created, milestone marker
+  applied; cleanup scanned `2` upload receipts, retained the milestone dump,
+  skipped the older unverified dump fail-safe and produced `0` deletion
+  candidates.
 
 Next experiment plan:
 
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
-2. Прогнать VPS dry-run/apply smoke для S3 backup retention delete and sidecar
-   cleanup.
+2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
+   только когда появится реальный безопасный deletion candidate.
 3. Зафиксировать production cadence settled research archive bundles и
    archive-before-delete receipts.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.

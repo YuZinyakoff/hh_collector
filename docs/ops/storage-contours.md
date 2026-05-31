@@ -71,7 +71,11 @@ Current status:
 - S3/offsite retention cleanup tooling exists through
   `cleanup-backup-offsite`: matching upload/verification receipts are required,
   dry-run is the default, apply is explicit, and protected/latest/weekly
-  generations are retained. VPS dry-run/apply smoke is still pending.
+  generations are retained.
+- VPS dry-run passed on 2026-05-31 against real S3 state: `2` upload receipts
+  scanned, post-detail-drain milestone retained through `.offsite.keep`, older
+  dump skipped fail-safe as unverified, `delete_candidate_count=0`. Destructive
+  apply smoke is intentionally deferred until a real safe candidate exists.
 
 The DB backup contour is considered adequate only after these checks are in place:
 
@@ -220,7 +224,9 @@ Implemented tooling item: `cleanup-backup-offsite` deletes S3 backup generations
 under the `backups/` prefix only after a dry-run plan and explicit `--apply`.
 Deletion order is remote `*.parts/`, remote manifest, then local operational
 sidecars. The local `.dump` remains under the separate local retention policy.
-The first VPS dry-run/apply smoke remains open.
+VPS dry-run is proven. Destructive apply smoke remains open until a real safe
+candidate exists; do not manufacture deletion candidates in the production
+bucket merely to exercise the command.
 
 ### Research archive policy
 

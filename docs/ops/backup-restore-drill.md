@@ -300,8 +300,25 @@ make cleanup-backup-offsite \
   ARGS="--protect-backup-file .state/backups/<file>.dump --triggered-by manual-retention-dry-run"
 ```
 
-До первого VPS dry-run contour считается реализованным в коде, но не
+До VPS dry-run 2026-05-31 contour считался реализованным в коде, но не
 операционно проверенным.
+
+VPS dry-run 2026-05-31:
+
+- fresh post-detail-drain milestone dump
+  `hhru-platform_hhru_platform_20260528T112018Z.dump` повторно verified:
+  `198` parts, `verified_object_count=199`;
+- рядом с dump создан `.offsite.verified.json`, milestone marker
+  `.offsite.keep` установлен;
+- `cleanup-backup-offsite` dry-run успешно просканировал `2` upload receipts;
+- milestone dump retained как `protected milestone backup`;
+- предыдущий S3 dump `20260517T151543Z` retained fail-safe как
+  `skipped_unverified`;
+- `delete_candidate_count=0`, remote и local deletion не выполнялись.
+
+Destructive apply smoke отложен до появления реального безопасного кандидата:
+старого matching verified поколения вне latest/weekly/milestone policy при
+наличии более нового verified backup.
 
 ## 7. Проверить offsite copy
 

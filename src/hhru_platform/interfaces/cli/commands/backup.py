@@ -4,6 +4,12 @@ import argparse
 import sys
 from pathlib import Path
 
+from hhru_platform.application.commands.cleanup_backup_offsite import (
+    BackupOffsiteCleanupRemoteStore,
+    CleanupBackupOffsiteCommand,
+    CleanupBackupOffsiteResult,
+    cleanup_backup_offsite,
+)
 from hhru_platform.application.commands.run_backup import RunBackupCommand, run_backup
 from hhru_platform.application.commands.run_backup_offsite_restore_drill import (
     BackupOffsiteRemoteDownloader,
@@ -31,6 +37,7 @@ from hhru_platform.config.settings import Settings, get_settings
 from hhru_platform.infrastructure.backup import (
     BackupService,
     LocalBackupOffsiteUploadReceiptStore,
+    LocalBackupOffsiteVerificationReceiptStore,
     S3BackupOffsiteUploader,
 )
 from hhru_platform.infrastructure.housekeeping import WebDavArchiveUploader
@@ -154,6 +161,56 @@ def register_backup_commands(
         ),
     )
     verify_offsite_parser.set_defaults(handler=handle_verify_backup_offsite)
+
+    cleanup_offsite_parser = subparsers.add_parser(
+        "cleanup-backup-offsite",
+        help=(
+            "Plan or apply bounded S3 backup retention. Defaults to dry-run and "
+            "deletes only generations with matching upload and verification receipts."
+        ),
+    )
+    cleanup_offsite_parser.add_argument(
+        "--keep-latest",
+        type=int,
+        default=None,
+        help=(
+            "Keep this many latest verified backup generations. Defaults to "
+            "HHRU_BACKUP_OFFSITE_RETENTION_KEEP_LATEST."
+        ),
+    )
+    cleanup_offsite_parser.add_argument(
+        "--keep-weekly",
+        type=int,
+        default=None,
+        help=(
+            "Keep the newest verified checkpoint from this many ISO weeks. Defaults "
+            "to HHRU_BACKUP_OFFSITE_RETENTION_KEEP_WEEKLY."
+        ),
+    )
+    cleanup_offsite_parser.add_argument(
+        "--protect-backup-file",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Keep one explicit milestone dump identity. Repeat as needed. Persistent "
+            "milestone protection also uses adjacent <dump>.offsite.keep markers."
+        ),
+    )
+    cleanup_offsite_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply deletions. Without this flag the command only prints a dry-run plan.",
+    )
+    cleanup_offsite_parser.add_argument(
+        "--triggered-by",
+        default="cleanup-backup-offsite",
+        help=(
+            "Actor or subsystem that initiated off-host backup cleanup. "
+            "Defaults to cleanup-backup-offsite."
+        ),
+    )
+    cleanup_offsite_parser.set_defaults(handler=handle_cleanup_backup_offsite)
 
     offsite_restore_parser = subparsers.add_parser(
         "run-backup-offsite-restore-drill",
@@ -303,12 +360,37 @@ def handle_verify_backup_offsite(args: argparse.Namespace) -> int:
             args=args,
             settings=settings,
         )
-        result = verify_backup_offsite(command, remote_store=remote_store)
+        result = verify_backup_offsite(
+            command,
+            remote_store=remote_store,
+            receipt_store=LocalBackupOffsiteVerificationReceiptStore(),
+        )
     except Exception as error:
         print(str(error), file=sys.stderr)
         return 1
 
     _print_verify_backup_offsite_summary(result)
+    return 0
+
+
+def handle_cleanup_backup_offsite(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        command, remote_store = _build_cleanup_backup_offsite_command_and_store(
+            args=args,
+            settings=settings,
+        )
+        result = cleanup_backup_offsite(
+            command,
+            remote_store=remote_store,
+            upload_receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+            verification_receipt_store=LocalBackupOffsiteVerificationReceiptStore(),
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_cleanup_backup_offsite_summary(result)
     return 0
 
 
@@ -511,6 +593,56 @@ def _build_backup_offsite_restore_drill_command_and_downloader(
     return command, remote_downloader
 
 
+def _build_cleanup_backup_offsite_command_and_store(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+) -> tuple[CleanupBackupOffsiteCommand, BackupOffsiteCleanupRemoteStore]:
+    backend = settings.backup_offsite_backend.strip().lower()
+    if backend != "s3":
+        raise ValueError("cleanup-backup-offsite currently supports only S3 backend")
+    endpoint_url = settings.backup_offsite_s3_endpoint_url.strip()
+    bucket = settings.backup_offsite_s3_bucket.strip()
+    access_key_id = settings.backup_offsite_s3_access_key_id or ""
+    secret_access_key = settings.backup_offsite_s3_secret_access_key or ""
+    if not endpoint_url:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_ENDPOINT_URL must not be empty")
+    if not bucket:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_BUCKET must not be empty")
+    if not access_key_id or not secret_access_key:
+        raise ValueError(
+            "HHRU_BACKUP_OFFSITE_S3_ACCESS_KEY_ID and "
+            "HHRU_BACKUP_OFFSITE_S3_SECRET_ACCESS_KEY must be configured"
+        )
+    command = CleanupBackupOffsiteCommand(
+        backup_dir=Path(settings.backup_dir),
+        offsite_url=_s3_offsite_url(endpoint_url=endpoint_url, bucket=bucket),
+        offsite_root=settings.backup_offsite_root,
+        keep_latest=(
+            args.keep_latest
+            if args.keep_latest is not None
+            else settings.backup_offsite_retention_keep_latest
+        ),
+        keep_weekly=(
+            args.keep_weekly
+            if args.keep_weekly is not None
+            else settings.backup_offsite_retention_keep_weekly
+        ),
+        apply=bool(args.apply),
+        protected_backup_files=tuple(args.protect_backup_file),
+        triggered_by=str(args.triggered_by),
+    )
+    remote_store = S3BackupOffsiteUploader.with_credentials(
+        endpoint_url=endpoint_url,
+        bucket=bucket,
+        key_prefix=command.offsite_root,
+        region_name=settings.backup_offsite_s3_region,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+    )
+    return command, remote_store
+
+
 def _latest_backup_file(backup_dir: Path) -> Path:
     backup_files = sorted(
         (path for path in backup_dir.rglob("*.dump") if path.is_file()),
@@ -568,9 +700,43 @@ def _print_verify_backup_offsite_summary(result: VerifyBackupOffsiteResult) -> N
     print(f"offsite_root={result.offsite_root}")
     print(f"backup_size_bytes={result.backup_size_bytes}")
     print(f"backup_sha256={result.backup_sha256}")
+    print(f"manifest_sha256={result.manifest_sha256}")
     print(f"chunk_size_bytes={result.chunk_size_bytes}")
     print(f"part_count={result.part_count}")
     print(f"verified_object_count={result.verified_object_count}")
+    print(f"receipt_file={result.receipt_file}")
+
+
+def _print_cleanup_backup_offsite_summary(result: CleanupBackupOffsiteResult) -> None:
+    print("completed backup offsite cleanup")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"evaluated_at={result.evaluated_at.isoformat()}")
+    print(f"backup_dir={result.backup_dir}")
+    print(f"offsite_url={result.offsite_url}")
+    print(f"offsite_root={result.offsite_root}")
+    print(f"keep_latest={result.keep_latest}")
+    print(f"keep_weekly={result.keep_weekly}")
+    print(f"apply={'yes' if result.apply else 'no'}")
+    print(f"scanned_receipt_count={result.scanned_receipt_count}")
+    print(f"delete_candidate_count={result.delete_candidate_count}")
+    print(f"deleted_generation_count={result.deleted_generation_count}")
+    print(f"retained_generation_count={result.retained_generation_count}")
+    print(f"skipped_generation_count={result.skipped_generation_count}")
+    print(f"remote_deleted_object_count={result.remote_deleted_object_count}")
+    print(f"local_deleted_sidecar_count={result.local_deleted_sidecar_count}")
+    for summary in result.summaries:
+        print(
+            "backup="
+            f"{summary.backup_file} "
+            f"backup_at={summary.backup_at.isoformat() if summary.backup_at else '-'} "
+            f"action={summary.action} "
+            f"reason={summary.reason} "
+            f"remote_backup_path={summary.remote_backup_path or '-'} "
+            f"remote_manifest_path={summary.remote_manifest_path or '-'} "
+            f"remote_deleted_object_count={summary.remote_deleted_object_count} "
+            f"local_deleted_sidecar_count={summary.local_deleted_sidecar_count}"
+        )
 
 
 def _print_backup_offsite_restore_drill_summary(

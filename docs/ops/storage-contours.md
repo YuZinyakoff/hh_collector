@@ -68,7 +68,10 @@ Current status:
   `198` S3 data parts and `verified_object_count=199`.
 - Local dump retention exists through `HHRU_BACKUP_RETENTION_DAYS` and runs when
   a new backup is created.
-- S3/offsite retention delete policy is not automated yet.
+- S3/offsite retention cleanup tooling exists through
+  `cleanup-backup-offsite`: matching upload/verification receipts are required,
+  dry-run is the default, apply is explicit, and protected/latest/weekly
+  generations are retained. VPS dry-run/apply smoke is still pending.
 
 The DB backup contour is considered adequate only after these checks are in place:
 
@@ -213,8 +216,11 @@ Recommended automation:
 - do not delete an old remote backup unless newer backup upload and remote verify
   succeeded, and periodic offsite restore drill remains green.
 
-Open tooling item: implement S3 backup retention delete for the `backups/` prefix,
-including safe deletion of `*.parts/`, remote manifest and local sidecar receipts.
+Implemented tooling item: `cleanup-backup-offsite` deletes S3 backup generations
+under the `backups/` prefix only after a dry-run plan and explicit `--apply`.
+Deletion order is remote `*.parts/`, remote manifest, then local operational
+sidecars. The local `.dump` remains under the separate local retention policy.
+The first VPS dry-run/apply smoke remains open.
 
 ### Research archive policy
 
@@ -252,8 +258,8 @@ For DB backup contour:
 2. Run `backup-offsite-restore-drill` periodically, especially after changing backup
    format, S3 settings, Postgres version, or retention policy.
 3. Keep local backup retention enabled through `HHRU_BACKUP_RETENTION_DAYS`.
-4. Define and automate S3/offsite backup retention after production backup cadence
-   is finalized.
+4. Run `cleanup-backup-offsite` as dry-run, review retained/candidate generations,
+   then apply explicitly when the policy is correct.
 
 For research archive contour:
 

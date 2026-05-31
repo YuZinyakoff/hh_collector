@@ -30,6 +30,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "run-restore-drill" in captured.out
     assert "sync-backup-offsite" in captured.out
     assert "verify-backup-offsite" in captured.out
+    assert "cleanup-backup-offsite" in captured.out
     assert "run-backup-offsite-restore-drill" in captured.out
     assert "health-check" in captured.out
     assert "run-housekeeping" in captured.out
@@ -142,6 +143,8 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "backup_offsite_s3_bucket=-" in captured.out
     assert "backup_offsite_s3_region=ru-1" in captured.out
     assert "backup_offsite_s3_access_key_configured=no" in captured.out
+    assert "backup_offsite_retention_keep_latest=3" in captured.out
+    assert "backup_offsite_retention_keep_weekly=4" in captured.out
     assert "housekeeping_raw_api_payload_retention_days=90" in captured.out
     assert "housekeeping_vacancy_snapshot_retention_days=365" in captured.out
     assert "housekeeping_finished_crawl_run_retention_days=60" in captured.out

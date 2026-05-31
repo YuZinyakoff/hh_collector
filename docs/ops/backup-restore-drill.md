@@ -178,6 +178,9 @@ Dump загружается не одним большим request, а fixed-siz
 - части лежат в remote directory `<dump>.parts/000001.part`, `<dump>.parts/000002.part`, ...
 - `.manifest.json` содержит `backup_sha256`, `chunk_size_bytes`, список частей, размер и sha256 каждой части;
 - `.offsite.parts.json` фиксирует уже загруженные части, чтобы повторный запуск мог продолжить upload после обрыва;
+- `.offsite.verified.json` создаётся только после successful
+  `verify-backup-offsite` и фиксирует совпавшие manifest/parts identity и число
+  проверенных remote objects;
 - для recovery надо скачать manifest и все parts, затем склеить parts по порядку и проверить итоговый `backup_sha256`;
 - повторный запуск пропускает backup только если локальный `.offsite.json` receipt совпадает с dump, manifest, remote path, `chunk_size_bytes` и количеством частей.
 
@@ -209,7 +212,7 @@ backup contour также нужны:
 
 ## 6.1. Backup retention status
 
-Status на 2026-05-26:
+Status на 2026-05-31:
 
 - Local dump retention уже реализован в `scripts/backup/backup_postgres.sh`.
 - Retention управляется `HHRU_BACKUP_RETENTION_DAYS`, default `7`.
@@ -218,12 +221,18 @@ Status на 2026-05-26:
   `mtime`.
 - Это local operational cleanup, а не S3/offsite retention.
 - Текущий local cleanup удаляет `.dump`; sidecar receipts/manifests могут
-  оставаться и должны рассматриваться как маленький hygiene gap, пока не добавлен
-  dedicated backup cleanup command.
-- S3/offsite retention delete policy ещё не реализован в tooling. До реализации
-  remote retention считается manual/operator policy: хранить минимум последние
-  verified production backups и периодически удалять старые remote objects после
-  successful newer offsite restore drill.
+  оставаться до dedicated `cleanup-backup-offsite`.
+- S3 retention cleanup реализован отдельной командой
+  `cleanup-backup-offsite`. Она поддерживает только S3 backend, по умолчанию
+  работает как dry-run и удаляет remote objects только по явному `--apply`.
+- В deletion candidates попадают только поколения с matching
+  `.offsite.json` upload receipt и `.offsite.verified.json` verification receipt.
+- Команда сохраняет последние verified поколения, weekly checkpoints и
+  milestone backups с adjacent `<dump>.offsite.keep` marker. Дополнительно
+  удаление запрещено, если нет более нового verified поколения.
+- При apply удаляются remote parts, затем remote manifest, затем локальные
+  operational sidecars удалённого поколения. Сам локальный `.dump` эта команда
+  не удаляет.
 
 Practical policy before production:
 
@@ -249,6 +258,50 @@ VPS check 2026-05-26:
   2026-05-17;
 - restore-drill DB `hhru_platform_restore_drill` absent, so no lingering
   restore-drill storage cost at that check.
+
+### 6.2. Выполнить bounded S3 cleanup
+
+Настройки policy:
+
+- `HHRU_BACKUP_OFFSITE_RETENTION_KEEP_LATEST=3`
+- `HHRU_BACKUP_OFFSITE_RETENTION_KEEP_WEEKLY=4`
+
+После deploy новой версии сначала повторно проверить свежий сохраняемый backup,
+чтобы создать verification receipt:
+
+```bash
+BACKUP_FILE="$(ls -1t .state/backups/*.dump | head -n 1)"
+make verify-backup-offsite BACKUP_FILE="$BACKUP_FILE"
+```
+
+Для постоянной защиты milestone backup:
+
+```bash
+touch "$BACKUP_FILE.offsite.keep"
+```
+
+Первый запуск всегда делать без `--apply`:
+
+```bash
+make cleanup-backup-offsite ARGS="--triggered-by manual-backup-offsite-retention-dry-run"
+```
+
+Проверить summaries с `action=retained`, `action=delete_candidate` и
+`action=skipped_unverified`. Только после review применить тот же policy:
+
+```bash
+make cleanup-backup-offsite ARGS="--apply --triggered-by manual-backup-offsite-retention-apply"
+```
+
+Для разового дополнительного сохранения dump identity без marker:
+
+```bash
+make cleanup-backup-offsite \
+  ARGS="--protect-backup-file .state/backups/<file>.dump --triggered-by manual-retention-dry-run"
+```
+
+До первого VPS dry-run contour считается реализованным в коде, но не
+операционно проверенным.
 
 ## 7. Проверить offsite copy
 

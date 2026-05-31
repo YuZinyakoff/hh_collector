@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     backup_offsite_s3_region: str = "ru-1"
     backup_offsite_s3_access_key_id: str | None = None
     backup_offsite_s3_secret_access_key: str | None = Field(default=None, repr=False)
+    backup_offsite_retention_keep_latest: int = 3
+    backup_offsite_retention_keep_weekly: int = 4
     housekeeping_raw_api_payload_retention_days: int = 90
     housekeeping_vacancy_snapshot_retention_days: int = 0
     housekeeping_finished_crawl_run_retention_days: int = 90

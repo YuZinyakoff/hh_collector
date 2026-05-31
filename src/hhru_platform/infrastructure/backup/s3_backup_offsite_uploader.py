@@ -20,6 +20,9 @@ class S3UploadClient(Protocol):
     def head_object(self, *, Bucket: str, Key: str) -> S3HeadObjectResponse:
         """Return metadata for one S3-compatible object."""
 
+    def delete_object(self, *, Bucket: str, Key: str) -> object:
+        """Delete one S3-compatible object."""
+
 
 @dataclass(slots=True, frozen=True)
 class S3BackupOffsiteUploader:
@@ -76,6 +79,10 @@ class S3BackupOffsiteUploader:
         key = _join_object_key(self.key_prefix, remote_path)
         response = self.client.head_object(Bucket=self.bucket, Key=key)
         return int(response["ContentLength"])
+
+    def delete_file(self, *, remote_path: str) -> None:
+        key = _join_object_key(self.key_prefix, remote_path)
+        self.client.delete_object(Bucket=self.bucket, Key=key)
 
 
 def _create_s3_client(

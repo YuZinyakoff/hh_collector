@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from hhru_platform.infrastructure.backup.backup_offsite_verification_receipt_store import (
+    BackupOffsiteVerificationReceipt,
+)
 from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
     record_operation_failed,
@@ -24,6 +29,7 @@ class VerifyBackupOffsiteCommand:
     offsite_url: str = ""
     offsite_root: str = "/hhru-platform/backups"
     triggered_by: str = "verify-backup-offsite"
+    verified_at: datetime | None = None
 
     def __post_init__(self) -> None:
         normalized_triggered_by = self.triggered_by.strip()
@@ -57,9 +63,11 @@ class VerifyBackupOffsiteResult:
     offsite_root: str
     backup_size_bytes: int
     backup_sha256: str
+    manifest_sha256: str
     chunk_size_bytes: int
     part_count: int
     verified_objects: tuple[BackupOffsiteVerifiedObject, ...]
+    receipt_file: Path
 
     @property
     def verified_object_count(self) -> int:
@@ -71,10 +79,21 @@ class BackupOffsiteRemoteStore(Protocol):
         """Return remote object size in bytes."""
 
 
+class BackupOffsiteVerificationReceiptStore(Protocol):
+    def write_receipt(
+        self,
+        *,
+        backup_file: Path,
+        receipt: BackupOffsiteVerificationReceipt,
+    ) -> Path:
+        """Persist proof that one offsite backup passed verification."""
+
+
 def verify_backup_offsite(
     command: VerifyBackupOffsiteCommand,
     *,
     remote_store: BackupOffsiteRemoteStore,
+    receipt_store: BackupOffsiteVerificationReceiptStore,
 ) -> VerifyBackupOffsiteResult:
     started_at = log_operation_started(
         LOGGER,
@@ -85,7 +104,11 @@ def verify_backup_offsite(
         triggered_by=command.triggered_by,
     )
     try:
-        result = _verify_backup_offsite(command=command, remote_store=remote_store)
+        result = _verify_backup_offsite(
+            command=command,
+            remote_store=remote_store,
+            receipt_store=receipt_store,
+        )
     except Exception as error:
         record_operation_failed(
             LOGGER,
@@ -120,6 +143,7 @@ def _verify_backup_offsite(
     *,
     command: VerifyBackupOffsiteCommand,
     remote_store: BackupOffsiteRemoteStore,
+    receipt_store: BackupOffsiteVerificationReceiptStore,
 ) -> VerifyBackupOffsiteResult:
     backup_root = command.backup_dir.resolve()
     backup_file = command.backup_file.resolve()
@@ -156,6 +180,34 @@ def _verify_backup_offsite(
             )
         )
 
+    manifest_sha256 = _sha256_file(manifest_file)
+    backup_size_bytes = _payload_int(manifest_payload, "backup_size_bytes")
+    backup_sha256 = str(manifest_payload["backup_sha256"])
+    chunk_size_bytes = _payload_int(manifest_payload, "chunk_size_bytes")
+    remote_backup_path = _join_remote_path(
+        command.offsite_root,
+        f"{backup_relative_path}.parts",
+    )
+    remote_manifest_path = _join_remote_path(
+        command.offsite_root,
+        manifest_relative_path,
+    )
+    receipt_file = receipt_store.write_receipt(
+        backup_file=backup_file,
+        receipt=BackupOffsiteVerificationReceipt(
+            verified_at=command.verified_at or datetime.now(UTC),
+            offsite_url=command.offsite_url,
+            offsite_root=command.offsite_root,
+            backup_size_bytes=backup_size_bytes,
+            backup_sha256=backup_sha256,
+            manifest_sha256=manifest_sha256,
+            chunk_size_bytes=chunk_size_bytes,
+            part_count=len(parts),
+            remote_backup_path=remote_backup_path,
+            remote_manifest_path=remote_manifest_path,
+            verified_object_count=len(verified_objects),
+        ),
+    )
     return VerifyBackupOffsiteResult(
         status=BACKUP_OFFSITE_VERIFY_STATUS_SUCCEEDED,
         triggered_by=command.triggered_by,
@@ -163,11 +215,13 @@ def _verify_backup_offsite(
         manifest_file=manifest_file,
         offsite_url=command.offsite_url,
         offsite_root=command.offsite_root,
-        backup_size_bytes=_payload_int(manifest_payload, "backup_size_bytes"),
-        backup_sha256=str(manifest_payload["backup_sha256"]),
-        chunk_size_bytes=_payload_int(manifest_payload, "chunk_size_bytes"),
+        backup_size_bytes=backup_size_bytes,
+        backup_sha256=backup_sha256,
+        manifest_sha256=manifest_sha256,
+        chunk_size_bytes=chunk_size_bytes,
         part_count=len(parts),
         verified_objects=tuple(verified_objects),
+        receipt_file=receipt_file,
     )
 
 
@@ -220,3 +274,18 @@ def _normalize_offsite_root(offsite_root: str) -> str:
     if not parts:
         return "/"
     return "/" + "/".join(parts)
+
+
+def _join_remote_path(offsite_root: str, relative_path: str) -> str:
+    normalized_root = _normalize_offsite_root(offsite_root).strip("/")
+    if not normalized_root:
+        return "/" + relative_path.strip("/")
+    return "/" + normalized_root + "/" + relative_path.strip("/")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

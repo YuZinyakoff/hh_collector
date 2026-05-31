@@ -6,11 +6,11 @@ ARGS ?=
 .PHONY: up up-observability up-scheduler down migrate migrate-compose test lint format \
 	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop worker-detail \
 	drain-first-detail-backlog run-housekeeping \
-	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli \
+	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli run-cleanup-backup-offsite \
 	run-backup-offsite-restore-drill run-export-research-archive run-verify-research-archive \
 	run-sync-research-archive-offsite run-verify-research-archive-offsite \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite detail-worker-measurement \
 	vps-first-detail-measurement \
 	soak-test soak-test-no-build
 
@@ -89,6 +89,9 @@ sync-backup-offsite:
 verify-backup-offsite-cli:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-backup-offsite $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
 
+run-cleanup-backup-offsite:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main cleanup-backup-offsite $(ARGS)
+
 run-backup-offsite-restore-drill:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
 
@@ -134,6 +137,9 @@ backup-offsite:
 
 verify-backup-offsite:
 	$(COMPOSE) --profile ops run --rm app verify-backup-offsite $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
+
+cleanup-backup-offsite:
+	$(COMPOSE) --profile ops run --rm app cleanup-backup-offsite $(ARGS)
 
 backup-offsite-restore-drill:
 	$(COMPOSE) --profile ops run --rm app run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)

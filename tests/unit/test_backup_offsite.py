@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from hhru_platform.application.commands.cleanup_backup_offsite import (
+    CleanupBackupOffsiteCommand,
+    cleanup_backup_offsite,
+)
 from hhru_platform.application.commands.sync_backup_offsite import (
     SyncBackupOffsiteCommand,
     sync_backup_offsite,
@@ -15,7 +19,12 @@ from hhru_platform.application.commands.verify_backup_offsite import (
     VerifyBackupOffsiteCommand,
     verify_backup_offsite,
 )
-from hhru_platform.infrastructure.backup import LocalBackupOffsiteUploadReceiptStore
+from hhru_platform.infrastructure.backup import (
+    BackupOffsiteUploadReceipt,
+    BackupOffsiteVerificationReceipt,
+    LocalBackupOffsiteUploadReceiptStore,
+    LocalBackupOffsiteVerificationReceiptStore,
+)
 from hhru_platform.infrastructure.backup.s3_backup_offsite_uploader import (
     S3BackupOffsiteUploader,
 )
@@ -33,6 +42,7 @@ class FakeS3Client:
     def __init__(self) -> None:
         self.upload_calls: list[tuple[str, str, str, bytes]] = []
         self.download_calls: list[tuple[str, str, str]] = []
+        self.delete_calls: list[tuple[str, str]] = []
         self.objects_by_key: dict[str, bytes] = {}
         self.object_sizes_by_key: dict[str, int] = {}
 
@@ -48,6 +58,12 @@ class FakeS3Client:
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, int]:
         return {"ContentLength": self.object_sizes_by_key[Key]}
+
+    def delete_object(self, *, Bucket: str, Key: str) -> object:
+        self.delete_calls.append((Bucket, Key))
+        self.objects_by_key.pop(Key, None)
+        self.object_sizes_by_key.pop(Key, None)
+        return {}
 
 
 def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
@@ -73,6 +89,7 @@ def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
         remote_path="/backup.dump.parts/000001.part",
     )
     size_bytes = uploader.get_file_size(remote_path="/backup.dump.parts/000001.part")
+    uploader.delete_file(remote_path="/backup.dump.parts/000001.part")
 
     assert client.upload_calls == [
         (
@@ -91,6 +108,9 @@ def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
     ]
     assert downloaded_file.read_bytes() == b"payload"
     assert size_bytes == 7
+    assert client.delete_calls == [
+        ("bucket-id", "hhru-platform/backups/backup.dump.parts/000001.part")
+    ]
 
 
 def test_verify_backup_offsite_checks_manifest_and_part_sizes(
@@ -132,6 +152,7 @@ def test_verify_backup_offsite_checks_manifest_and_part_sizes(
         }
     )
 
+    receipt_store = LocalBackupOffsiteVerificationReceiptStore()
     result = verify_backup_offsite(
         VerifyBackupOffsiteCommand(
             backup_file=backup,
@@ -139,8 +160,10 @@ def test_verify_backup_offsite_checks_manifest_and_part_sizes(
             offsite_url="https://s3.example.test/bucket",
             offsite_root="/hhru-platform/backups",
             triggered_by="unit-test",
+            verified_at=datetime(2026, 5, 16, 11, 0, tzinfo=UTC),
         ),
         remote_store=remote_store,
+        receipt_store=receipt_store,
     )
 
     assert result.status == "succeeded"
@@ -150,6 +173,11 @@ def test_verify_backup_offsite_checks_manifest_and_part_sizes(
     assert result.chunk_size_bytes == 6
     assert result.part_count == 2
     assert result.verified_object_count == 3
+    assert result.receipt_file == Path(f"{backup.resolve()}.offsite.verified.json")
+    receipt = receipt_store.load_receipt(backup_file=backup.resolve())
+    assert receipt is not None
+    assert receipt.verified_at == datetime(2026, 5, 16, 11, 0, tzinfo=UTC)
+    assert receipt.verified_object_count == 3
     assert [verified.remote_path for verified in result.verified_objects] == [
         manifest.name,
         f"{backup.name}.parts/000001.part",
@@ -379,3 +407,252 @@ def test_sync_backup_offsite_resumes_uploaded_parts(
         "hhru-platform_hhru_platform_20260516T084422Z.dump.parts/000003.part",
         "hhru-platform_hhru_platform_20260516T084422Z.dump.manifest.json",
     ]
+
+
+class FakeCleanupRemoteStore:
+    def __init__(self) -> None:
+        self.delete_calls: list[str] = []
+
+    def delete_file(self, *, remote_path: str) -> None:
+        self.delete_calls.append(remote_path)
+
+
+class FailingCleanupRemoteStore(FakeCleanupRemoteStore):
+    def __init__(self, *, failing_remote_path: str) -> None:
+        super().__init__()
+        self.failing_remote_path = failing_remote_path
+
+    def delete_file(self, *, remote_path: str) -> None:
+        super().delete_file(remote_path=remote_path)
+        if remote_path == self.failing_remote_path:
+            raise RuntimeError(f"persistent delete failure for {remote_path}")
+
+
+def test_cleanup_backup_offsite_dry_run_preserves_remote_objects(
+    tmp_path: Path,
+) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    latest_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260531T120000Z",
+    )
+    old_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260501T120000Z",
+    )
+    unverified_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260401T120000Z",
+        verified=False,
+    )
+    remote_store = FakeCleanupRemoteStore()
+
+    result = cleanup_backup_offsite(
+        CleanupBackupOffsiteCommand(
+            backup_dir=backup_dir,
+            offsite_url="https://s3.example.test/bucket",
+            offsite_root="/hhru-platform/backups",
+            keep_latest=1,
+            keep_weekly=0,
+            triggered_by="unit-test",
+            evaluated_at=datetime(2026, 5, 31, 13, 0, tzinfo=UTC),
+        ),
+        remote_store=remote_store,
+        upload_receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+        verification_receipt_store=LocalBackupOffsiteVerificationReceiptStore(),
+    )
+
+    assert result.status == "succeeded"
+    assert result.apply is False
+    assert result.scanned_receipt_count == 3
+    assert result.retained_generation_count == 1
+    assert result.delete_candidate_count == 1
+    assert result.deleted_generation_count == 0
+    assert result.skipped_generation_count == 1
+    assert remote_store.delete_calls == []
+    assert _summary_for(result, latest_backup).action == "retained"
+    assert _summary_for(result, old_backup).action == "delete_candidate"
+    assert _summary_for(result, unverified_backup).action == "skipped_unverified"
+
+
+def test_cleanup_backup_offsite_applies_remote_delete_then_local_sidecar_cleanup(
+    tmp_path: Path,
+) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260531T120000Z",
+    )
+    old_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260501T120000Z",
+    )
+    remote_store = FakeCleanupRemoteStore()
+
+    result = cleanup_backup_offsite(
+        CleanupBackupOffsiteCommand(
+            backup_dir=backup_dir,
+            offsite_url="https://s3.example.test/bucket",
+            offsite_root="/hhru-platform/backups",
+            keep_latest=1,
+            keep_weekly=0,
+            apply=True,
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+        upload_receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+        verification_receipt_store=LocalBackupOffsiteVerificationReceiptStore(),
+    )
+
+    assert result.deleted_generation_count == 1
+    assert result.remote_deleted_object_count == 3
+    assert result.local_deleted_sidecar_count == 4
+    assert remote_store.delete_calls == [
+        f"{old_backup.name}.parts/000001.part",
+        f"{old_backup.name}.parts/000002.part",
+        f"{old_backup.name}.manifest.json",
+    ]
+    assert old_backup.exists()
+    assert not Path(f"{old_backup}.manifest.json").exists()
+    assert not Path(f"{old_backup}.offsite.json").exists()
+    assert not Path(f"{old_backup}.offsite.parts.json").exists()
+    assert not Path(f"{old_backup}.offsite.verified.json").exists()
+
+
+def test_cleanup_backup_offsite_keeps_local_sidecars_after_remote_delete_failure(
+    tmp_path: Path,
+) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260531T120000Z",
+    )
+    old_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260501T120000Z",
+    )
+    remote_store = FailingCleanupRemoteStore(
+        failing_remote_path=f"{old_backup.name}.parts/000002.part"
+    )
+
+    with pytest.raises(RuntimeError):
+        cleanup_backup_offsite(
+            CleanupBackupOffsiteCommand(
+                backup_dir=backup_dir,
+                offsite_url="https://s3.example.test/bucket",
+                offsite_root="/hhru-platform/backups",
+                keep_latest=1,
+                keep_weekly=0,
+                apply=True,
+                triggered_by="unit-test",
+            ),
+            remote_store=remote_store,
+            upload_receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+            verification_receipt_store=LocalBackupOffsiteVerificationReceiptStore(),
+        )
+
+    assert remote_store.delete_calls == [
+        f"{old_backup.name}.parts/000001.part",
+        f"{old_backup.name}.parts/000002.part",
+    ]
+    assert Path(f"{old_backup}.manifest.json").exists()
+    assert Path(f"{old_backup}.offsite.json").exists()
+    assert Path(f"{old_backup}.offsite.parts.json").exists()
+    assert Path(f"{old_backup}.offsite.verified.json").exists()
+
+
+def test_cleanup_backup_offsite_retains_weekly_and_protected_milestones(
+    tmp_path: Path,
+) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    latest_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260531T120000Z",
+    )
+    weekly_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260520T120000Z",
+    )
+    protected_backup = _write_cleanup_generation(
+        backup_dir=backup_dir,
+        timestamp="20260501T120000Z",
+        protected=True,
+    )
+
+    result = cleanup_backup_offsite(
+        CleanupBackupOffsiteCommand(
+            backup_dir=backup_dir,
+            offsite_url="https://s3.example.test/bucket",
+            offsite_root="/hhru-platform/backups",
+            keep_latest=1,
+            keep_weekly=2,
+            triggered_by="unit-test",
+        ),
+        remote_store=FakeCleanupRemoteStore(),
+        upload_receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+        verification_receipt_store=LocalBackupOffsiteVerificationReceiptStore(),
+    )
+
+    assert _summary_for(result, latest_backup).action == "retained"
+    assert _summary_for(result, weekly_backup).action == "retained"
+    protected_summary = _summary_for(result, protected_backup)
+    assert protected_summary.action == "retained"
+    assert protected_summary.reason == "protected milestone backup"
+
+
+def _write_cleanup_generation(
+    *,
+    backup_dir: Path,
+    timestamp: str,
+    verified: bool = True,
+    protected: bool = False,
+) -> Path:
+    backup_file = backup_dir / f"hhru-platform_hhru_platform_{timestamp}.dump"
+    backup_file.write_bytes(b"backup")
+    Path(f"{backup_file}.manifest.json").write_text("manifest\n", encoding="utf-8")
+    Path(f"{backup_file}.offsite.parts.json").write_text("parts\n", encoding="utf-8")
+    uploaded_at = datetime.strptime(timestamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    upload_receipt = BackupOffsiteUploadReceipt(
+        uploaded_at=uploaded_at,
+        offsite_url="https://s3.example.test/bucket",
+        offsite_root="/hhru-platform/backups",
+        backup_size_bytes=6,
+        backup_sha256=f"backup-{timestamp}",
+        manifest_sha256=f"manifest-{timestamp}",
+        chunk_size_bytes=3,
+        part_count=2,
+        remote_backup_path=f"/hhru-platform/backups/{backup_file.name}.parts",
+        remote_manifest_path=f"/hhru-platform/backups/{backup_file.name}.manifest.json",
+    )
+    LocalBackupOffsiteUploadReceiptStore().write_receipt(
+        backup_file=backup_file,
+        receipt=upload_receipt,
+    )
+    if verified:
+        LocalBackupOffsiteVerificationReceiptStore().write_receipt(
+            backup_file=backup_file,
+            receipt=BackupOffsiteVerificationReceipt(
+                verified_at=uploaded_at,
+                offsite_url=upload_receipt.offsite_url,
+                offsite_root=upload_receipt.offsite_root,
+                backup_size_bytes=upload_receipt.backup_size_bytes,
+                backup_sha256=upload_receipt.backup_sha256,
+                manifest_sha256=upload_receipt.manifest_sha256,
+                chunk_size_bytes=upload_receipt.chunk_size_bytes,
+                part_count=upload_receipt.part_count,
+                remote_backup_path=upload_receipt.remote_backup_path,
+                remote_manifest_path=upload_receipt.remote_manifest_path,
+                verified_object_count=3,
+            ),
+        )
+    if protected:
+        Path(f"{backup_file}.offsite.keep").touch()
+    return backup_file
+
+
+def _summary_for(result, backup_file: Path):
+    return next(summary for summary in result.summaries if summary.backup_file == backup_file)

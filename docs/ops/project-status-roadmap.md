@@ -97,7 +97,7 @@ corpus.
   на pilot/test corpus.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
 - Backup retention и cleanup routine: backup/offsite contour работает, но retention
-  policy для S3/offsite и sidecar cleanup ещё нужно зафиксировать.
+  cleanup tooling ещё нужно проверить VPS dry-run/apply smoke.
 - Production research archive routine: S3 mechanics доказаны на
   `tool_validation` bundle, но cadence settled bundles и archive-before-delete
   receipts ещё нужно зафиксировать.
@@ -145,7 +145,9 @@ corpus.
    - S3/offsite backup upload/verify/restore-drill проверены;
    - S3/offsite policy decision: automate bounded backup generations, not
      infinite DB dump storage;
-   - open tooling item: implement S3 backup retention delete and sidecar cleanup.
+   - S3 backup retention delete and sidecar cleanup реализованы как отдельная
+     dry-run-first команда `cleanup-backup-offsite`;
+   - next: VPS dry-run, review plan, затем bounded apply smoke.
 3. Prometheus retention считается закрытым на 2026-05-26:
    - running flags: `7d` и `8GB`;
    - `hh_collector_prometheus_data`: `5.5G`;
@@ -390,7 +392,8 @@ VPS observation 2026-05-31:
 Next experiment plan:
 
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
-2. Закрыть S3 backup retention delete and sidecar cleanup.
+2. Прогнать VPS dry-run/apply smoke для S3 backup retention delete and sidecar
+   cleanup.
 3. Зафиксировать production cadence settled research archive bundles и
    archive-before-delete receipts.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.

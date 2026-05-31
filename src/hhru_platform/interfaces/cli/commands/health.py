@@ -76,6 +76,14 @@ def handle_health_check(_: argparse.Namespace) -> int:
         f"{'yes' if settings.backup_offsite_s3_access_key_id else 'no'}"
     )
     print(
+        "backup_offsite_retention_keep_latest="
+        f"{settings.backup_offsite_retention_keep_latest}"
+    )
+    print(
+        "backup_offsite_retention_keep_weekly="
+        f"{settings.backup_offsite_retention_keep_weekly}"
+    )
+    print(
         "housekeeping_raw_api_payload_retention_days="
         f"{settings.housekeeping_raw_api_payload_retention_days}"
     )

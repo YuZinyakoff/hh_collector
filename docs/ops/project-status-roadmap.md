@@ -99,8 +99,9 @@ corpus.
 - Backup retention и cleanup routine: backup/offsite contour работает, но retention
   apply smoke ещё нужно проверить на реальном безопасном deletion candidate.
 - Production research archive routine: S3 mechanics доказаны на
-  `tool_validation` bundle, но cadence settled bundles и archive-before-delete
-  receipts ещё нужно зафиксировать.
+  `tool_validation` bundle, per-chunk verification receipts прошли VPS smoke,
+  non-destructive settled incremental export реализован; complete-coverage gate
+  перед archive-before-delete ещё не закрыт.
 - Prometheus retention: фактически применён на VPS, volume в пределах configured
   size limit.
 - Многодневная unattended stability на VPS.
@@ -403,9 +404,9 @@ Next experiment plan:
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
 2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
    только когда появится реальный безопасный deletion candidate.
-3. Задеплоить per-chunk research archive `.offsite.verified.json` receipts,
-   повторить VPS remote verify, затем зафиксировать production cadence settled
-   bundles и complete-coverage gate для archive-before-delete.
+3. Прогнать VPS smoke settled incremental research archive на отдельном
+   `archive_kind=incremental_validation`, затем реализовать complete-coverage
+   gate для archive-before-delete.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

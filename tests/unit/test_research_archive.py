@@ -5,9 +5,10 @@ import json
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from hhru_platform.application.commands.export_research_archive import (
     ExportResearchArchiveCommand,
@@ -25,7 +26,11 @@ from hhru_platform.application.commands.verify_research_archive_offsite import (
     VerifyResearchArchiveOffsiteCommand,
     verify_research_archive_offsite,
 )
+from hhru_platform.infrastructure.db.repositories.research_archive_repo import (
+    SqlAlchemyResearchArchiveRepository,
+)
 from hhru_platform.infrastructure.research_archive import (
+    LocalResearchArchiveCursorStore,
     LocalResearchArchiveOffsiteUploadReceiptStore,
     LocalResearchArchiveOffsiteVerificationReceiptStore,
     LocalResearchArchiveStore,
@@ -36,6 +41,7 @@ from hhru_platform.infrastructure.research_archive import (
 class FakeResearchArchiveRepository:
     def __init__(self) -> None:
         self.seen_datasets: list[str] = []
+        self.seen_windows: list[tuple[str, int | None, datetime | None]] = []
 
     def iter_dataset_records(
         self,
@@ -43,30 +49,20 @@ class FakeResearchArchiveRepository:
         dataset: str,
         batch_size: int,
         limit: int | None,
+        after_source_id: int | None,
+        settled_before: datetime | None,
     ) -> Iterable[Mapping[str, Any]]:
         assert batch_size == 100
         assert limit is None
         self.seen_datasets.append(dataset)
+        self.seen_windows.append((dataset, after_source_id, settled_before))
         if dataset == "bronze/raw_api_payload":
-            yield {
-                "raw_api_payload_id": 101,
-                "api_request_log_id": 201,
-                "crawl_run_id": "run-1",
-                "crawl_partition_id": "partition-1",
-                "request_type": "vacancy_detail",
-                "endpoint_type": "vacancy_detail",
-                "endpoint": "/vacancies/123",
-                "method": "GET",
-                "params_json": {"locale": "RU"},
-                "status_code": 200,
-                "latency_ms": 96,
-                "requested_at": datetime(2026, 5, 26, 10, 0, tzinfo=UTC),
-                "response_received_at": datetime(2026, 5, 26, 10, 0, 1, tzinfo=UTC),
-                "entity_hh_id": "123",
-                "payload_hash": "hash-101",
-                "received_at": datetime(2026, 5, 26, 10, 0, 2, tzinfo=UTC),
-                "payload_json": {"id": "123", "name": "Python developer"},
-            }
+            record = _raw_payload_record(101)
+            if after_source_id is not None and record["raw_api_payload_id"] <= after_source_id:
+                return
+            if settled_before is not None and record["received_at"] > settled_before:
+                return
+            yield record
         elif dataset == "silver/vacancy_current_state":
             yield {
                 "vacancy_id": "vacancy-1",
@@ -85,6 +81,28 @@ class FakeResearchArchiveRepository:
             }
         else:
             raise AssertionError(f"unexpected dataset: {dataset}")
+
+
+def _raw_payload_record(raw_api_payload_id: int) -> dict[str, Any]:
+    return {
+        "raw_api_payload_id": raw_api_payload_id,
+        "api_request_log_id": raw_api_payload_id + 100,
+        "crawl_run_id": "run-1",
+        "crawl_partition_id": "partition-1",
+        "request_type": "vacancy_detail",
+        "endpoint_type": "vacancy_detail",
+        "endpoint": "/vacancies/123",
+        "method": "GET",
+        "params_json": {"locale": "RU"},
+        "status_code": 200,
+        "latency_ms": 96,
+        "requested_at": datetime(2026, 5, 26, 10, 0, tzinfo=UTC),
+        "response_received_at": datetime(2026, 5, 26, 10, 0, 1, tzinfo=UTC),
+        "entity_hh_id": "123",
+        "payload_hash": f"hash-{raw_api_payload_id}",
+        "received_at": datetime(2026, 5, 26, 10, 0, 2, tzinfo=UTC),
+        "payload_json": {"id": "123", "name": "Python developer"},
+    }
 
 
 class FakeResearchArchiveRemoteStore:
@@ -181,6 +199,166 @@ def test_export_research_archive_writes_manifest_inventory_and_verifies(
     assert verify_result.scanned_manifest_count == 2
     assert verify_result.verified_manifest_count == 2
     assert verify_result.total_row_count == 2
+
+
+def test_incremental_export_uses_manifest_cursor_and_is_locally_idempotent(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    settled_before = datetime(2026, 5, 27, 0, 0, tzinfo=UTC)
+    cursor_store = LocalResearchArchiveCursorStore()
+    first_repository = FakeResearchArchiveRepository()
+
+    first_result = export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            chunk_size=10,
+            batch_size=100,
+            archive_kind="production",
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+            incremental=True,
+            settled_before=settled_before,
+        ),
+        research_archive_repository=first_repository,
+        research_archive_store=LocalResearchArchiveStore(),
+        research_archive_cursor_store=cursor_store,
+    )
+
+    assert first_repository.seen_windows == [
+        ("bronze/raw_api_payload", 0, settled_before),
+    ]
+    assert first_result.incremental is True
+    assert first_result.total_row_count == 1
+    assert first_result.summaries[0].source_id_before == 0
+    assert first_result.summaries[0].source_id_after == 101
+
+    second_repository = FakeResearchArchiveRepository()
+    second_result = export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            chunk_size=10,
+            batch_size=100,
+            archive_kind="production",
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 13, 0, tzinfo=UTC),
+            incremental=True,
+            settled_before=settled_before,
+        ),
+        research_archive_repository=second_repository,
+        research_archive_store=LocalResearchArchiveStore(),
+        research_archive_cursor_store=cursor_store,
+    )
+
+    assert second_repository.seen_windows == [
+        ("bronze/raw_api_payload", 101, settled_before),
+    ]
+    assert second_result.total_chunk_count == 0
+    assert second_result.total_row_count == 0
+    assert second_result.summaries[0].source_id_before == 101
+    assert second_result.summaries[0].source_id_after == 101
+
+
+def test_research_archive_manifest_source_range_compares_numeric_ids(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    summaries = LocalResearchArchiveStore().write_dataset(
+        archive_dir=archive_dir,
+        schema_version="research-archive-v1",
+        dataset="bronze/raw_api_payload",
+        records=(_raw_payload_record(99), _raw_payload_record(100)),
+        chunk_size=10,
+        created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        archive_kind="production",
+        source_database="hhru_platform",
+        source_git_revision="test-revision",
+        source_command="pytest",
+        triggered_by="unit-test",
+    )
+
+    manifest = json.loads(summaries[0].manifest_file.read_text(encoding="utf-8"))
+    assert manifest["source_min_id"] == "99"
+    assert manifest["source_max_id"] == "100"
+
+
+def test_research_archive_store_does_not_overwrite_existing_chunk(tmp_path: Path) -> None:
+    archive_dir = tmp_path / "research"
+    store = LocalResearchArchiveStore()
+    parameters = {
+        "archive_dir": archive_dir,
+        "schema_version": "research-archive-v1",
+        "dataset": "bronze/raw_api_payload",
+        "chunk_size": 10,
+        "created_at": datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        "archive_kind": "production",
+        "source_database": "hhru_platform",
+        "source_git_revision": "test-revision",
+        "source_command": "pytest",
+        "triggered_by": "unit-test",
+    }
+    store.write_dataset(records=(_raw_payload_record(99),), **parameters)
+
+    with pytest.raises(FileExistsError, match="research archive chunk already exists"):
+        store.write_dataset(records=(_raw_payload_record(100),), **parameters)
+
+
+def test_research_archive_incremental_sql_stops_before_first_unsettled_source_id() -> None:
+    repository = SqlAlchemyResearchArchiveRepository(cast(Any, None))
+    settled_before = datetime(2026, 5, 27, 0, 0, tzinfo=UTC)
+
+    statement = repository._build_statement(
+        "bronze/raw_api_payload",
+        after_source_id=40,
+        settled_before=settled_before,
+    )
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "raw_api_payload.id > 40" in sql
+    assert "min(raw_api_payload.id)" in sql
+    assert "raw_api_payload.received_at > '2026-05-27 00:00:00+00:00'" in sql
+    assert "raw_api_payload.id < (SELECT min(raw_api_payload.id)" in sql
+
+
+def test_research_archive_bounded_incremental_sql_selects_source_id_prefix() -> None:
+    repository = SqlAlchemyResearchArchiveRepository(cast(Any, None))
+
+    statement = repository._build_statement(
+        "bronze/raw_api_payload",
+        after_source_id=40,
+        settled_before=datetime(2026, 5, 27, 0, 0, tzinfo=UTC),
+        incremental_limit=10,
+    )
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "raw_api_payload.id IN (SELECT raw_api_payload.id" in sql
+    assert "ORDER BY raw_api_payload.id" in sql
+    assert "LIMIT 10" in sql
+
+
+def test_incremental_export_rejects_point_in_time_dataset() -> None:
+    with pytest.raises(ValueError, match="supports only append-only datasets"):
+        ExportResearchArchiveCommand(
+            datasets=("silver/vacancy_current_state",),
+            incremental=True,
+            settled_before=datetime(2026, 5, 27, 0, 0, tzinfo=UTC),
+        )
 
 
 def test_sync_and_verify_research_archive_offsite(

@@ -512,6 +512,13 @@ Status on 2026-05-31:
   after deploying this change to create them for the existing tool-validation
   bundle.
 
+VPS receipt smoke on 2026-06-01:
+
+- remote verification succeeded for `13/13` manifests;
+- `verification_receipt_count=13`;
+- `verified_object_count=27`;
+- bounded full readback succeeded for `2/2` selected chunks.
+
 ### Stage D: proof-of-read smoke
 
 This is not analytics product work. It only proves the archive is usable as a
@@ -532,9 +539,72 @@ archive foundation.
 
 - Implemented: write per-chunk "archive verified" receipts after S3 object-size
   verification and record whether full readback was performed.
+- Implemented: non-destructive incremental export mode for append-only datasets.
+  The watermark is derived from local manifests with the same `archive_kind`.
+  Export stops before the first source row newer than the explicit settled cutoff,
+  so a fresh row cannot be skipped by later watermark advancement.
 - Make housekeeping require verified archive receipts before deleting raw/snapshot
   rows from production data.
 - Add operator runbook for archive-before-delete.
+
+Initial operator cadence:
+
+1. Once per day, export the append-only suffix older than a `24h` safety window:
+
+   ```bash
+   make export-research-archive \
+     ARGS="--incremental --settled-delay-hours 24 --archive-kind production --triggered-by daily-production-archive"
+   ```
+
+2. Verify locally, sync to S3 and verify remotely:
+
+   ```bash
+   make verify-research-archive ARGS="--triggered-by daily-production-archive-local-verify"
+   make sync-research-archive-offsite ARGS="--triggered-by daily-production-archive-offsite"
+   make verify-research-archive-offsite \
+     ARGS="--readback-limit 2 --triggered-by daily-production-archive-offsite-verify"
+   ```
+
+3. Export `silver/vacancy` and `silver/vacancy_current_state` separately as
+   point-in-time snapshots after a completed production sweep:
+
+   ```bash
+   make export-research-archive \
+     ARGS="--dataset silver/vacancy --dataset silver/vacancy_current_state --archive-kind production --triggered-by completed-sweep-snapshot"
+   ```
+
+Incremental mode intentionally defaults only to append-only datasets:
+
+- `bronze/raw_api_payload`
+- `silver/api_request_log`
+- `silver/vacancy_snapshot`
+- `silver/vacancy_seen_event`
+
+The existing `archive_kind=tool_validation` smoke manifests do not advance
+`archive_kind=production` watermarks. No live PostgreSQL rows may be deleted by
+this routine yet.
+
+Before the first production export, validate incremental watermark advancement
+inside an isolated local directory:
+
+```bash
+SMOKE_DIR=.state/archive/research-incremental-smoke
+
+make export-research-archive \
+  ARGS="--archive-dir $SMOKE_DIR --incremental --settled-delay-hours 24 --limit-per-dataset 10 --chunk-size 10 --archive-kind incremental_validation --triggered-by vps-incremental-archive-smoke-1"
+
+make export-research-archive \
+  ARGS="--archive-dir $SMOKE_DIR --incremental --settled-delay-hours 24 --limit-per-dataset 10 --chunk-size 10 --archive-kind incremental_validation --triggered-by vps-incremental-archive-smoke-2"
+
+make verify-research-archive \
+  ARGS="--archive-dir $SMOKE_DIR --triggered-by vps-incremental-archive-smoke-verify"
+
+du -sh "$SMOKE_DIR"
+```
+
+The second export must report each first run `source_id_after` as its matching
+`source_id_before`, then advance to the next bounded source-id prefix. Do not
+sync this isolated validation directory to S3.
 
 ### Stage F: analytical layer, later
 
@@ -550,8 +620,8 @@ archive foundation.
 
 - Exact chunk size target: start with `100k` rows or `64-256MB` compressed files,
   whichever is easier to implement safely.
-- Whether production archive cadence is per completed run, daily partition, or
-  both.
+- Whether the initial daily append-only cadence should later be supplemented by
+  per-completed-run exports after production telemetry is available.
 - Whether current pilot corpus should be archived as evidence or discarded after
   verified backup/offsite.
 - Whether to implement content-addressed raw dedup in v1. Default: no.

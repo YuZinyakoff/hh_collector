@@ -1,3 +1,6 @@
+from hhru_platform.infrastructure.research_archive.cursor_store import (
+    LocalResearchArchiveCursorStore,
+)
 from hhru_platform.infrastructure.research_archive.local_store import (
     LocalResearchArchiveStore,
     ResearchArchiveChunkSummary,
@@ -14,6 +17,7 @@ from hhru_platform.infrastructure.research_archive.offsite_verification_receipt_
 )
 
 __all__ = [
+    "LocalResearchArchiveCursorStore",
     "LocalResearchArchiveStore",
     "LocalResearchArchiveOffsiteUploadReceiptStore",
     "LocalResearchArchiveOffsiteVerificationReceiptStore",

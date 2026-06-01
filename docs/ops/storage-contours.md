@@ -149,6 +149,10 @@ Current status:
   `<chunk>.manifest.json.offsite.verified.json` receipt per verified chunk. This
   is proof for the chunk-level S3 check, not yet permission to delete live DB
   rows.
+- Non-destructive incremental export exists for append-only archive datasets.
+  It derives a per-dataset watermark from local manifests with the same
+  `archive_kind` and exports only the contiguous source-id prefix older than the
+  settled cutoff. Point-in-time dimensions remain explicit snapshot exports.
 
 ## 4. Parquet policy
 
@@ -246,8 +250,10 @@ Use S3 research archive for:
 
 Recommended automation:
 
-- write only completed/settled bundles: completed search run, completed detail
-  catch-up, or time partitions older than a safety window;
+- initially run a daily append-only export for time partitions older than a `24h`
+  safety window;
+- export point-in-time `vacancy` and `vacancy_current_state` snapshots separately
+  after a completed production sweep;
 - verify remote manifest, sizes and checksums/readback before considering live DB
   cleanup;
 - treat bundles as immutable by convention;
@@ -278,7 +284,9 @@ For research archive contour:
 2. Keep JSONL.GZ as the canonical raw Archive v1 format.
 3. Keep append-only archive inventory and repeat S3 verification/readback after
    archive schema or serialization changes.
-4. Re-run remote verification after deploying per-chunk verification receipts.
-5. Define production cadence for settled archive bundles and require complete
-   verified archive coverage before any archive-before-delete housekeeping.
-6. Add Parquet export only after the v1 dataset schemas are named and stable.
+4. Use daily `--incremental --settled-delay-hours 24 --archive-kind production`
+   exports for append-only datasets.
+5. Require complete verified archive coverage before any archive-before-delete
+   housekeeping.
+6. Add scheduler automation only after the manual production routine is proven.
+7. Add Parquet export only after the v1 dataset schemas are named and stable.

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from hhru_platform.infrastructure.db.models.api_request_log import ApiRequestLog
@@ -26,14 +27,21 @@ class SqlAlchemyResearchArchiveRepository:
         dataset: str,
         batch_size: int,
         limit: int | None,
+        after_source_id: int | None = None,
+        settled_before: datetime | None = None,
     ) -> Iterable[Mapping[str, Any]]:
         if batch_size < 1:
             raise ValueError("batch_size must be greater than or equal to one")
         if limit is not None and limit < 1:
             raise ValueError("limit must be greater than or equal to one")
 
-        statement = self._build_statement(dataset)
-        if limit is not None:
+        statement = self._build_statement(
+            dataset,
+            after_source_id=after_source_id,
+            settled_before=settled_before,
+            incremental_limit=limit,
+        )
+        if limit is not None and after_source_id is None and settled_before is None:
             statement = statement.limit(limit)
 
         result = self._session.execute(
@@ -42,21 +50,36 @@ class SqlAlchemyResearchArchiveRepository:
         for row in result.mappings():
             yield cast(Mapping[str, Any], dict(row))
 
-    def _build_statement(self, dataset: str) -> Select[tuple[Any, ...]]:
+    def _build_statement(
+        self,
+        dataset: str,
+        *,
+        after_source_id: int | None = None,
+        settled_before: datetime | None = None,
+        incremental_limit: int | None = None,
+    ) -> Select[tuple[Any, ...]]:
         if dataset == "bronze/raw_api_payload":
-            return self._raw_api_payload_statement()
-        if dataset == "silver/api_request_log":
-            return self._api_request_log_statement()
-        if dataset == "silver/vacancy":
-            return self._vacancy_statement()
-        if dataset == "silver/vacancy_snapshot":
-            return self._vacancy_snapshot_statement()
-        if dataset == "silver/vacancy_seen_event":
-            return self._vacancy_seen_event_statement()
-        if dataset == "silver/vacancy_current_state":
-            return self._vacancy_current_state_statement()
+            statement = self._raw_api_payload_statement()
+        elif dataset == "silver/api_request_log":
+            statement = self._api_request_log_statement()
+        elif dataset == "silver/vacancy":
+            statement = self._vacancy_statement()
+        elif dataset == "silver/vacancy_snapshot":
+            statement = self._vacancy_snapshot_statement()
+        elif dataset == "silver/vacancy_seen_event":
+            statement = self._vacancy_seen_event_statement()
+        elif dataset == "silver/vacancy_current_state":
+            statement = self._vacancy_current_state_statement()
+        else:
+            raise ValueError(f"unsupported research archive dataset: {dataset}")
 
-        raise ValueError(f"unsupported research archive dataset: {dataset}")
+        return _apply_incremental_window(
+            statement,
+            dataset=dataset,
+            after_source_id=after_source_id,
+            settled_before=settled_before,
+            limit=incremental_limit,
+        )
 
     @staticmethod
     def _raw_api_payload_statement() -> Select[tuple[Any, ...]]:
@@ -210,3 +233,65 @@ class SqlAlchemyResearchArchiveRepository:
             .order_by(VacancyCurrentState.updated_at, VacancyCurrentState.vacancy_id)
         )
         return cast(Select[tuple[Any, ...]], statement)
+
+
+def _apply_incremental_window(
+    statement: Select[tuple[Any, ...]],
+    *,
+    dataset: str,
+    after_source_id: int | None,
+    settled_before: datetime | None,
+    limit: int | None,
+) -> Select[tuple[Any, ...]]:
+    if after_source_id is None and settled_before is None:
+        if limit is not None:
+            raise ValueError("incremental limit requires an incremental window")
+        return statement
+    if after_source_id is None or settled_before is None:
+        raise ValueError("after_source_id and settled_before must be provided together")
+    if after_source_id < 0:
+        raise ValueError("after_source_id must be greater than or equal to zero")
+
+    try:
+        source_id_column, observed_at_column = _incremental_window_columns(dataset)
+    except KeyError as error:
+        raise ValueError(
+            f"incremental research archive export does not support dataset: {dataset}"
+        ) from error
+
+    first_unsettled_id = (
+        select(func.min(source_id_column))
+        .where(source_id_column > after_source_id)
+        .where(
+            or_(
+                observed_at_column.is_(None),
+                observed_at_column > settled_before,
+            )
+        )
+        .scalar_subquery()
+    )
+    window_predicates = (
+        source_id_column > after_source_id,
+        or_(
+            first_unsettled_id.is_(None),
+            source_id_column < first_unsettled_id,
+        ),
+    )
+    if limit is not None:
+        source_id_prefix = (
+            select(source_id_column)
+            .where(*window_predicates)
+            .order_by(source_id_column)
+            .limit(limit)
+        )
+        return statement.where(source_id_column.in_(source_id_prefix))
+    return statement.where(*window_predicates)
+
+
+def _incremental_window_columns(dataset: str) -> tuple[Any, Any]:
+    return {
+        "bronze/raw_api_payload": (RawApiPayload.id, RawApiPayload.received_at),
+        "silver/api_request_log": (ApiRequestLog.id, ApiRequestLog.requested_at),
+        "silver/vacancy_snapshot": (VacancySnapshot.id, VacancySnapshot.captured_at),
+        "silver/vacancy_seen_event": (VacancySeenEvent.id, VacancySeenEvent.seen_at),
+    }[dataset]

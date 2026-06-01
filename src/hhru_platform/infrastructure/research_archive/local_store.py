@@ -32,6 +32,8 @@ class ResearchArchiveChunkSummary:
     manifest_file: Path
     data_size_bytes: int
     data_sha256: str
+    source_min_id: str | None
+    source_max_id: str | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -303,6 +305,10 @@ class LocalResearchArchiveStore:
         chunk_basename = f"{export_id}-chunk-{chunk_index:06d}"
         data_file = dataset_dir / f"{chunk_basename}.jsonl.gz"
         manifest_file = dataset_dir / f"{chunk_basename}.manifest.json"
+        if data_file.exists() or manifest_file.exists():
+            raise FileExistsError(
+                f"research archive chunk already exists: {data_file} or {manifest_file}"
+            )
 
         with gzip.open(data_file, "wt", encoding="utf-8") as handle:
             for record in records:
@@ -326,6 +332,8 @@ class LocalResearchArchiveStore:
         ]
         relative_data_file = data_file.relative_to(archive_dir)
         relative_manifest_file = manifest_file.relative_to(archive_dir)
+        source_min_id = _min_source_id(id_values)
+        source_max_id = _max_source_id(id_values)
         manifest_payload = {
             "archive_schema_version": schema_version,
             "archive_kind": archive_kind,
@@ -341,8 +349,8 @@ class LocalResearchArchiveStore:
             "source_command": source_command,
             "triggered_by": triggered_by,
             "row_count": len(records),
-            "source_min_id": min((str(value) for value in id_values), default=None),
-            "source_max_id": max((str(value) for value in id_values), default=None),
+            "source_min_id": source_min_id,
+            "source_max_id": source_max_id,
             "source_min_observed_at": _min_observed_at(observed_values),
             "source_max_observed_at": _max_observed_at(observed_values),
             "data_file": str(relative_data_file),
@@ -404,6 +412,8 @@ class LocalResearchArchiveStore:
             manifest_file=manifest_file,
             data_size_bytes=data_size_bytes,
             data_sha256=data_sha256,
+            source_min_id=source_min_id,
+            source_max_id=source_max_id,
         )
 
 
@@ -576,6 +586,27 @@ def _min_observed_at(values: list[object]) -> str | None:
 def _max_observed_at(values: list[object]) -> str | None:
     normalized_values = sorted(str(_json_default(value)) for value in values)
     return normalized_values[-1] if normalized_values else None
+
+
+def _min_source_id(values: list[object]) -> str | None:
+    return _extreme_source_id(values, minimum=True)
+
+
+def _max_source_id(values: list[object]) -> str | None:
+    return _extreme_source_id(values, minimum=False)
+
+
+def _extreme_source_id(values: list[object], *, minimum: bool) -> str | None:
+    if not values:
+        return None
+    select_value = min if minimum else max
+    return str(select_value(values, key=_source_id_sort_key))
+
+
+def _source_id_sort_key(value: object) -> tuple[int, int | str]:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return 0, value
+    return 1, str(value)
 
 
 def _select_manifest_files(

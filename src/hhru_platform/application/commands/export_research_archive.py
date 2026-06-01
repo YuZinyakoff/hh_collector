@@ -26,6 +26,12 @@ DATASET_VACANCY_SNAPSHOT = "silver/vacancy_snapshot"
 DATASET_VACANCY_SEEN_EVENT = "silver/vacancy_seen_event"
 DATASET_VACANCY_CURRENT_STATE = "silver/vacancy_current_state"
 
+INCREMENTAL_RESEARCH_ARCHIVE_DATASETS = (
+    DATASET_RAW_API_PAYLOAD,
+    DATASET_API_REQUEST_LOG,
+    DATASET_VACANCY_SNAPSHOT,
+    DATASET_VACANCY_SEEN_EVENT,
+)
 DEFAULT_RESEARCH_ARCHIVE_DATASETS = (
     DATASET_RAW_API_PAYLOAD,
     DATASET_API_REQUEST_LOG,
@@ -50,6 +56,8 @@ class ExportResearchArchiveCommand:
     source_git_revision: str = "unknown"
     source_command: str = "export-research-archive"
     created_at: datetime | None = None
+    incremental: bool = False
+    settled_before: datetime | None = None
 
     def __post_init__(self) -> None:
         normalized_triggered_by = self.triggered_by.strip()
@@ -84,6 +92,22 @@ class ExportResearchArchiveCommand:
             raise ValueError("batch_size must be greater than or equal to one")
         if self.limit_per_dataset is not None and self.limit_per_dataset < 1:
             raise ValueError("limit_per_dataset must be greater than or equal to one")
+        if self.incremental:
+            unsupported_incremental = sorted(
+                set(normalized_datasets) - set(INCREMENTAL_RESEARCH_ARCHIVE_DATASETS)
+            )
+            if unsupported_incremental:
+                supported = ", ".join(INCREMENTAL_RESEARCH_ARCHIVE_DATASETS)
+                raise ValueError(
+                    "incremental research archive export supports only append-only "
+                    f"datasets: {supported}; unsupported: {', '.join(unsupported_incremental)}"
+                )
+            if self.settled_before is None:
+                raise ValueError("settled_before is required for incremental export")
+        elif self.settled_before is not None:
+            raise ValueError("settled_before requires incremental export")
+        if self.settled_before is not None and self.settled_before.utcoffset() is None:
+            raise ValueError("settled_before must be timezone-aware")
 
         object.__setattr__(self, "archive_dir", Path(self.archive_dir))
         object.__setattr__(self, "datasets", normalized_datasets)
@@ -92,6 +116,8 @@ class ExportResearchArchiveCommand:
         object.__setattr__(self, "source_database", normalized_source_database)
         object.__setattr__(self, "source_git_revision", normalized_source_git_revision)
         object.__setattr__(self, "source_command", normalized_source_command)
+        if self.settled_before is not None:
+            object.__setattr__(self, "settled_before", self.settled_before.astimezone(UTC))
 
 
 @dataclass(slots=True, frozen=True)
@@ -102,6 +128,8 @@ class ResearchArchiveDatasetSummary:
     data_size_bytes: int
     manifest_files: tuple[Path, ...]
     data_files: tuple[Path, ...]
+    source_id_before: int | None
+    source_id_after: int | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -112,6 +140,8 @@ class ExportResearchArchiveResult:
     archive_kind: str
     triggered_by: str
     created_at: datetime
+    incremental: bool
+    settled_before: datetime | None
     summaries: tuple[ResearchArchiveDatasetSummary, ...]
 
     @property
@@ -134,8 +164,21 @@ class ResearchArchiveRepository(Protocol):
         dataset: str,
         batch_size: int,
         limit: int | None,
+        after_source_id: int | None,
+        settled_before: datetime | None,
     ) -> Iterable[Mapping[str, Any]]:
         """Yield archive-ready records for one dataset."""
+
+
+class ResearchArchiveCursorStore(Protocol):
+    def latest_source_id(
+        self,
+        *,
+        archive_dir: Path,
+        dataset: str,
+        archive_kind: str,
+    ) -> int | None:
+        """Return the latest locally archived numeric source id for one dataset."""
 
 
 class ResearchArchiveStore(Protocol):
@@ -162,6 +205,7 @@ def export_research_archive(
     *,
     research_archive_repository: ResearchArchiveRepository,
     research_archive_store: ResearchArchiveStore,
+    research_archive_cursor_store: ResearchArchiveCursorStore | None = None,
 ) -> ExportResearchArchiveResult:
     started_at = log_operation_started(
         LOGGER,
@@ -169,9 +213,13 @@ def export_research_archive(
         archive_dir=str(command.archive_dir),
         datasets=",".join(command.datasets),
         archive_kind=command.archive_kind,
+        incremental=command.incremental,
+        settled_before=command.settled_before.isoformat() if command.settled_before else "-",
         triggered_by=command.triggered_by,
     )
     created_at = command.created_at or datetime.now(UTC)
+    if command.incremental and research_archive_cursor_store is None:
+        raise ValueError("research_archive_cursor_store is required for incremental export")
 
     try:
         summaries = tuple(
@@ -181,6 +229,7 @@ def export_research_archive(
                 created_at=created_at,
                 research_archive_repository=research_archive_repository,
                 research_archive_store=research_archive_store,
+                research_archive_cursor_store=research_archive_cursor_store,
             )
             for dataset in command.datasets
         )
@@ -203,6 +252,8 @@ def export_research_archive(
         archive_kind=command.archive_kind,
         triggered_by=command.triggered_by,
         created_at=created_at,
+        incremental=command.incremental,
+        settled_before=command.settled_before,
         summaries=summaries,
     )
     record_operation_succeeded(
@@ -212,6 +263,8 @@ def export_research_archive(
         archive_dir=str(result.archive_dir),
         triggered_by=result.triggered_by,
         archive_kind=result.archive_kind,
+        incremental=result.incremental,
+        settled_before=result.settled_before.isoformat() if result.settled_before else "-",
         total_chunk_count=result.total_chunk_count,
         total_row_count=result.total_row_count,
         total_data_size_bytes=result.total_data_size_bytes,
@@ -226,11 +279,19 @@ def _export_dataset(
     created_at: datetime,
     research_archive_repository: ResearchArchiveRepository,
     research_archive_store: ResearchArchiveStore,
+    research_archive_cursor_store: ResearchArchiveCursorStore | None,
 ) -> ResearchArchiveDatasetSummary:
+    source_id_before = _source_id_before(
+        dataset=dataset,
+        command=command,
+        research_archive_cursor_store=research_archive_cursor_store,
+    )
     records = research_archive_repository.iter_dataset_records(
         dataset=dataset,
         batch_size=command.batch_size,
         limit=command.limit_per_dataset,
+        after_source_id=source_id_before,
+        settled_before=command.settled_before,
     )
     chunks = research_archive_store.write_dataset(
         archive_dir=command.archive_dir,
@@ -252,4 +313,44 @@ def _export_dataset(
         data_size_bytes=sum(chunk.data_size_bytes for chunk in chunks),
         manifest_files=tuple(chunk.manifest_file for chunk in chunks),
         data_files=tuple(chunk.data_file for chunk in chunks),
+        source_id_before=source_id_before,
+        source_id_after=_source_id_after(
+            source_id_before=source_id_before,
+            chunks=chunks,
+        ),
     )
+
+
+def _source_id_before(
+    *,
+    dataset: str,
+    command: ExportResearchArchiveCommand,
+    research_archive_cursor_store: ResearchArchiveCursorStore | None,
+) -> int | None:
+    if not command.incremental:
+        return None
+    if research_archive_cursor_store is None:
+        raise ValueError("research_archive_cursor_store is required for incremental export")
+    return (
+        research_archive_cursor_store.latest_source_id(
+            archive_dir=command.archive_dir,
+            dataset=dataset,
+            archive_kind=command.archive_kind,
+        )
+        or 0
+    )
+
+
+def _source_id_after(
+    *,
+    source_id_before: int | None,
+    chunks: tuple[ResearchArchiveChunkSummary, ...],
+) -> int | None:
+    if source_id_before is None:
+        return None
+    source_ids = [
+        int(chunk.source_max_id)
+        for chunk in chunks
+        if chunk.source_max_id is not None
+    ]
+    return max([source_id_before, *source_ids])

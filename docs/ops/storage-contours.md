@@ -175,6 +175,11 @@ Current status:
   vacancy snapshot candidates only inside verified source-id cursors. It does
   not authorize deletion and intentionally leaves cascade-sensitive targets for
   a later gate extension.
+- Initial isolated VPS preview returned `status=ready` with raw cap `81`,
+  snapshot cap `1240`, raw candidates `20` and snapshot candidates `0`, but took
+  `446861 ms`. SQL/index optimization and migration
+  `0005_snapshot_payload_ref_idx` are implemented; repeat VPS timing is required
+  before routine use.
 
 ## 4. Parquet policy
 

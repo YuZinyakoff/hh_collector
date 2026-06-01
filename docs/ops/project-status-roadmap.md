@@ -83,6 +83,11 @@ smoke research archive v1.
   `9` manifests и `2` checkpoints и remote verify `21` objects вернул
   `status=complete`, `issue_count=0`; test bundle лежит под отдельным
   `/hhru-platform/research-archive-smoke/checkpoint-20260601T201007Z`.
+- read-only `preview-research-archive-housekeeping` прошёл isolated VPS smoke:
+  `coverage_status=complete`, raw cap `81`, snapshot cap `1240`, raw candidates
+  `20`, snapshot candidates `0`; первый запрос занял `446861 ms`, поэтому перед
+  расширением gate добавлена SQL/index optimization и требуется repeat measurement
+  после migration `0005_snapshot_payload_ref_idx`.
 
 Текущий статус не равен full production readiness. Корректная формулировка:
 full search coverage operationally validated, backup/offsite restore contour
@@ -187,8 +192,11 @@ corpus.
      `incomplete`, после verify стал `complete` с `issue_count=0`;
    - non-destructive `preview-research-archive-housekeeping` добавлен как первый
      bridge от verified coverage cursors к age-based raw/snapshot candidates;
-   - next: VPS smoke preview на isolated verified bundle, затем расширение gate
-     на cascade-sensitive targets до первого destructive apply;
+   - первый isolated VPS preview подтвердил safety semantics, но занял
+     `446861 ms`; SQL/index optimization добавлена;
+   - next: применить migration `0005_snapshot_payload_ref_idx`, повторить VPS
+     preview measurement, затем расширить gate на cascade-sensitive targets до
+     первого destructive apply;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:
@@ -422,9 +430,10 @@ Next experiment plan:
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
 2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
    только когда появится реальный безопасный deletion candidate.
-3. Прогнать VPS smoke `preview-research-archive-housekeeping` на isolated verified
-   bundle, затем расширить coverage gate на cascade-sensitive targets до первого
-   destructive apply.
+3. Применить migration `0005_snapshot_payload_ref_idx`, повторить VPS measurement
+   `preview-research-archive-housekeeping` на isolated verified bundle, затем
+   расширить coverage gate на cascade-sensitive targets до первого destructive
+   apply.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

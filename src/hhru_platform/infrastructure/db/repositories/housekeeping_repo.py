@@ -5,10 +5,11 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import Select
+from sqlalchemy.sql.selectable import Exists
 
 from hhru_platform.domain.value_objects.enums import CrawlRunStatus
 from hhru_platform.infrastructure.db.models.api_request_log import ApiRequestLog
@@ -45,7 +46,9 @@ class SqlAlchemyHousekeepingRepository:
                 CrawlRunModel.id.is_(None),
                 CrawlRunModel.status != ACTIVE_RUN_STATUS,
             ),
-            ~RawApiPayloadModel.id.in_(self._protected_raw_payload_ids_subquery()),
+            ~RawApiPayloadModel.id.in_(
+                self._protected_raw_payload_ids_subquery(max_source_id=max_source_id)
+            ),
         ]
         if max_source_id is not None:
             filters.append(RawApiPayloadModel.id <= max_source_id)
@@ -71,7 +74,9 @@ class SqlAlchemyHousekeepingRepository:
                 CrawlRunModel.id.is_(None),
                 CrawlRunModel.status != ACTIVE_RUN_STATUS,
             ),
-            ~RawApiPayloadModel.id.in_(self._protected_raw_payload_ids_subquery()),
+            ~RawApiPayloadModel.id.in_(
+                self._protected_raw_payload_ids_subquery(max_source_id=max_source_id)
+            ),
         ]
         if max_source_id is not None:
             filters.append(RawApiPayloadModel.id <= max_source_id)
@@ -137,7 +142,7 @@ class SqlAlchemyHousekeepingRepository:
                 CrawlRunModel.id.is_(None),
                 CrawlRunModel.status != ACTIVE_RUN_STATUS,
             ),
-            ~VacancySnapshotModel.id.in_(self._latest_snapshot_ids_subquery()),
+            ~self._newer_vacancy_snapshot_exists(),
         ]
         if max_source_id is not None:
             filters.append(VacancySnapshotModel.id <= max_source_id)
@@ -162,7 +167,7 @@ class SqlAlchemyHousekeepingRepository:
                 CrawlRunModel.id.is_(None),
                 CrawlRunModel.status != ACTIVE_RUN_STATUS,
             ),
-            ~VacancySnapshotModel.id.in_(self._latest_snapshot_ids_subquery()),
+            ~self._newer_vacancy_snapshot_exists(),
         ]
         if max_source_id is not None:
             filters.append(VacancySnapshotModel.id <= max_source_id)
@@ -328,28 +333,22 @@ class SqlAlchemyHousekeepingRepository:
         return int(self._session.scalar(statement) or 0)
 
     @staticmethod
-    def _latest_snapshot_ids_subquery() -> Select[tuple[int]]:
-        ranked_snapshots = (
-            select(
-                VacancySnapshotModel.id.label("snapshot_id"),
-                func.row_number()
-                .over(
-                    partition_by=(
-                        VacancySnapshotModel.vacancy_id,
-                        VacancySnapshotModel.snapshot_type,
+    def _newer_vacancy_snapshot_exists() -> Exists:
+        newer_snapshot = aliased(VacancySnapshotModel)
+        return exists(
+            select(1)
+            .select_from(newer_snapshot)
+            .where(
+                newer_snapshot.vacancy_id == VacancySnapshotModel.vacancy_id,
+                newer_snapshot.snapshot_type == VacancySnapshotModel.snapshot_type,
+                or_(
+                    newer_snapshot.captured_at > VacancySnapshotModel.captured_at,
+                    and_(
+                        newer_snapshot.captured_at == VacancySnapshotModel.captured_at,
+                        newer_snapshot.id > VacancySnapshotModel.id,
                     ),
-                    order_by=(
-                        VacancySnapshotModel.captured_at.desc(),
-                        VacancySnapshotModel.id.desc(),
-                    ),
-                )
-                .label("snapshot_rank"),
+                ),
             )
-            .subquery()
-        )
-        return cast(
-            Select[tuple[int]],
-            select(ranked_snapshots.c.snapshot_id).where(ranked_snapshots.c.snapshot_rank == 1),
         )
 
     @staticmethod
@@ -360,7 +359,10 @@ class SqlAlchemyHousekeepingRepository:
         )
 
     @staticmethod
-    def _protected_raw_payload_ids_subquery() -> Select[tuple[int]]:
+    def _protected_raw_payload_ids_subquery(
+        *,
+        max_source_id: int | None = None,
+    ) -> Select[tuple[int]]:
         legacy_snapshot_filter = or_(
             VacancySnapshotModel.normalized_json.is_(None),
             func.coalesce(
@@ -372,20 +374,27 @@ class SqlAlchemyHousekeepingRepository:
             )
             != "2",
         )
-        protected_short_payload_ids = (
-            select(VacancySnapshotModel.short_payload_ref_id.label("payload_id"))
-            .where(
-                VacancySnapshotModel.short_payload_ref_id.is_not(None),
-                legacy_snapshot_filter,
+        protected_short_filters = [
+            VacancySnapshotModel.short_payload_ref_id.is_not(None),
+            legacy_snapshot_filter,
+        ]
+        protected_detail_filters = [
+            VacancySnapshotModel.detail_payload_ref_id.is_not(None),
+            legacy_snapshot_filter,
+        ]
+        if max_source_id is not None:
+            protected_short_filters.append(
+                VacancySnapshotModel.short_payload_ref_id <= max_source_id
             )
-        )
-        protected_detail_payload_ids = (
-            select(VacancySnapshotModel.detail_payload_ref_id.label("payload_id"))
-            .where(
-                VacancySnapshotModel.detail_payload_ref_id.is_not(None),
-                legacy_snapshot_filter,
+            protected_detail_filters.append(
+                VacancySnapshotModel.detail_payload_ref_id <= max_source_id
             )
-        )
+        protected_short_payload_ids = select(
+            VacancySnapshotModel.short_payload_ref_id.label("payload_id")
+        ).where(*protected_short_filters)
+        protected_detail_payload_ids = select(
+            VacancySnapshotModel.detail_payload_ref_id.label("payload_id")
+        ).where(*protected_detail_filters)
         protected_payload_ids = protected_short_payload_ids.union(
             protected_detail_payload_ids
         ).subquery()

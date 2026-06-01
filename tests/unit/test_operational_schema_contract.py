@@ -138,6 +138,8 @@ def test_operational_metadata_constraints_defaults_and_indexes_match_contract() 
     assert _foreign_key_ondelete("vacancy_snapshot", "vacancy_id") == "CASCADE"
     assert _foreign_key_ondelete("vacancy_snapshot", "detail_payload_ref_id") == "SET NULL"
     assert "DESC" in _index_sql("vacancy_snapshot", "idx_vacancy_snapshot_captured_at")
+    assert "idx_vacancy_snapshot_short_payload_ref_id" in _metadata_index_names()
+    assert "idx_vacancy_snapshot_detail_payload_ref_id" in _metadata_index_names()
 
     assert _server_default_sql("detail_fetch_attempt", "attempt") == "1"
     assert _server_default_sql("detail_fetch_attempt", "requested_at") == "now()"

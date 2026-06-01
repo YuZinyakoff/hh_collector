@@ -686,6 +686,20 @@ ranges no higher than their matching `source_id_covered`. It must not delete or
 archive rows. The existing `run-housekeeping --execute` path remains separate
 until cascade-sensitive targets are covered.
 
+Initial VPS preview on 2026-06-01 proved these safety semantics:
+
+- `status=ready`, `coverage_status=complete`, `coverage_issue_count=0`;
+- raw payload cap `81`, `candidate_count=20`, selected range `1..81`;
+- vacancy snapshot cap `1240`, `candidate_count=0`;
+- no rows were deleted or archived.
+
+The initial preview took `446861 ms`, which is too slow for routine operation.
+Migration `0005_snapshot_payload_ref_idx` adds missing payload-reference indexes,
+bounded raw protection subqueries now use the verified cursor, and latest
+snapshot protection uses an indexed `NOT EXISTS newer snapshot` check instead of
+a global window rank. Repeat the VPS preview after migration before extending the
+gate.
+
 ### Stage F: analytical layer, later
 
 - Add optional Parquet export once schemas are stable and dependency choice is

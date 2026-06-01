@@ -303,6 +303,12 @@ CREATE INDEX idx_vacancy_snapshot_captured_at
 CREATE INDEX idx_vacancy_snapshot_detail_hash
     ON vacancy_snapshot(detail_hash);
 
+CREATE INDEX idx_vacancy_snapshot_short_payload_ref_id
+    ON vacancy_snapshot(short_payload_ref_id);
+
+CREATE INDEX idx_vacancy_snapshot_detail_payload_ref_id
+    ON vacancy_snapshot(detail_payload_ref_id);
+
 CREATE INDEX idx_vacancy_snapshot_vacancy_type_captured_at
     ON vacancy_snapshot(vacancy_id, snapshot_type, captured_at DESC);
 

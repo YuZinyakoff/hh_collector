@@ -23,6 +23,9 @@ from hhru_platform.infrastructure.db.models.detail_fetch_attempt import (
 from hhru_platform.infrastructure.db.models.raw_api_payload import (
     RawApiPayload as RawApiPayloadModel,
 )
+from hhru_platform.infrastructure.db.models.vacancy_seen_event import (
+    VacancySeenEvent as VacancySeenEventModel,
+)
 from hhru_platform.infrastructure.db.models.vacancy_snapshot import (
     VacancySnapshot as VacancySnapshotModel,
 )
@@ -300,6 +303,44 @@ class SqlAlchemyHousekeepingRepository:
         )
         return list(self._session.scalars(statement))
 
+    def count_finished_crawl_run_candidates_blocked_by_seen_event_coverage(
+        self,
+        *,
+        cutoff: datetime,
+        max_seen_event_source_id: int,
+    ) -> int:
+        statement = (
+            select(func.count())
+            .select_from(CrawlRunModel)
+            .where(
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+                CrawlRunModel.finished_at.is_not(None),
+                CrawlRunModel.finished_at < cutoff,
+                self._run_has_seen_event_after(max_seen_event_source_id),
+            )
+        )
+        return int(self._session.scalar(statement) or 0)
+
+    def list_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
+        self,
+        *,
+        cutoff: datetime,
+        limit: int,
+        max_seen_event_source_id: int,
+    ) -> list[UUID]:
+        statement = (
+            select(CrawlRunModel.id)
+            .where(
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+                CrawlRunModel.finished_at.is_not(None),
+                CrawlRunModel.finished_at < cutoff,
+                ~self._run_has_seen_event_after(max_seen_event_source_id),
+            )
+            .order_by(CrawlRunModel.finished_at, CrawlRunModel.id)
+            .limit(limit)
+        )
+        return list(self._session.scalars(statement))
+
     def delete_finished_crawl_runs(self, run_ids: Sequence[UUID]) -> int:
         if not run_ids:
             return 0
@@ -332,6 +373,14 @@ class SqlAlchemyHousekeepingRepository:
         )
         return int(self._session.scalar(statement) or 0)
 
+    def count_vacancy_seen_events_for_run_ids(self, run_ids: Sequence[UUID]) -> int:
+        if not run_ids:
+            return 0
+        statement = select(func.count()).select_from(VacancySeenEventModel).where(
+            VacancySeenEventModel.crawl_run_id.in_(tuple(run_ids))
+        )
+        return int(self._session.scalar(statement) or 0)
+
     @staticmethod
     def _newer_vacancy_snapshot_exists() -> Exists:
         newer_snapshot = aliased(VacancySnapshotModel)
@@ -348,6 +397,17 @@ class SqlAlchemyHousekeepingRepository:
                         newer_snapshot.id > VacancySnapshotModel.id,
                     ),
                 ),
+            )
+        )
+
+    @staticmethod
+    def _run_has_seen_event_after(max_seen_event_source_id: int) -> Exists:
+        return exists(
+            select(1)
+            .select_from(VacancySeenEventModel)
+            .where(
+                VacancySeenEventModel.crawl_run_id == CrawlRunModel.id,
+                VacancySeenEventModel.id > max_seen_event_source_id,
             )
         )
 

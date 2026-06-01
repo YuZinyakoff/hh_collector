@@ -271,6 +271,11 @@ def register_research_archive_commands(
         help="Override HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS.",
     )
     housekeeping_preview_parser.add_argument(
+        "--finished-crawl-run-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS.",
+    )
+    housekeeping_preview_parser.add_argument(
         "--delete-limit-per-target",
         type=_positive_int,
         help="Override HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET.",
@@ -445,6 +450,11 @@ def handle_preview_research_archive_housekeeping(args: argparse.Namespace) -> in
                 args.vacancy_snapshot_retention_days
                 if args.vacancy_snapshot_retention_days is not None
                 else settings.housekeeping_vacancy_snapshot_retention_days
+            ),
+            finished_crawl_run_retention_days=(
+                args.finished_crawl_run_retention_days
+                if args.finished_crawl_run_retention_days is not None
+                else settings.housekeeping_finished_crawl_run_retention_days
             ),
             delete_limit_per_target=(
                 args.delete_limit_per_target
@@ -772,6 +782,21 @@ def _print_housekeeping_preview_result(
             f"selected_max_id={summary.selected_max_id or '-'} "
             f"limited={'yes' if summary.limited else 'no'}"
         )
+    run_tree = result.run_tree_summary
+    print(
+        "run_tree_summary "
+        f"enabled={'yes' if run_tree.enabled else 'no'} "
+        f"retention_days={run_tree.retention_days} "
+        f"cutoff={run_tree.cutoff.isoformat() if run_tree.cutoff else '-'} "
+        f"seen_event_source_id_covered={run_tree.seen_event_source_id_covered} "
+        f"candidate_count={run_tree.candidate_count} "
+        f"coverage_safe_candidate_count={run_tree.coverage_safe_candidate_count} "
+        f"coverage_blocked_candidate_count={run_tree.coverage_blocked_candidate_count} "
+        f"action_count={run_tree.action_count} "
+        f"selected_partition_count={run_tree.selected_partition_count} "
+        f"selected_vacancy_seen_event_count={run_tree.selected_vacancy_seen_event_count} "
+        f"limited={'yes' if run_tree.limited else 'no'}"
+    )
 
 
 def _git_revision() -> str:

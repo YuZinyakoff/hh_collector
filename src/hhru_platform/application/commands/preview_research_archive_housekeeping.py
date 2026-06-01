@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
+from uuid import UUID
 
 from hhru_platform.application.commands.audit_research_archive_coverage import (
     AuditResearchArchiveCoverageCommand,
@@ -31,6 +32,7 @@ RESEARCH_ARCHIVE_HOUSEKEEPING_PREVIEW_STATUS_READY = "ready"
 RESEARCH_ARCHIVE_HOUSEKEEPING_PREVIEW_STATUS_BLOCKED = "blocked"
 DATASET_RAW_API_PAYLOAD = "bronze/raw_api_payload"
 DATASET_VACANCY_SNAPSHOT = "silver/vacancy_snapshot"
+DATASET_VACANCY_SEEN_EVENT = "silver/vacancy_seen_event"
 
 
 @dataclass(slots=True, frozen=True)
@@ -41,6 +43,7 @@ class PreviewResearchArchiveHousekeepingCommand:
     offsite_root: str = "/hhru-platform/research-archive"
     raw_api_payload_retention_days: int = 90
     vacancy_snapshot_retention_days: int = 0
+    finished_crawl_run_retention_days: int = 90
     delete_limit_per_target: int = 10_000
     triggered_by: str = "preview-research-archive-housekeeping"
     evaluated_at: datetime | None = None
@@ -57,6 +60,10 @@ class PreviewResearchArchiveHousekeepingCommand:
         if self.vacancy_snapshot_retention_days < 0:
             raise ValueError(
                 "vacancy_snapshot_retention_days must be greater than or equal to zero"
+            )
+        if self.finished_crawl_run_retention_days < 0:
+            raise ValueError(
+                "finished_crawl_run_retention_days must be greater than or equal to zero"
             )
         if self.delete_limit_per_target < 1:
             raise ValueError("delete_limit_per_target must be greater than or equal to one")
@@ -92,6 +99,7 @@ class PreviewResearchArchiveHousekeepingResult:
     evaluated_at: datetime
     coverage: AuditResearchArchiveCoverageResult
     summaries: tuple[ResearchArchiveHousekeepingPreviewSummary, ...]
+    run_tree_summary: ResearchArchiveHousekeepingRunTreePreviewSummary
 
     @property
     def ready(self) -> bool:
@@ -141,6 +149,32 @@ class ResearchArchiveHousekeepingPreviewRepository(Protocol):
     ) -> list[int]:
         """List old vacancy snapshot ids bounded by verified archive coverage."""
 
+    def count_finished_crawl_run_candidates(self, *, cutoff: datetime) -> int:
+        """Count old finished crawl runs before archive coverage filtering."""
+
+    def count_finished_crawl_run_candidates_blocked_by_seen_event_coverage(
+        self,
+        *,
+        cutoff: datetime,
+        max_seen_event_source_id: int,
+    ) -> int:
+        """Count old finished runs that still own unarchived seen events."""
+
+    def list_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
+        self,
+        *,
+        cutoff: datetime,
+        limit: int,
+        max_seen_event_source_id: int,
+    ) -> list[UUID]:
+        """List old finished runs whose seen events are covered by the archive."""
+
+    def count_crawl_partitions_for_run_ids(self, run_ids: list[UUID]) -> int:
+        """Count partitions that would cascade-delete with selected runs."""
+
+    def count_vacancy_seen_events_for_run_ids(self, run_ids: list[UUID]) -> int:
+        """Count seen events that would cascade-delete with selected runs."""
+
 
 CountCandidatesStep = Callable[..., int]
 ListIdentifiersStep = Callable[..., list[int]]
@@ -164,6 +198,7 @@ def preview_research_archive_housekeeping(
         triggered_by=command.triggered_by,
     )
     evaluated_at = command.evaluated_at or datetime.now(UTC)
+    summaries: tuple[ResearchArchiveHousekeepingPreviewSummary, ...]
     try:
         coverage = audit_research_archive_coverage(
             AuditResearchArchiveCoverageCommand(
@@ -177,28 +212,39 @@ def preview_research_archive_housekeeping(
             receipt_store=receipt_store,
             checkpoint_receipt_store=checkpoint_receipt_store,
         )
-        summaries = (
-            _preview_target(
-                target=TARGET_RAW_API_PAYLOAD,
-                dataset=DATASET_RAW_API_PAYLOAD,
-                retention_days=command.raw_api_payload_retention_days,
+        if coverage.complete:
+            summaries = (
+                _preview_target(
+                    target=TARGET_RAW_API_PAYLOAD,
+                    dataset=DATASET_RAW_API_PAYLOAD,
+                    retention_days=command.raw_api_payload_retention_days,
+                    evaluated_at=evaluated_at,
+                    delete_limit=command.delete_limit_per_target,
+                    coverage=coverage,
+                    count_step=housekeeping_repository.count_raw_api_payload_candidates,
+                    list_step=housekeeping_repository.list_raw_api_payload_ids_for_retention,
+                ),
+                _preview_target(
+                    target=TARGET_VACANCY_SNAPSHOT,
+                    dataset=DATASET_VACANCY_SNAPSHOT,
+                    retention_days=command.vacancy_snapshot_retention_days,
+                    evaluated_at=evaluated_at,
+                    delete_limit=command.delete_limit_per_target,
+                    coverage=coverage,
+                    count_step=housekeeping_repository.count_vacancy_snapshot_candidates,
+                    list_step=housekeeping_repository.list_vacancy_snapshot_ids_for_retention,
+                ),
+            )
+            run_tree_summary = _preview_run_tree(
+                retention_days=command.finished_crawl_run_retention_days,
                 evaluated_at=evaluated_at,
                 delete_limit=command.delete_limit_per_target,
                 coverage=coverage,
-                count_step=housekeeping_repository.count_raw_api_payload_candidates,
-                list_step=housekeeping_repository.list_raw_api_payload_ids_for_retention,
-            ),
-            _preview_target(
-                target=TARGET_VACANCY_SNAPSHOT,
-                dataset=DATASET_VACANCY_SNAPSHOT,
-                retention_days=command.vacancy_snapshot_retention_days,
-                evaluated_at=evaluated_at,
-                delete_limit=command.delete_limit_per_target,
-                coverage=coverage,
-                count_step=housekeeping_repository.count_vacancy_snapshot_candidates,
-                list_step=housekeeping_repository.list_vacancy_snapshot_ids_for_retention,
-            ),
-        ) if coverage.complete else ()
+                housekeeping_repository=housekeeping_repository,
+            )
+        else:
+            summaries = ()
+            run_tree_summary = _blocked_run_tree_summary()
     except Exception as error:
         record_operation_failed(
             LOGGER,
@@ -224,6 +270,7 @@ def preview_research_archive_housekeeping(
         evaluated_at=evaluated_at,
         coverage=coverage,
         summaries=summaries,
+        run_tree_summary=run_tree_summary,
     )
     record_operation_succeeded(
         LOGGER,
@@ -236,6 +283,20 @@ def preview_research_archive_housekeeping(
         coverage_status=result.coverage.status,
         total_candidates=result.total_candidates,
         total_action_count=result.total_action_count,
+        run_tree_candidate_count=result.run_tree_summary.candidate_count,
+        run_tree_coverage_safe_candidate_count=(
+            result.run_tree_summary.coverage_safe_candidate_count
+        ),
+        run_tree_action_count=result.run_tree_summary.action_count,
+        run_tree_coverage_blocked_candidate_count=(
+            result.run_tree_summary.coverage_blocked_candidate_count
+        ),
+        run_tree_selected_partition_count=(
+            result.run_tree_summary.selected_partition_count
+        ),
+        run_tree_selected_vacancy_seen_event_count=(
+            result.run_tree_summary.selected_vacancy_seen_event_count
+        ),
     )
     return result
 
@@ -301,3 +362,97 @@ def _source_id_covered(
         if summary.dataset == dataset:
             return summary.source_id_covered
     raise ValueError(f"coverage summary not found for dataset: {dataset}")
+
+
+@dataclass(slots=True, frozen=True)
+class ResearchArchiveHousekeepingRunTreePreviewSummary:
+    retention_days: int
+    cutoff: datetime | None
+    seen_event_source_id_covered: int
+    candidate_count: int
+    coverage_safe_candidate_count: int
+    coverage_blocked_candidate_count: int
+    action_count: int
+    selected_partition_count: int
+    selected_vacancy_seen_event_count: int
+    enabled: bool
+
+    @property
+    def limited(self) -> bool:
+        return self.action_count < self.coverage_safe_candidate_count
+
+
+def _preview_run_tree(
+    *,
+    retention_days: int,
+    evaluated_at: datetime,
+    delete_limit: int,
+    coverage: AuditResearchArchiveCoverageResult,
+    housekeeping_repository: ResearchArchiveHousekeepingPreviewRepository,
+) -> ResearchArchiveHousekeepingRunTreePreviewSummary:
+    source_id_covered = _source_id_covered(
+        coverage=coverage,
+        dataset=DATASET_VACANCY_SEEN_EVENT,
+    )
+    if retention_days == 0:
+        return ResearchArchiveHousekeepingRunTreePreviewSummary(
+            retention_days=0,
+            cutoff=None,
+            seen_event_source_id_covered=source_id_covered,
+            candidate_count=0,
+            coverage_safe_candidate_count=0,
+            coverage_blocked_candidate_count=0,
+            action_count=0,
+            selected_partition_count=0,
+            selected_vacancy_seen_event_count=0,
+            enabled=False,
+        )
+
+    cutoff = evaluated_at - timedelta(days=retention_days)
+    candidate_count = housekeeping_repository.count_finished_crawl_run_candidates(
+        cutoff=cutoff
+    )
+    blocked_candidate_count = (
+        housekeeping_repository.count_finished_crawl_run_candidates_blocked_by_seen_event_coverage(
+            cutoff=cutoff,
+            max_seen_event_source_id=source_id_covered,
+        )
+    )
+    run_ids = (
+        housekeeping_repository.list_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
+            cutoff=cutoff,
+            limit=delete_limit,
+            max_seen_event_source_id=source_id_covered,
+        )
+    )
+    return ResearchArchiveHousekeepingRunTreePreviewSummary(
+        retention_days=retention_days,
+        cutoff=cutoff,
+        seen_event_source_id_covered=source_id_covered,
+        candidate_count=candidate_count,
+        coverage_safe_candidate_count=candidate_count - blocked_candidate_count,
+        coverage_blocked_candidate_count=blocked_candidate_count,
+        action_count=len(run_ids),
+        selected_partition_count=housekeeping_repository.count_crawl_partitions_for_run_ids(
+            run_ids
+        ),
+        selected_vacancy_seen_event_count=(
+            housekeeping_repository.count_vacancy_seen_events_for_run_ids(run_ids)
+        ),
+        enabled=True,
+    )
+
+
+def _blocked_run_tree_summary() -> ResearchArchiveHousekeepingRunTreePreviewSummary:
+    return ResearchArchiveHousekeepingRunTreePreviewSummary(
+        retention_days=0,
+        cutoff=None,
+        seen_event_source_id_covered=0,
+        candidate_count=0,
+        coverage_safe_candidate_count=0,
+        coverage_blocked_candidate_count=0,
+        action_count=0,
+        selected_partition_count=0,
+        selected_vacancy_seen_event_count=0,
+        enabled=False,
+    )

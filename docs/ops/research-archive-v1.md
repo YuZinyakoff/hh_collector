@@ -568,9 +568,12 @@ archive foundation.
   coverage audit and only then reports age-based `raw_api_payload` and
   `vacancy_snapshot` candidates bounded by each dataset's verified
   `source_id_covered`. It is read-only and fail-closed.
-- Extend the coverage gate to cascade-sensitive targets before wiring any live DB
-  deletion. In particular, deleting finished runs may cascade into
-  `vacancy_seen_event`.
+- Implemented: the same read-only preview reports old finished-run candidates
+  separately. A run is excluded from the action list while it owns any
+  `vacancy_seen_event.id` above the verified seen-event cursor; selected
+  partition and seen-event cascade counts are reported explicitly.
+- Extend the coverage gate to `detail_fetch_attempt` before wiring any live DB
+  deletion.
 - Add operator runbook for archive-before-delete.
 
 Initial operator cadence:
@@ -678,13 +681,16 @@ SMOKE_ROOT="/hhru-platform/research-archive-smoke/$SMOKE_TAG"
 
 HHRU_RESEARCH_ARCHIVE_OFFSITE_ROOT="$SMOKE_ROOT" \
   make preview-research-archive-housekeeping \
-  ARGS="--archive-dir $SMOKE_DIR --archive-kind incremental_validation --raw-api-payload-retention-days 1 --vacancy-snapshot-retention-days 1 --delete-limit-per-target 20 --triggered-by vps-coverage-housekeeping-preview"
+  ARGS="--archive-dir $SMOKE_DIR --archive-kind incremental_validation --raw-api-payload-retention-days 1 --vacancy-snapshot-retention-days 1 --finished-crawl-run-retention-days 1 --delete-limit-per-target 20 --triggered-by vps-coverage-housekeeping-preview"
 ```
 
-The command must report `status=ready`, `coverage_status=complete` and candidate
-ranges no higher than their matching `source_id_covered`. It must not delete or
-archive rows. The existing `run-housekeeping --execute` path remains separate
-until cascade-sensitive targets are covered.
+The command must report `status=ready`, `coverage_status=complete`, candidate
+ranges no higher than their matching `source_id_covered`, and a separate
+`run_tree_summary`. Runs owning seen events above `seen_event_source_id_covered`
+must be counted as coverage-blocked and excluded from the run-tree action list.
+The command must not delete or archive rows. The existing
+`run-housekeeping --execute` path remains separate until every destructive
+target is covered.
 
 Initial VPS preview on 2026-06-01 proved these safety semantics:
 
@@ -693,12 +699,14 @@ Initial VPS preview on 2026-06-01 proved these safety semantics:
 - vacancy snapshot cap `1240`, `candidate_count=0`;
 - no rows were deleted or archived.
 
-The initial preview took `446861 ms`, which is too slow for routine operation.
+The initial preview took `446861 ms`, which was too slow for routine operation.
 Migration `0005_snapshot_payload_ref_idx` adds missing payload-reference indexes,
 bounded raw protection subqueries now use the verified cursor, and latest
 snapshot protection uses an indexed `NOT EXISTS newer snapshot` check instead of
-a global window rank. Repeat the VPS preview after migration before extending the
-gate.
+a global window rank. The repeat VPS preview after migration took `159 ms`
+(`2.897s` wall time including Docker startup) and returned `20` raw plus `20`
+snapshot candidates. Run-tree preview still needs a VPS smoke before extending
+the gate to `detail_fetch_attempt`.
 
 ### Stage F: analytical layer, later
 

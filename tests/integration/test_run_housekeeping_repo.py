@@ -83,6 +83,8 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
     active_run_id = uuid4()
     vacancy_one_id = uuid4()
     vacancy_two_id = uuid4()
+    old_partition_id = uuid4()
+    active_partition_id = uuid4()
 
     _cleanup_test_rows(engine)
 
@@ -223,13 +225,44 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                     """
                 ),
                 {
-                    "old_partition_id": uuid4(),
+                    "old_partition_id": old_partition_id,
                     "old_run_id": old_run_id,
                     "old_created_at": datetime(2025, 12, 1, 10, 0, tzinfo=UTC),
-                    "active_partition_id": uuid4(),
+                    "active_partition_id": active_partition_id,
                     "active_run_id": active_run_id,
                     "active_created_at": datetime(2026, 3, 21, 10, 0, tzinfo=UTC),
                 },
+            )
+            old_seen_event_id = int(
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO vacancy_seen_event (
+                            vacancy_id,
+                            crawl_run_id,
+                            crawl_partition_id,
+                            seen_at,
+                            list_position,
+                            short_hash
+                        )
+                        VALUES (
+                            :vacancy_id,
+                            :crawl_run_id,
+                            :crawl_partition_id,
+                            :seen_at,
+                            0,
+                            'pytest-housekeeping-short-hash'
+                        )
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "vacancy_id": vacancy_one_id,
+                        "crawl_run_id": old_run_id,
+                        "crawl_partition_id": old_partition_id,
+                        "seen_at": datetime(2025, 12, 1, 10, 0, tzinfo=UTC),
+                    },
+                ).scalar_one()
             )
             session.execute(
                 text(
@@ -538,6 +571,30 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                 cutoff=cutoff
             ) == 1
             assert repository.count_crawl_partitions_for_run_ids([old_run_id]) == 1
+            assert repository.count_vacancy_seen_events_for_run_ids([old_run_id]) == 1
+            assert (
+                repository.count_finished_crawl_run_candidates_blocked_by_seen_event_coverage(
+                    cutoff=cutoff,
+                    max_seen_event_source_id=old_seen_event_id - 1,
+                )
+                == 1
+            )
+            assert (
+                repository.list_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
+                    cutoff=cutoff,
+                    limit=10,
+                    max_seen_event_source_id=old_seen_event_id - 1,
+                )
+                == []
+            )
+            assert (
+                repository.list_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
+                    cutoff=cutoff,
+                    limit=10,
+                    max_seen_event_source_id=old_seen_event_id,
+                )
+                == [old_run_id]
+            )
     finally:
         _cleanup_test_rows(engine)
         engine.dispose()

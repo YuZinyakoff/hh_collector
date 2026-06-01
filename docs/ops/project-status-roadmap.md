@@ -403,8 +403,9 @@ Next experiment plan:
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
 2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
    только когда появится реальный безопасный deletion candidate.
-3. Зафиксировать production cadence settled research archive bundles и
-   archive-before-delete receipts.
+3. Задеплоить per-chunk research archive `.offsite.verified.json` receipts,
+   повторить VPS remote verify, затем зафиксировать production cadence settled
+   bundles и complete-coverage gate для archive-before-delete.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

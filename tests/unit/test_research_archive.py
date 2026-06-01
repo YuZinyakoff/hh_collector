@@ -27,6 +27,7 @@ from hhru_platform.application.commands.verify_research_archive_offsite import (
 )
 from hhru_platform.infrastructure.research_archive import (
     LocalResearchArchiveOffsiteUploadReceiptStore,
+    LocalResearchArchiveOffsiteVerificationReceiptStore,
     LocalResearchArchiveStore,
     ResearchArchiveManifestVerifier,
 )
@@ -263,16 +264,35 @@ def test_sync_and_verify_research_archive_offsite(
             offsite_root="/hhru-platform/research-archive",
             readback_limit=1,
             triggered_by="unit-test",
+            verified_at=datetime(2026, 5, 28, 12, 0, tzinfo=UTC),
         ),
         remote_store=remote_store,
+        receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
     )
 
     assert verify_result.status == "succeeded"
     assert verify_result.scanned_manifest_count == 2
     assert verify_result.verified_manifest_count == 2
     assert verify_result.verified_object_count == 5
+    assert verify_result.verification_receipt_count == 2
     assert verify_result.readback_count == 1
     assert verify_result.readbacks[0].row_count == 1
+    assert [summary.readback_verified for summary in verify_result.verified_manifests] == [
+        True,
+        False,
+    ]
+    verification_receipt_store = LocalResearchArchiveOffsiteVerificationReceiptStore()
+    verification_receipts = [
+        verification_receipt_store.load_receipt(manifest_file=summary.manifest_file)
+        for summary in verify_result.verified_manifests
+    ]
+    assert all(receipt is not None for receipt in verification_receipts)
+    assert {
+        receipt.verified_at for receipt in verification_receipts if receipt is not None
+    } == {datetime(2026, 5, 28, 12, 0, tzinfo=UTC)}
+    assert [
+        receipt.readback_verified for receipt in verification_receipts if receipt is not None
+    ] == [True, False]
 
 
 def test_limited_research_archive_offsite_sync_does_not_upload_inventory(
@@ -322,11 +342,69 @@ def test_limited_research_archive_offsite_sync_does_not_upload_inventory(
             triggered_by="unit-test",
         ),
         remote_store=remote_store,
+        receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
     )
 
     assert verify_result.scanned_manifest_count == 1
     assert verify_result.verified_object_count == 2
+    assert verify_result.verification_receipt_count == 1
     assert verify_result.readback_count == 1
+
+
+def test_verify_research_archive_offsite_does_not_receipt_size_mismatch(
+    tmp_path: Path,
+) -> None:
+    repository = FakeResearchArchiveRepository()
+    archive_dir = tmp_path / "research"
+    export_result = export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            chunk_size=10,
+            batch_size=100,
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        ),
+        research_archive_repository=repository,
+        research_archive_store=LocalResearchArchiveStore(),
+    )
+    remote_store = FakeResearchArchiveRemoteStore()
+    sync_research_archive_offsite(
+        SyncResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+        ),
+        offsite_uploader=remote_store,
+        receipt_store=LocalResearchArchiveOffsiteUploadReceiptStore(),
+    )
+    summary = export_result.summaries[0]
+    remote_data_path = summary.data_files[0].relative_to(archive_dir).as_posix()
+    remote_store.objects_by_remote_path[remote_data_path] = b"corrupted"
+    verification_receipt_store = LocalResearchArchiveOffsiteVerificationReceiptStore()
+
+    with pytest.raises(RuntimeError, match="remote research archive object size mismatch"):
+        verify_research_archive_offsite(
+            VerifyResearchArchiveOffsiteCommand(
+                archive_dir=archive_dir,
+                offsite_url="https://s3.example.test/bucket-id",
+                offsite_root="/hhru-platform/research-archive",
+                readback_limit=1,
+                triggered_by="unit-test",
+            ),
+            remote_store=remote_store,
+            receipt_store=verification_receipt_store,
+        )
+
+    assert (
+        verification_receipt_store.load_receipt(
+            manifest_file=summary.manifest_files[0],
+        )
+        is None
+    )
 
 
 def test_verify_research_archive_detects_checksum_mismatch(tmp_path: Path) -> None:

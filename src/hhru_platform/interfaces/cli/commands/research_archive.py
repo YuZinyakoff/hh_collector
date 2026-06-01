@@ -38,6 +38,7 @@ from hhru_platform.infrastructure.db.repositories.research_archive_repo import (
 from hhru_platform.infrastructure.db.session import session_scope
 from hhru_platform.infrastructure.research_archive import (
     LocalResearchArchiveOffsiteUploadReceiptStore,
+    LocalResearchArchiveOffsiteVerificationReceiptStore,
     LocalResearchArchiveStore,
     ResearchArchiveManifestVerifier,
 )
@@ -260,7 +261,11 @@ def handle_verify_research_archive_offsite(args: argparse.Namespace) -> int:
             args=args,
             settings=settings,
         )
-        result = verify_research_archive_offsite(command, remote_store=remote_store)
+        result = verify_research_archive_offsite(
+            command,
+            remote_store=remote_store,
+            receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+        )
     except Exception as error:
         print(str(error), file=sys.stderr)
         return 1
@@ -481,6 +486,7 @@ def _print_verify_offsite_result(result: VerifyResearchArchiveOffsiteResult) -> 
     print(f"scanned_manifest_count={result.scanned_manifest_count}")
     print(f"verified_manifest_count={result.verified_manifest_count}")
     print(f"verified_object_count={result.verified_object_count}")
+    print(f"verification_receipt_count={result.verification_receipt_count}")
     print(f"readback_count={result.readback_count}")
     for readback in result.readbacks:
         print(

@@ -145,6 +145,10 @@ Current status:
 - Inventory is uploaded only on full sync. Partial syncs with `--limit` or
   explicit manifests upload data/manifest objects only, to avoid a remote
   inventory that references chunks not yet present in S3.
+- Successful remote verification writes one local
+  `<chunk>.manifest.json.offsite.verified.json` receipt per verified chunk. This
+  is proof for the chunk-level S3 check, not yet permission to delete live DB
+  rows.
 
 ## 4. Parquet policy
 
@@ -274,6 +278,7 @@ For research archive contour:
 2. Keep JSONL.GZ as the canonical raw Archive v1 format.
 3. Keep append-only archive inventory and repeat S3 verification/readback after
    archive schema or serialization changes.
-4. Define production cadence for settled archive bundles and verified
-   archive-before-delete receipts.
-5. Add Parquet export only after the v1 dataset schemas are named and stable.
+4. Re-run remote verification after deploying per-chunk verification receipts.
+5. Define production cadence for settled archive bundles and require complete
+   verified archive coverage before any archive-before-delete housekeeping.
+6. Add Parquet export only after the v1 dataset schemas are named and stable.

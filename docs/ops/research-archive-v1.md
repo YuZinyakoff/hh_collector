@@ -476,6 +476,9 @@ pilot corpus canonical production data.
   are checked for size, sha256 and gzip JSONL row count.
 - Uploads are idempotent through local per-manifest receipts:
   `<chunk>.manifest.json.offsite.json`.
+- Successful remote verification writes a separate local proof receipt:
+  `<chunk>.manifest.json.offsite.verified.json`. It records the verified remote
+  object paths, local hashes and whether that chunk received full readback.
 
 VPS S3 smoke command for the existing small tool-validation bundle:
 
@@ -505,6 +508,9 @@ Status on 2026-05-31:
 - Repeated full sync was idempotent:
   `candidate_manifest_count=0`, `uploaded_manifest_count=0`,
   `skipped_manifest_count=13`. Full sync still refreshes inventory by design.
+- Per-chunk offsite verification receipts are implemented. Re-run the VPS verify
+  after deploying this change to create them for the existing tool-validation
+  bundle.
 
 ### Stage D: proof-of-read smoke
 
@@ -524,7 +530,8 @@ archive foundation.
 
 ### Stage E: production archive safety
 
-- Add "archive verified" receipts.
+- Implemented: write per-chunk "archive verified" receipts after S3 object-size
+  verification and record whether full readback was performed.
 - Make housekeeping require verified archive receipts before deleting raw/snapshot
   rows from production data.
 - Add operator runbook for archive-before-delete.

@@ -6,6 +6,7 @@ import json
 import logging
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -19,6 +20,9 @@ from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
     record_operation_failed,
     record_operation_succeeded,
+)
+from hhru_platform.infrastructure.research_archive import (
+    ResearchArchiveOffsiteVerificationReceipt,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -35,6 +39,7 @@ class VerifyResearchArchiveOffsiteCommand:
     offsite_url: str = ""
     offsite_root: str = "/hhru-platform/research-archive"
     triggered_by: str = "verify-research-archive-offsite"
+    verified_at: datetime | None = None
 
     def __post_init__(self) -> None:
         normalized_triggered_by = self.triggered_by.strip()
@@ -75,6 +80,21 @@ class ResearchArchiveOffsiteReadbackSummary:
 
 
 @dataclass(slots=True, frozen=True)
+class ResearchArchiveOffsiteVerifiedManifestSummary:
+    manifest_file: Path
+    receipt_file: Path
+    dataset: str
+    layer: str
+    row_count: int
+    data_size_bytes: int
+    data_sha256: str
+    manifest_sha256: str
+    remote_data_path: str
+    remote_manifest_path: str
+    readback_verified: bool
+
+
+@dataclass(slots=True, frozen=True)
 class VerifyResearchArchiveOffsiteResult:
     status: str
     triggered_by: str
@@ -84,6 +104,7 @@ class VerifyResearchArchiveOffsiteResult:
     scanned_manifest_count: int
     verified_manifest_count: int
     verified_objects: tuple[ResearchArchiveOffsiteVerifiedObject, ...]
+    verified_manifests: tuple[ResearchArchiveOffsiteVerifiedManifestSummary, ...]
     readbacks: tuple[ResearchArchiveOffsiteReadbackSummary, ...]
 
     @property
@@ -94,6 +115,10 @@ class VerifyResearchArchiveOffsiteResult:
     def readback_count(self) -> int:
         return len(self.readbacks)
 
+    @property
+    def verification_receipt_count(self) -> int:
+        return len(self.verified_manifests)
+
 
 class ResearchArchiveOffsiteRemoteStore(Protocol):
     def get_file_size(self, *, remote_path: str) -> int:
@@ -103,10 +128,21 @@ class ResearchArchiveOffsiteRemoteStore(Protocol):
         """Download one remote object into a local file."""
 
 
+class ResearchArchiveOffsiteVerificationReceiptStore(Protocol):
+    def write_receipt(
+        self,
+        *,
+        manifest_file: Path,
+        receipt: ResearchArchiveOffsiteVerificationReceipt,
+    ) -> Path:
+        """Persist proof that one research archive chunk passed offsite verification."""
+
+
 def verify_research_archive_offsite(
     command: VerifyResearchArchiveOffsiteCommand,
     *,
     remote_store: ResearchArchiveOffsiteRemoteStore,
+    receipt_store: ResearchArchiveOffsiteVerificationReceiptStore,
 ) -> VerifyResearchArchiveOffsiteResult:
     started_at = log_operation_started(
         LOGGER,
@@ -122,6 +158,7 @@ def verify_research_archive_offsite(
         result = _verify_research_archive_offsite(
             command=command,
             remote_store=remote_store,
+            receipt_store=receipt_store,
         )
     except Exception as error:
         record_operation_failed(
@@ -148,6 +185,7 @@ def verify_research_archive_offsite(
         scanned_manifest_count=result.scanned_manifest_count,
         verified_manifest_count=result.verified_manifest_count,
         verified_object_count=result.verified_object_count,
+        verification_receipt_count=result.verification_receipt_count,
         readback_count=result.readback_count,
     )
     return result
@@ -157,6 +195,7 @@ def _verify_research_archive_offsite(
     *,
     command: VerifyResearchArchiveOffsiteCommand,
     remote_store: ResearchArchiveOffsiteRemoteStore,
+    receipt_store: ResearchArchiveOffsiteVerificationReceiptStore,
 ) -> VerifyResearchArchiveOffsiteResult:
     archive_root = command.archive_dir.resolve()
     manifest_files = _select_manifest_files(
@@ -174,7 +213,9 @@ def _verify_research_archive_offsite(
     )
 
     verified_objects: list[ResearchArchiveOffsiteVerifiedObject] = []
+    verified_manifests: list[ResearchArchiveOffsiteVerifiedManifestSummary] = []
     readbacks: list[ResearchArchiveOffsiteReadbackSummary] = []
+    verified_at = command.verified_at or datetime.now(UTC)
     for index, bundle in enumerate(bundles, start=1):
         verified_objects.append(
             _verify_remote_size(
@@ -190,7 +231,8 @@ def _verify_research_archive_offsite(
                 expected_size_bytes=bundle.manifest_file.stat().st_size,
             )
         )
-        if index <= command.readback_limit:
+        readback_verified = index <= command.readback_limit
+        if readback_verified:
             readbacks.append(
                 _readback_data_file(
                     remote_store=remote_store,
@@ -200,6 +242,39 @@ def _verify_research_archive_offsite(
                     expected_row_count=bundle.row_count,
                 )
             )
+        receipt_file = receipt_store.write_receipt(
+            manifest_file=bundle.manifest_file,
+            receipt=ResearchArchiveOffsiteVerificationReceipt(
+                verified_at=verified_at,
+                offsite_url=command.offsite_url,
+                offsite_root=command.offsite_root,
+                dataset=bundle.dataset,
+                layer=bundle.layer,
+                row_count=bundle.row_count,
+                data_size_bytes=bundle.data_size_bytes,
+                data_sha256=bundle.data_sha256,
+                manifest_sha256=bundle.manifest_sha256,
+                remote_data_path=bundle.remote_data_path,
+                remote_manifest_path=bundle.remote_manifest_path,
+                verified_object_count=2,
+                readback_verified=readback_verified,
+            ),
+        )
+        verified_manifests.append(
+            ResearchArchiveOffsiteVerifiedManifestSummary(
+                manifest_file=bundle.manifest_file,
+                receipt_file=receipt_file,
+                dataset=bundle.dataset,
+                layer=bundle.layer,
+                row_count=bundle.row_count,
+                data_size_bytes=bundle.data_size_bytes,
+                data_sha256=bundle.data_sha256,
+                manifest_sha256=bundle.manifest_sha256,
+                remote_data_path=bundle.remote_data_path,
+                remote_manifest_path=bundle.remote_manifest_path,
+                readback_verified=readback_verified,
+            )
+        )
 
     inventory_file = archive_root / "v1" / "inventory" / "archive-inventory.jsonl"
     is_partial_verify = bool(command.manifest_files) or command.limit is not None
@@ -222,6 +297,7 @@ def _verify_research_archive_offsite(
         scanned_manifest_count=len(bundles),
         verified_manifest_count=len(bundles),
         verified_objects=tuple(verified_objects),
+        verified_manifests=tuple(verified_manifests),
         readbacks=tuple(readbacks),
     )
 

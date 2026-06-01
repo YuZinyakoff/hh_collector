@@ -74,6 +74,10 @@ s3://<bucket>/hhru-platform/research-archive/v1/
 
   inventory/
     archive-inventory.jsonl
+
+  checkpoints/
+    archive_kind=production/
+      20260526T000000000000Z.checkpoint.json
 ```
 
 Use `jsonl.gz` for v1 because it is compact enough, streamable, inspectable with
@@ -327,6 +331,12 @@ An archive bundle is not trusted until:
 
 Only verified bundles can be used as a prerequisite for live DB housekeeping.
 
+Incremental exports additionally write checkpoint files. A checkpoint records
+the per-dataset source cursor transition and referenced chunk manifests for one
+run. Full S3 sync uploads checkpoints after chunks and inventory. Full offsite
+verify writes `<checkpoint>.offsite.verified.json`; the coverage audit requires
+matching checkpoint and chunk receipts before reporting `status=complete`.
+
 ## 9. Compaction And Space Policy
 
 Archive v1 reduces storage pressure by avoiding unnecessary duplication:
@@ -543,6 +553,17 @@ archive foundation.
   The watermark is derived from local manifests with the same `archive_kind`.
   Export stops before the first source row newer than the explicit settled cutoff,
   so a fresh row cannot be skipped by later watermark advancement.
+- Implemented: every incremental export writes a control-plane checkpoint under
+  `v1/checkpoints/archive_kind=<kind>/`. It records the per-dataset cursor
+  transition, chunk list and settled cutoff even when a dataset has no new rows.
+- Implemented: full S3 sync uploads checkpoints together with inventory, and full
+  offsite verification checks their remote sizes and writes matching local
+  checkpoint receipts. Partial sync/verify deliberately omit these completeness
+  artifacts.
+- Implemented: `audit-research-archive-coverage` validates the checkpoint chain
+  from source cursor `0` and requires a matching S3 verification receipt for every
+  referenced chunk and checkpoint. It is non-destructive and exits non-zero with
+  `status=incomplete` on any gap or missing receipt.
 - Make housekeeping require verified archive receipts before deleting raw/snapshot
   rows from production data.
 - Add operator runbook for archive-before-delete.
@@ -563,6 +584,8 @@ Initial operator cadence:
    make sync-research-archive-offsite ARGS="--triggered-by daily-production-archive-offsite"
    make verify-research-archive-offsite \
      ARGS="--readback-limit 2 --triggered-by daily-production-archive-offsite-verify"
+   make audit-research-archive-coverage \
+     ARGS="--archive-kind production --triggered-by daily-production-archive-coverage-audit"
    ```
 
 3. Export `silver/vacancy` and `silver/vacancy_current_state` separately as
@@ -605,6 +628,24 @@ du -sh "$SMOKE_DIR"
 The second export must report each first run `source_id_after` as its matching
 `source_id_before`, then advance to the next bounded source-id prefix. Do not
 sync this isolated validation directory to S3.
+
+VPS watermark smoke passed on 2026-06-01 after three bounded exports:
+
+- `bronze/raw_api_payload`: `0 -> 71 -> 81 -> 91`;
+- `silver/api_request_log`: `0 -> 71 -> 81 -> 91`;
+- `silver/vacancy_snapshot`: `0 -> 1230 -> 1240 -> 1250`;
+- `silver/vacancy_seen_event`: `0 -> 1230 -> 1240 -> 1250`;
+- local verification: `13/13` manifests, `120` rows.
+
+This isolated pre-checkpoint smoke proves watermark advancement, not S3 coverage.
+Use a fresh archive directory when validating the checkpoint audit: older
+incremental manifests created before checkpoint support intentionally cannot be
+treated as a complete verified chain.
+
+For an end-to-end checkpoint audit smoke, use both a fresh local directory and a
+separate S3 prefix. Pass `HHRU_RESEARCH_ARCHIVE_OFFSITE_ROOT` inline for sync and
+remote verify; do not overwrite the main research archive inventory with an
+isolated test bundle.
 
 ### Stage F: analytical layer, later
 

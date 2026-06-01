@@ -8,9 +8,9 @@ ARGS ?=
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli run-cleanup-backup-offsite \
 	run-backup-offsite-restore-drill run-export-research-archive run-verify-research-archive \
-	run-sync-research-archive-offsite run-verify-research-archive-offsite \
+	run-sync-research-archive-offsite run-verify-research-archive-offsite run-audit-research-archive-coverage \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite audit-research-archive-coverage detail-worker-measurement \
 	vps-first-detail-measurement \
 	soak-test soak-test-no-build
 
@@ -107,6 +107,9 @@ run-sync-research-archive-offsite:
 run-verify-research-archive-offsite:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-research-archive-offsite $(ARGS)
 
+run-audit-research-archive-coverage:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main audit-research-archive-coverage $(ARGS)
+
 compose-health:
 	$(COMPOSE) --profile ops run --rm app health-check
 
@@ -155,6 +158,9 @@ sync-research-archive-offsite:
 
 verify-research-archive-offsite:
 	$(COMPOSE) --profile ops run --rm app verify-research-archive-offsite $(ARGS)
+
+audit-research-archive-coverage:
+	$(COMPOSE) --profile ops run --rm app audit-research-archive-coverage $(ARGS)
 
 soak-test:
 	$(COMPOSE) --profile ops --profile observability up -d postgres redis metrics prometheus alertmanager alert-webhook grafana node-exporter cadvisor scheduler

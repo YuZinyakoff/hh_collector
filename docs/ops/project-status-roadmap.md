@@ -1,6 +1,6 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-05-31.
+Дата среза: 2026-06-01.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -73,6 +73,11 @@ smoke research archive v1.
   bounded readback скачал и полностью проверил `2/2` chunks; повторный full sync
   был idempotent: `candidate_manifest_count=0`, `uploaded_manifest_count=0`,
   `skipped_manifest_count=13`, inventory штатно обновлён.
+- bounded settled incremental archive smoke прошёл на VPS на отдельном
+  `archive_kind=incremental_validation`: за три запуска raw/request-log cursors
+  продвинулись `0 -> 71 -> 81 -> 91`, snapshot/seen-event cursors
+  `0 -> 1230 -> 1240 -> 1250`; local verify подтвердил `13/13` manifests и
+  `120` rows.
 
 Текущий статус не равен full production readiness. Корректная формулировка:
 full search coverage operationally validated, backup/offsite restore contour
@@ -100,8 +105,9 @@ corpus.
   apply smoke ещё нужно проверить на реальном безопасном deletion candidate.
 - Production research archive routine: S3 mechanics доказаны на
   `tool_validation` bundle, per-chunk verification receipts прошли VPS smoke,
-  non-destructive settled incremental export реализован; complete-coverage gate
-  перед archive-before-delete ещё не закрыт.
+  non-destructive settled incremental export прошёл VPS smoke; checkpoint-based
+  complete-coverage audit реализован, но его VPS smoke и wiring как обязательного
+  gate перед archive-before-delete ещё не закрыты.
 - Prometheus retention: фактически применён на VPS, volume в пределах configured
   size limit.
 - Многодневная unattended stability на VPS.
@@ -169,8 +175,11 @@ corpus.
    - S3 upload/verify/readback tooling реализован для research archive bundles;
    - VPS S3 smoke на `tool_validation` bundle прошёл: `13/13` manifests,
      `27` objects, `2/2` bounded readbacks, повторный sync idempotent;
-   - next: определить production cadence settled bundles и archive-before-delete
-     receipts;
+   - incremental settled watermark advancement проверен на VPS;
+   - checkpoint-based complete coverage audit реализован как non-destructive
+     fail-closed report;
+   - next: VPS smoke coverage audit на fresh isolated directory и только потом
+     wiring как обязательного archive-before-delete gate;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:
@@ -404,9 +413,8 @@ Next experiment plan:
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
 2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
    только когда появится реальный безопасный deletion candidate.
-3. Прогнать VPS smoke settled incremental research archive на отдельном
-   `archive_kind=incremental_validation`, затем реализовать complete-coverage
-   gate для archive-before-delete.
+3. Прогнать VPS smoke checkpoint-based complete-coverage audit на fresh isolated
+   directory, затем подключить его как обязательный gate для archive-before-delete.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

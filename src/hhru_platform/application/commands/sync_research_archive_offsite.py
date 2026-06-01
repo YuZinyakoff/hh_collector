@@ -81,6 +81,8 @@ class SyncResearchArchiveOffsiteResult:
     inventory_file: Path | None
     remote_inventory_path: str | None
     inventory_uploaded: bool
+    checkpoint_files: tuple[Path, ...]
+    remote_checkpoint_paths: tuple[str, ...]
     summaries: tuple[ResearchArchiveOffsiteSummary, ...]
 
     @property
@@ -98,6 +100,10 @@ class SyncResearchArchiveOffsiteResult:
     @property
     def candidate_manifest_count(self) -> int:
         return self.scanned_manifest_count - self.skipped_manifest_count
+
+    @property
+    def checkpoint_uploaded_count(self) -> int:
+        return len(self.checkpoint_files)
 
 
 class ResearchArchiveOffsiteUploader(Protocol):
@@ -162,6 +168,11 @@ def sync_research_archive_offsite(
             synced_summaries=summaries,
             offsite_uploader=offsite_uploader,
         )
+        checkpoint_files, remote_checkpoint_paths = _sync_checkpoints(
+            command=command,
+            archive_root=archive_root,
+            offsite_uploader=offsite_uploader,
+        )
     except Exception as error:
         record_operation_failed(
             LOGGER,
@@ -187,6 +198,8 @@ def sync_research_archive_offsite(
         inventory_file=inventory_file,
         remote_inventory_path=remote_inventory_path,
         inventory_uploaded=inventory_uploaded,
+        checkpoint_files=checkpoint_files,
+        remote_checkpoint_paths=remote_checkpoint_paths,
         summaries=summaries,
     )
     record_operation_succeeded(
@@ -202,6 +215,7 @@ def sync_research_archive_offsite(
         uploaded_manifest_count=result.uploaded_manifest_count,
         skipped_manifest_count=result.skipped_manifest_count,
         inventory_uploaded=result.inventory_uploaded,
+        checkpoint_uploaded_count=result.checkpoint_uploaded_count,
     )
     return result
 
@@ -337,6 +351,30 @@ def _sync_inventory(
         return inventory_file, remote_path, False
     offsite_uploader.upload_file(local_file=inventory_file, remote_path=remote_relative_path)
     return inventory_file, remote_path, True
+
+
+def _sync_checkpoints(
+    *,
+    command: SyncResearchArchiveOffsiteCommand,
+    archive_root: Path,
+    offsite_uploader: ResearchArchiveOffsiteUploader,
+) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    is_partial_sync = bool(command.manifest_files) or command.limit is not None
+    if is_partial_sync:
+        return (), ()
+    checkpoint_root = archive_root / "v1" / "checkpoints"
+    checkpoint_files = tuple(sorted(checkpoint_root.rglob("*.checkpoint.json")))
+    remote_checkpoint_paths: list[str] = []
+    for checkpoint_file in checkpoint_files:
+        remote_relative_path = checkpoint_file.relative_to(archive_root).as_posix()
+        offsite_uploader.upload_file(
+            local_file=checkpoint_file,
+            remote_path=remote_relative_path,
+        )
+        remote_checkpoint_paths.append(
+            _join_remote_path(command.offsite_root, remote_relative_path)
+        )
+    return checkpoint_files, tuple(remote_checkpoint_paths)
 
 
 def _load_bundle(

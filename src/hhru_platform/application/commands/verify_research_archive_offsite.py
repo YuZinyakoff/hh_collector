@@ -22,6 +22,7 @@ from hhru_platform.infrastructure.observability.operations import (
     record_operation_succeeded,
 )
 from hhru_platform.infrastructure.research_archive import (
+    ResearchArchiveCheckpointVerificationReceipt,
     ResearchArchiveOffsiteVerificationReceipt,
 )
 
@@ -106,6 +107,7 @@ class VerifyResearchArchiveOffsiteResult:
     verified_objects: tuple[ResearchArchiveOffsiteVerifiedObject, ...]
     verified_manifests: tuple[ResearchArchiveOffsiteVerifiedManifestSummary, ...]
     readbacks: tuple[ResearchArchiveOffsiteReadbackSummary, ...]
+    verified_checkpoint_count: int
 
     @property
     def verified_object_count(self) -> int:
@@ -138,11 +140,22 @@ class ResearchArchiveOffsiteVerificationReceiptStore(Protocol):
         """Persist proof that one research archive chunk passed offsite verification."""
 
 
+class ResearchArchiveCheckpointVerificationReceiptStore(Protocol):
+    def write_receipt(
+        self,
+        *,
+        checkpoint_file: Path,
+        receipt: ResearchArchiveCheckpointVerificationReceipt,
+    ) -> Path:
+        """Persist proof that one checkpoint passed offsite verification."""
+
+
 def verify_research_archive_offsite(
     command: VerifyResearchArchiveOffsiteCommand,
     *,
     remote_store: ResearchArchiveOffsiteRemoteStore,
     receipt_store: ResearchArchiveOffsiteVerificationReceiptStore,
+    checkpoint_receipt_store: ResearchArchiveCheckpointVerificationReceiptStore,
 ) -> VerifyResearchArchiveOffsiteResult:
     started_at = log_operation_started(
         LOGGER,
@@ -159,6 +172,7 @@ def verify_research_archive_offsite(
             command=command,
             remote_store=remote_store,
             receipt_store=receipt_store,
+            checkpoint_receipt_store=checkpoint_receipt_store,
         )
     except Exception as error:
         record_operation_failed(
@@ -187,6 +201,7 @@ def verify_research_archive_offsite(
         verified_object_count=result.verified_object_count,
         verification_receipt_count=result.verification_receipt_count,
         readback_count=result.readback_count,
+        verified_checkpoint_count=result.verified_checkpoint_count,
     )
     return result
 
@@ -196,6 +211,7 @@ def _verify_research_archive_offsite(
     command: VerifyResearchArchiveOffsiteCommand,
     remote_store: ResearchArchiveOffsiteRemoteStore,
     receipt_store: ResearchArchiveOffsiteVerificationReceiptStore,
+    checkpoint_receipt_store: ResearchArchiveCheckpointVerificationReceiptStore,
 ) -> VerifyResearchArchiveOffsiteResult:
     archive_root = command.archive_dir.resolve()
     manifest_files = _select_manifest_files(
@@ -287,6 +303,34 @@ def _verify_research_archive_offsite(
                 expected_size_bytes=inventory_file.stat().st_size,
             )
         )
+    verified_checkpoint_count = 0
+    if not is_partial_verify:
+        checkpoint_root = archive_root / "v1" / "checkpoints"
+        for checkpoint_file in sorted(checkpoint_root.rglob("*.checkpoint.json")):
+            checkpoint_relative_path = checkpoint_file.relative_to(archive_root).as_posix()
+            checkpoint_size_bytes = checkpoint_file.stat().st_size
+            verified_objects.append(
+                _verify_remote_size(
+                    remote_store=remote_store,
+                    remote_path=checkpoint_relative_path,
+                    expected_size_bytes=checkpoint_size_bytes,
+                )
+            )
+            checkpoint_receipt_store.write_receipt(
+                checkpoint_file=checkpoint_file,
+                receipt=ResearchArchiveCheckpointVerificationReceipt(
+                    verified_at=verified_at,
+                    offsite_url=command.offsite_url,
+                    offsite_root=command.offsite_root,
+                    checkpoint_size_bytes=checkpoint_size_bytes,
+                    checkpoint_sha256=_sha256_file(checkpoint_file),
+                    remote_checkpoint_path=_join_remote_path(
+                        command.offsite_root,
+                        checkpoint_relative_path,
+                    ),
+                ),
+            )
+            verified_checkpoint_count += 1
 
     return VerifyResearchArchiveOffsiteResult(
         status=RESEARCH_ARCHIVE_OFFSITE_VERIFY_STATUS_SUCCEEDED,
@@ -299,6 +343,7 @@ def _verify_research_archive_offsite(
         verified_objects=tuple(verified_objects),
         verified_manifests=tuple(verified_manifests),
         readbacks=tuple(readbacks),
+        verified_checkpoint_count=verified_checkpoint_count,
     )
 
 

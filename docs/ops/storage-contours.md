@@ -153,6 +153,18 @@ Current status:
   It derives a per-dataset watermark from local manifests with the same
   `archive_kind` and exports only the contiguous source-id prefix older than the
   settled cutoff. Point-in-time dimensions remain explicit snapshot exports.
+- Every incremental export now records per-dataset cursor transitions in a
+  checkpoint. `audit-research-archive-coverage` verifies the chain from cursor
+  `0` and requires matching chunk-level and checkpoint-level S3 verification
+  receipts. The audit is a fail-closed report only; it is not yet wired to
+  destructive housekeeping.
+- Full S3 sync publishes checkpoints with inventory and full offsite verification
+  checks their remote sizes and records matching local receipts. Partial syncs
+  intentionally do not publish these completeness artifacts.
+- Isolated VPS incremental smoke passed on 2026-06-01 across three bounded
+  exports: raw/request-log cursors advanced `0 -> 71 -> 81 -> 91`,
+  snapshot/seen-event cursors advanced `0 -> 1230 -> 1240 -> 1250`, and local
+  verification passed for `13/13` manifests with `120` rows.
 
 ## 4. Parquet policy
 

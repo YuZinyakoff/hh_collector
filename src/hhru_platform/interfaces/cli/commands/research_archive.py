@@ -7,6 +7,11 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from hhru_platform.application.commands.audit_research_archive_coverage import (
+    AuditResearchArchiveCoverageCommand,
+    AuditResearchArchiveCoverageResult,
+    audit_research_archive_coverage,
+)
 from hhru_platform.application.commands.export_research_archive import (
     DEFAULT_RESEARCH_ARCHIVE_DATASETS,
     INCREMENTAL_RESEARCH_ARCHIVE_DATASETS,
@@ -39,6 +44,8 @@ from hhru_platform.infrastructure.db.repositories.research_archive_repo import (
 )
 from hhru_platform.infrastructure.db.session import session_scope
 from hhru_platform.infrastructure.research_archive import (
+    LocalResearchArchiveCheckpointStore,
+    LocalResearchArchiveCheckpointVerificationReceiptStore,
     LocalResearchArchiveCursorStore,
     LocalResearchArchiveOffsiteUploadReceiptStore,
     LocalResearchArchiveOffsiteVerificationReceiptStore,
@@ -140,7 +147,10 @@ def register_research_archive_commands(
 
     sync_offsite_parser = subparsers.add_parser(
         "sync-research-archive-offsite",
-        help="Upload local Archive v1 chunks, manifests and inventory to S3 offsite storage.",
+        help=(
+            "Upload local Archive v1 chunks, manifests, inventory and checkpoints "
+            "to S3 offsite storage."
+        ),
     )
     sync_offsite_parser.add_argument(
         "--archive-dir",
@@ -198,6 +208,33 @@ def register_research_archive_commands(
     )
     verify_offsite_parser.set_defaults(handler=handle_verify_research_archive_offsite)
 
+    audit_coverage_parser = subparsers.add_parser(
+        "audit-research-archive-coverage",
+        help="Audit verified checkpoint coverage for append-only Archive v1 datasets.",
+    )
+    audit_coverage_parser.add_argument(
+        "--archive-dir",
+        type=Path,
+        help="Archive root directory. Defaults to HHRU_RESEARCH_ARCHIVE_DIR.",
+    )
+    audit_coverage_parser.add_argument(
+        "--archive-kind",
+        default="production",
+        help="Archive label to audit. Defaults to production.",
+    )
+    audit_coverage_parser.add_argument(
+        "--dataset",
+        action="append",
+        choices=INCREMENTAL_RESEARCH_ARCHIVE_DATASETS,
+        help="Append-only dataset to audit. Can be repeated. Defaults to all.",
+    )
+    audit_coverage_parser.add_argument(
+        "--triggered-by",
+        default="audit-research-archive-coverage",
+        help="Actor or subsystem that initiated the audit.",
+    )
+    audit_coverage_parser.set_defaults(handler=handle_audit_research_archive_coverage)
+
 
 def handle_export_research_archive(args: argparse.Namespace) -> int:
     settings = get_settings()
@@ -236,6 +273,7 @@ def handle_export_research_archive(args: argparse.Namespace) -> int:
                 research_archive_repository=SqlAlchemyResearchArchiveRepository(session),
                 research_archive_store=LocalResearchArchiveStore(),
                 research_archive_cursor_store=LocalResearchArchiveCursorStore(),
+                research_archive_checkpoint_store=LocalResearchArchiveCheckpointStore(),
             )
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -298,6 +336,7 @@ def handle_verify_research_archive_offsite(args: argparse.Namespace) -> int:
             command,
             remote_store=remote_store,
             receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+            checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
         )
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -305,6 +344,35 @@ def handle_verify_research_archive_offsite(args: argparse.Namespace) -> int:
 
     _print_verify_offsite_result(result)
     return 0
+
+
+def handle_audit_research_archive_coverage(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        _ensure_research_archive_s3_backend(settings)
+        command = AuditResearchArchiveCoverageCommand(
+            archive_dir=Path(args.archive_dir or settings.research_archive_dir),
+            archive_kind=str(args.archive_kind),
+            datasets=tuple(args.dataset or INCREMENTAL_RESEARCH_ARCHIVE_DATASETS),
+            offsite_url=_s3_offsite_url(
+                endpoint_url=_research_archive_s3_endpoint_url(settings),
+                bucket=_research_archive_s3_bucket(settings),
+            ),
+            offsite_root=settings.research_archive_offsite_root,
+            triggered_by=str(args.triggered_by),
+        )
+        result = audit_research_archive_coverage(
+            command,
+            checkpoint_store=LocalResearchArchiveCheckpointStore(),
+            receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+            checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_audit_coverage_result(result)
+    return 0 if result.complete else 1
 
 
 def _print_export_result(result: ExportResearchArchiveResult) -> None:
@@ -317,6 +385,7 @@ def _print_export_result(result: ExportResearchArchiveResult) -> None:
     print(f"triggered_by={result.triggered_by}")
     print(f"archive_dir={result.archive_dir}")
     print(f"created_at={result.created_at.isoformat()}")
+    print(f"checkpoint_file={result.checkpoint_file or '-'}")
     print(f"total_chunk_count={result.total_chunk_count}")
     print(f"total_row_count={result.total_row_count}")
     print(f"total_data_size_bytes={result.total_data_size_bytes}")
@@ -498,6 +567,17 @@ def _print_sync_offsite_result(result: SyncResearchArchiveOffsiteResult) -> None
     print(f"inventory_file={result.inventory_file or '-'}")
     print(f"remote_inventory_path={result.remote_inventory_path or '-'}")
     print(f"inventory_uploaded={'yes' if result.inventory_uploaded else 'no'}")
+    print(f"checkpoint_uploaded_count={result.checkpoint_uploaded_count}")
+    for checkpoint_file, remote_checkpoint_path in zip(
+        result.checkpoint_files,
+        result.remote_checkpoint_paths,
+        strict=True,
+    ):
+        print(
+            "checkpoint_summary "
+            f"checkpoint_file={checkpoint_file} "
+            f"remote_checkpoint_path={remote_checkpoint_path}"
+        )
     for summary in result.summaries:
         print(
             "manifest="
@@ -528,6 +608,7 @@ def _print_verify_offsite_result(result: VerifyResearchArchiveOffsiteResult) -> 
     print(f"verified_manifest_count={result.verified_manifest_count}")
     print(f"verified_object_count={result.verified_object_count}")
     print(f"verification_receipt_count={result.verification_receipt_count}")
+    print(f"verified_checkpoint_count={result.verified_checkpoint_count}")
     print(f"readback_count={result.readback_count}")
     for readback in result.readbacks:
         print(
@@ -537,6 +618,34 @@ def _print_verify_offsite_result(result: VerifyResearchArchiveOffsiteResult) -> 
             f"data_size_bytes={readback.data_size_bytes} "
             f"data_sha256={readback.data_sha256}"
         )
+
+
+def _print_audit_coverage_result(result: AuditResearchArchiveCoverageResult) -> None:
+    print("audited research archive coverage")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"archive_dir={result.archive_dir}")
+    print(f"archive_kind={result.archive_kind}")
+    print(f"issue_count={result.issue_count}")
+    for summary in result.summaries:
+        print(
+            "dataset_summary "
+            f"dataset={summary.dataset} "
+            f"status={summary.status} "
+            f"scanned_checkpoint_count={summary.scanned_checkpoint_count} "
+            f"verified_checkpoint_count={summary.verified_checkpoint_count} "
+            f"verified_manifest_count={summary.verified_manifest_count} "
+            f"verified_row_count={summary.verified_row_count} "
+            f"source_id_covered={summary.source_id_covered} "
+            f"issue_count={len(summary.issues)}"
+        )
+        for issue in summary.issues:
+            print(
+                "coverage_issue "
+                f"dataset={issue.dataset} "
+                f"checkpoint_file={issue.checkpoint_file or '-'} "
+                f"message={issue.message}"
+            )
 
 
 def _git_revision() -> str:

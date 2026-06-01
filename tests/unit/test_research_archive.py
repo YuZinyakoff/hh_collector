@@ -10,6 +10,10 @@ from typing import Any, cast
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from hhru_platform.application.commands.audit_research_archive_coverage import (
+    AuditResearchArchiveCoverageCommand,
+    audit_research_archive_coverage,
+)
 from hhru_platform.application.commands.export_research_archive import (
     ExportResearchArchiveCommand,
     export_research_archive,
@@ -30,11 +34,16 @@ from hhru_platform.infrastructure.db.repositories.research_archive_repo import (
     SqlAlchemyResearchArchiveRepository,
 )
 from hhru_platform.infrastructure.research_archive import (
+    LocalResearchArchiveCheckpointStore,
+    LocalResearchArchiveCheckpointVerificationReceiptStore,
     LocalResearchArchiveCursorStore,
     LocalResearchArchiveOffsiteUploadReceiptStore,
     LocalResearchArchiveOffsiteVerificationReceiptStore,
     LocalResearchArchiveStore,
     ResearchArchiveManifestVerifier,
+)
+from hhru_platform.infrastructure.research_archive.checkpoint_store import (
+    ResearchArchiveCheckpointDataset,
 )
 
 
@@ -207,6 +216,7 @@ def test_incremental_export_uses_manifest_cursor_and_is_locally_idempotent(
     archive_dir = tmp_path / "research"
     settled_before = datetime(2026, 5, 27, 0, 0, tzinfo=UTC)
     cursor_store = LocalResearchArchiveCursorStore()
+    checkpoint_store = LocalResearchArchiveCheckpointStore()
     first_repository = FakeResearchArchiveRepository()
 
     first_result = export_research_archive(
@@ -226,6 +236,7 @@ def test_incremental_export_uses_manifest_cursor_and_is_locally_idempotent(
         research_archive_repository=first_repository,
         research_archive_store=LocalResearchArchiveStore(),
         research_archive_cursor_store=cursor_store,
+        research_archive_checkpoint_store=checkpoint_store,
     )
 
     assert first_repository.seen_windows == [
@@ -254,6 +265,7 @@ def test_incremental_export_uses_manifest_cursor_and_is_locally_idempotent(
         research_archive_repository=second_repository,
         research_archive_store=LocalResearchArchiveStore(),
         research_archive_cursor_store=cursor_store,
+        research_archive_checkpoint_store=checkpoint_store,
     )
 
     assert second_repository.seen_windows == [
@@ -263,6 +275,15 @@ def test_incremental_export_uses_manifest_cursor_and_is_locally_idempotent(
     assert second_result.total_row_count == 0
     assert second_result.summaries[0].source_id_before == 101
     assert second_result.summaries[0].source_id_after == 101
+    checkpoints = checkpoint_store.load_checkpoints(
+        archive_dir=archive_dir,
+        archive_kind="production",
+    )
+    assert len(checkpoints) == 2
+    assert checkpoints[0].datasets[0].source_id_before == 0
+    assert checkpoints[0].datasets[0].source_id_after == 101
+    assert checkpoints[1].datasets[0].source_id_before == 101
+    assert checkpoints[1].datasets[0].source_id_after == 101
 
 
 def test_research_archive_manifest_source_range_compares_numeric_ids(
@@ -446,6 +467,7 @@ def test_sync_and_verify_research_archive_offsite(
         ),
         remote_store=remote_store,
         receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+        checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
     )
 
     assert verify_result.status == "succeeded"
@@ -471,6 +493,165 @@ def test_sync_and_verify_research_archive_offsite(
     assert [
         receipt.readback_verified for receipt in verification_receipts if receipt is not None
     ] == [True, False]
+
+
+def test_audit_research_archive_coverage_requires_verified_checkpoint_chain(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    checkpoint_store = LocalResearchArchiveCheckpointStore()
+    export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            chunk_size=10,
+            batch_size=100,
+            archive_kind="production",
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+            incremental=True,
+            settled_before=datetime(2026, 5, 27, 0, 0, tzinfo=UTC),
+        ),
+        research_archive_repository=FakeResearchArchiveRepository(),
+        research_archive_store=LocalResearchArchiveStore(),
+        research_archive_cursor_store=LocalResearchArchiveCursorStore(),
+        research_archive_checkpoint_store=checkpoint_store,
+    )
+    verification_receipt_store = LocalResearchArchiveOffsiteVerificationReceiptStore()
+    checkpoint_receipt_store = LocalResearchArchiveCheckpointVerificationReceiptStore()
+
+    incomplete_result = audit_research_archive_coverage(
+        AuditResearchArchiveCoverageCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            offsite_url="https://s3.example.test/bucket-id",
+            triggered_by="unit-test",
+        ),
+        checkpoint_store=checkpoint_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=checkpoint_receipt_store,
+    )
+
+    assert incomplete_result.status == "incomplete"
+    assert incomplete_result.issue_count == 1
+    assert "checkpoint offsite verification receipt not found" in (
+        incomplete_result.summaries[0].issues[0].message
+    )
+
+    remote_store = FakeResearchArchiveRemoteStore()
+    sync_result = sync_research_archive_offsite(
+        SyncResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+        ),
+        offsite_uploader=remote_store,
+        receipt_store=LocalResearchArchiveOffsiteUploadReceiptStore(),
+    )
+    verify_result = verify_research_archive_offsite(
+        VerifyResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=checkpoint_receipt_store,
+    )
+    assert sync_result.checkpoint_uploaded_count == 1
+    assert verify_result.verified_checkpoint_count == 1
+
+    complete_result = audit_research_archive_coverage(
+        AuditResearchArchiveCoverageCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            offsite_url="https://s3.example.test/bucket-id",
+            triggered_by="unit-test",
+        ),
+        checkpoint_store=checkpoint_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=checkpoint_receipt_store,
+    )
+
+    assert complete_result.status == "complete"
+    assert complete_result.issue_count == 0
+    assert complete_result.summaries[0].verified_checkpoint_count == 1
+    assert complete_result.summaries[0].verified_manifest_count == 1
+    assert complete_result.summaries[0].verified_row_count == 1
+    assert complete_result.summaries[0].source_id_covered == 101
+
+    checkpoint = checkpoint_store.load_checkpoints(
+        archive_dir=archive_dir,
+        archive_kind="production",
+    )[0]
+    checkpoint.checkpoint_file.write_text(
+        checkpoint.checkpoint_file.read_text(encoding="utf-8").replace(
+            '"triggered_by": "export-research-archive"',
+            '"triggered_by": "tamper-research-archive"',
+        ),
+        encoding="utf-8",
+    )
+    tampered_result = audit_research_archive_coverage(
+        AuditResearchArchiveCoverageCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            offsite_url="https://s3.example.test/bucket-id",
+            triggered_by="unit-test",
+        ),
+        checkpoint_store=checkpoint_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=checkpoint_receipt_store,
+    )
+
+    assert tampered_result.status == "incomplete"
+    assert "checkpoint offsite verification receipt sha256 mismatch" in (
+        tampered_result.summaries[0].issues[0].message
+    )
+
+
+def test_audit_research_archive_coverage_rejects_checkpoint_chain_break(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    checkpoint_store = LocalResearchArchiveCheckpointStore()
+    checkpoint_store.write_checkpoint(
+        archive_dir=archive_dir,
+        archive_kind="production",
+        created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        settled_before=datetime(2026, 5, 27, 0, 0, tzinfo=UTC),
+        triggered_by="unit-test",
+        datasets=(
+            ResearchArchiveCheckpointDataset(
+                dataset="bronze/raw_api_payload",
+                source_id_before=10,
+                source_id_after=10,
+                chunk_count=0,
+                row_count=0,
+                manifest_files=(),
+            ),
+        ),
+    )
+
+    result = audit_research_archive_coverage(
+        AuditResearchArchiveCoverageCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            offsite_url="https://s3.example.test/bucket-id",
+            triggered_by="unit-test",
+        ),
+        checkpoint_store=checkpoint_store,
+        receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+        checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
+    )
+
+    assert result.status == "incomplete"
+    assert result.issue_count == 1
+    assert result.summaries[0].source_id_covered == 0
+    assert "checkpoint chain break" in result.summaries[0].issues[0].message
 
 
 def test_limited_research_archive_offsite_sync_does_not_upload_inventory(
@@ -521,12 +702,73 @@ def test_limited_research_archive_offsite_sync_does_not_upload_inventory(
         ),
         remote_store=remote_store,
         receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+        checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
     )
 
     assert verify_result.scanned_manifest_count == 1
     assert verify_result.verified_object_count == 2
     assert verify_result.verification_receipt_count == 1
     assert verify_result.readback_count == 1
+
+
+def test_limited_research_archive_offsite_sync_does_not_upload_checkpoint(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            chunk_size=10,
+            batch_size=100,
+            archive_kind="production",
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+            incremental=True,
+            settled_before=datetime(2026, 5, 27, 0, 0, tzinfo=UTC),
+        ),
+        research_archive_repository=FakeResearchArchiveRepository(),
+        research_archive_store=LocalResearchArchiveStore(),
+        research_archive_cursor_store=LocalResearchArchiveCursorStore(),
+        research_archive_checkpoint_store=LocalResearchArchiveCheckpointStore(),
+    )
+    remote_store = FakeResearchArchiveRemoteStore()
+
+    sync_result = sync_research_archive_offsite(
+        SyncResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            limit=1,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+        ),
+        offsite_uploader=remote_store,
+        receipt_store=LocalResearchArchiveOffsiteUploadReceiptStore(),
+    )
+
+    assert sync_result.inventory_uploaded is False
+    assert sync_result.checkpoint_uploaded_count == 0
+    assert all(
+        not remote_path.endswith(".checkpoint.json")
+        for remote_path in remote_store.objects_by_remote_path
+    )
+
+    verify_result = verify_research_archive_offsite(
+        VerifyResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            limit=1,
+            offsite_url="https://s3.example.test/bucket-id",
+            offsite_root="/hhru-platform/research-archive",
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+        receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+        checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
+    )
+
+    assert verify_result.verified_checkpoint_count == 0
 
 
 def test_verify_research_archive_offsite_does_not_receipt_size_mismatch(
@@ -575,6 +817,7 @@ def test_verify_research_archive_offsite_does_not_receipt_size_mismatch(
             ),
             remote_store=remote_store,
             receipt_store=verification_receipt_store,
+            checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
         )
 
     assert (

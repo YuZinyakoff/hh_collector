@@ -12,7 +12,10 @@ from hhru_platform.infrastructure.observability.operations import (
     record_operation_failed,
     record_operation_succeeded,
 )
-from hhru_platform.infrastructure.research_archive import ResearchArchiveChunkSummary
+from hhru_platform.infrastructure.research_archive import (
+    ResearchArchiveCheckpointDataset,
+    ResearchArchiveChunkSummary,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -142,6 +145,7 @@ class ExportResearchArchiveResult:
     created_at: datetime
     incremental: bool
     settled_before: datetime | None
+    checkpoint_file: Path | None
     summaries: tuple[ResearchArchiveDatasetSummary, ...]
 
     @property
@@ -200,12 +204,27 @@ class ResearchArchiveStore(Protocol):
         """Write one dataset into archive chunks and return chunk summaries."""
 
 
+class ResearchArchiveCheckpointStore(Protocol):
+    def write_checkpoint(
+        self,
+        *,
+        archive_dir: Path,
+        archive_kind: str,
+        created_at: datetime,
+        settled_before: datetime,
+        triggered_by: str,
+        datasets: tuple[ResearchArchiveCheckpointDataset, ...],
+    ) -> Path:
+        """Persist one incremental export checkpoint after chunks are written."""
+
+
 def export_research_archive(
     command: ExportResearchArchiveCommand,
     *,
     research_archive_repository: ResearchArchiveRepository,
     research_archive_store: ResearchArchiveStore,
     research_archive_cursor_store: ResearchArchiveCursorStore | None = None,
+    research_archive_checkpoint_store: ResearchArchiveCheckpointStore | None = None,
 ) -> ExportResearchArchiveResult:
     started_at = log_operation_started(
         LOGGER,
@@ -220,6 +239,8 @@ def export_research_archive(
     created_at = command.created_at or datetime.now(UTC)
     if command.incremental and research_archive_cursor_store is None:
         raise ValueError("research_archive_cursor_store is required for incremental export")
+    if command.incremental and research_archive_checkpoint_store is None:
+        raise ValueError("research_archive_checkpoint_store is required for incremental export")
 
     try:
         summaries = tuple(
@@ -232,6 +253,12 @@ def export_research_archive(
                 research_archive_cursor_store=research_archive_cursor_store,
             )
             for dataset in command.datasets
+        )
+        checkpoint_file = _write_checkpoint(
+            command=command,
+            created_at=created_at,
+            summaries=summaries,
+            research_archive_checkpoint_store=research_archive_checkpoint_store,
         )
     except Exception as error:
         record_operation_failed(
@@ -254,6 +281,7 @@ def export_research_archive(
         created_at=created_at,
         incremental=command.incremental,
         settled_before=command.settled_before,
+        checkpoint_file=checkpoint_file,
         summaries=summaries,
     )
     record_operation_succeeded(
@@ -268,6 +296,7 @@ def export_research_archive(
         total_chunk_count=result.total_chunk_count,
         total_row_count=result.total_row_count,
         total_data_size_bytes=result.total_data_size_bytes,
+        checkpoint_file=str(result.checkpoint_file or "-"),
     )
     return result
 
@@ -354,3 +383,36 @@ def _source_id_after(
         if chunk.source_max_id is not None
     ]
     return max([source_id_before, *source_ids])
+
+
+def _write_checkpoint(
+    *,
+    command: ExportResearchArchiveCommand,
+    created_at: datetime,
+    summaries: tuple[ResearchArchiveDatasetSummary, ...],
+    research_archive_checkpoint_store: ResearchArchiveCheckpointStore | None,
+) -> Path | None:
+    if not command.incremental:
+        return None
+    if research_archive_checkpoint_store is None:
+        raise ValueError("research_archive_checkpoint_store is required for incremental export")
+    if command.settled_before is None:
+        raise ValueError("settled_before is required for incremental export")
+    return research_archive_checkpoint_store.write_checkpoint(
+        archive_dir=command.archive_dir,
+        archive_kind=command.archive_kind,
+        created_at=created_at,
+        settled_before=command.settled_before,
+        triggered_by=command.triggered_by,
+        datasets=tuple(
+            ResearchArchiveCheckpointDataset(
+                dataset=summary.dataset,
+                source_id_before=summary.source_id_before or 0,
+                source_id_after=summary.source_id_after or 0,
+                chunk_count=summary.chunk_count,
+                row_count=summary.row_count,
+                manifest_files=summary.manifest_files,
+            )
+            for summary in summaries
+        ),
+    )

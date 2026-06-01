@@ -562,6 +562,21 @@ def test_housekeeping_repository_counts_only_safe_retention_candidates() -> None
                 cutoff=cutoff,
                 limit=10,
             ) == [401]
+            assert (
+                repository.count_detail_fetch_attempt_candidates(
+                    cutoff=cutoff,
+                    max_source_id=400,
+                )
+                == 0
+            )
+            assert (
+                repository.list_detail_fetch_attempt_ids_for_retention(
+                    cutoff=cutoff,
+                    limit=10,
+                    max_source_id=400,
+                )
+                == []
+            )
             assert repository.count_finished_crawl_run_candidates(cutoff=cutoff) == 1
             assert repository.list_finished_crawl_run_ids_for_retention(
                 cutoff=cutoff,

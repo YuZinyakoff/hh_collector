@@ -15,6 +15,7 @@ from hhru_platform.application.commands.audit_research_archive_coverage import (
     audit_research_archive_coverage,
 )
 from hhru_platform.application.commands.export_research_archive import (
+    INCREMENTAL_RESEARCH_ARCHIVE_DATASETS,
     ExportResearchArchiveCommand,
     export_research_archive,
 )
@@ -72,6 +73,16 @@ class FakeResearchArchiveRepository:
             if settled_before is not None and record["received_at"] > settled_before:
                 return
             yield record
+        elif dataset == "silver/detail_fetch_attempt":
+            record = _detail_fetch_attempt_record(401)
+            if (
+                after_source_id is not None
+                and record["detail_fetch_attempt_id"] <= after_source_id
+            ):
+                return
+            if settled_before is not None and record["requested_at"] > settled_before:
+                return
+            yield record
         elif dataset == "silver/vacancy_current_state":
             yield {
                 "vacancy_id": "vacancy-1",
@@ -111,6 +122,21 @@ def _raw_payload_record(raw_api_payload_id: int) -> dict[str, Any]:
         "payload_hash": f"hash-{raw_api_payload_id}",
         "received_at": datetime(2026, 5, 26, 10, 0, 2, tzinfo=UTC),
         "payload_json": {"id": "123", "name": "Python developer"},
+    }
+
+
+def _detail_fetch_attempt_record(detail_fetch_attempt_id: int) -> dict[str, Any]:
+    return {
+        "detail_fetch_attempt_id": detail_fetch_attempt_id,
+        "vacancy_id": "vacancy-1",
+        "hh_vacancy_id": "123",
+        "crawl_run_id": "run-1",
+        "reason": "first_seen",
+        "attempt": 1,
+        "status": "succeeded",
+        "requested_at": datetime(2026, 5, 26, 10, 0, tzinfo=UTC),
+        "finished_at": datetime(2026, 5, 26, 10, 0, 1, tzinfo=UTC),
+        "error_message": None,
     }
 
 
@@ -309,6 +335,33 @@ def test_research_archive_manifest_source_range_compares_numeric_ids(
     assert manifest["source_max_id"] == "100"
 
 
+def test_detail_fetch_attempt_is_an_incremental_archive_dataset(tmp_path: Path) -> None:
+    archive_dir = tmp_path / "research"
+    created_at = datetime(2026, 5, 27, 12, 0, tzinfo=UTC)
+    summary = LocalResearchArchiveStore().write_dataset(
+        archive_dir=archive_dir,
+        schema_version="research-archive-v1",
+        dataset="silver/detail_fetch_attempt",
+        records=(_detail_fetch_attempt_record(401),),
+        chunk_size=10,
+        created_at=created_at,
+        archive_kind="production",
+        source_database="hhru_platform",
+        source_git_revision="test-revision",
+        source_command="pytest",
+        triggered_by="unit-test",
+    )[0]
+
+    assert "silver/detail_fetch_attempt/year=2026/month=05/day=26" in str(
+        summary.data_file
+    )
+    manifest = json.loads(summary.manifest_file.read_text(encoding="utf-8"))
+    assert manifest["dataset_key"] == "silver/detail_fetch_attempt"
+    assert manifest["source_min_id"] == "401"
+    assert manifest["source_max_id"] == "401"
+    assert "silver/detail_fetch_attempt" in INCREMENTAL_RESEARCH_ARCHIVE_DATASETS
+
+
 def test_research_archive_store_does_not_overwrite_existing_chunk(tmp_path: Path) -> None:
     archive_dir = tmp_path / "research"
     store = LocalResearchArchiveStore()
@@ -370,6 +423,28 @@ def test_research_archive_bounded_incremental_sql_selects_source_id_prefix() -> 
 
     assert "raw_api_payload.id IN (SELECT raw_api_payload.id" in sql
     assert "ORDER BY raw_api_payload.id" in sql
+    assert "LIMIT 10" in sql
+
+
+def test_detail_fetch_attempt_incremental_sql_uses_requested_at_watermark() -> None:
+    repository = SqlAlchemyResearchArchiveRepository(cast(Any, None))
+
+    statement = repository._build_statement(
+        "silver/detail_fetch_attempt",
+        after_source_id=400,
+        settled_before=datetime(2026, 5, 27, 0, 0, tzinfo=UTC),
+        incremental_limit=10,
+    )
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "detail_fetch_attempt.id > 400" in sql
+    assert "detail_fetch_attempt.requested_at > '2026-05-27 00:00:00+00:00'" in sql
+    assert "ORDER BY detail_fetch_attempt.id" in sql
     assert "LIMIT 10" in sql
 
 

@@ -246,8 +246,8 @@ def register_research_archive_commands(
     housekeeping_preview_parser = subparsers.add_parser(
         "preview-research-archive-housekeeping",
         help=(
-            "Preview raw payload and vacancy snapshot retention candidates bounded "
-            "by complete verified Archive v1 coverage."
+            "Preview retention candidates bounded by complete verified Archive v1 "
+            "coverage."
         ),
     )
     housekeeping_preview_parser.add_argument(
@@ -269,6 +269,11 @@ def register_research_archive_commands(
         "--vacancy-snapshot-retention-days",
         type=_non_negative_int,
         help="Override HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS.",
+    )
+    housekeeping_preview_parser.add_argument(
+        "--detail-fetch-attempt-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS.",
     )
     housekeeping_preview_parser.add_argument(
         "--finished-crawl-run-retention-days",
@@ -450,6 +455,11 @@ def handle_preview_research_archive_housekeeping(args: argparse.Namespace) -> in
                 args.vacancy_snapshot_retention_days
                 if args.vacancy_snapshot_retention_days is not None
                 else settings.housekeeping_vacancy_snapshot_retention_days
+            ),
+            detail_fetch_attempt_retention_days=(
+                args.detail_fetch_attempt_retention_days
+                if args.detail_fetch_attempt_retention_days is not None
+                else settings.housekeeping_detail_fetch_attempt_retention_days
             ),
             finished_crawl_run_retention_days=(
                 args.finished_crawl_run_retention_days

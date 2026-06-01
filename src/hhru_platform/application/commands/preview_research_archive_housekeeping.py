@@ -17,6 +17,7 @@ from hhru_platform.application.commands.audit_research_archive_coverage import (
     audit_research_archive_coverage,
 )
 from hhru_platform.application.commands.run_housekeeping import (
+    TARGET_DETAIL_FETCH_ATTEMPT,
     TARGET_RAW_API_PAYLOAD,
     TARGET_VACANCY_SNAPSHOT,
 )
@@ -33,6 +34,7 @@ RESEARCH_ARCHIVE_HOUSEKEEPING_PREVIEW_STATUS_BLOCKED = "blocked"
 DATASET_RAW_API_PAYLOAD = "bronze/raw_api_payload"
 DATASET_VACANCY_SNAPSHOT = "silver/vacancy_snapshot"
 DATASET_VACANCY_SEEN_EVENT = "silver/vacancy_seen_event"
+DATASET_DETAIL_FETCH_ATTEMPT = "silver/detail_fetch_attempt"
 
 
 @dataclass(slots=True, frozen=True)
@@ -43,6 +45,7 @@ class PreviewResearchArchiveHousekeepingCommand:
     offsite_root: str = "/hhru-platform/research-archive"
     raw_api_payload_retention_days: int = 90
     vacancy_snapshot_retention_days: int = 0
+    detail_fetch_attempt_retention_days: int = 180
     finished_crawl_run_retention_days: int = 90
     delete_limit_per_target: int = 10_000
     triggered_by: str = "preview-research-archive-housekeeping"
@@ -60,6 +63,10 @@ class PreviewResearchArchiveHousekeepingCommand:
         if self.vacancy_snapshot_retention_days < 0:
             raise ValueError(
                 "vacancy_snapshot_retention_days must be greater than or equal to zero"
+            )
+        if self.detail_fetch_attempt_retention_days < 0:
+            raise ValueError(
+                "detail_fetch_attempt_retention_days must be greater than or equal to zero"
             )
         if self.finished_crawl_run_retention_days < 0:
             raise ValueError(
@@ -149,6 +156,23 @@ class ResearchArchiveHousekeepingPreviewRepository(Protocol):
     ) -> list[int]:
         """List old vacancy snapshot ids bounded by verified archive coverage."""
 
+    def count_detail_fetch_attempt_candidates(
+        self,
+        *,
+        cutoff: datetime,
+        max_source_id: int | None = None,
+    ) -> int:
+        """Count old detail attempts bounded by verified archive coverage."""
+
+    def list_detail_fetch_attempt_ids_for_retention(
+        self,
+        *,
+        cutoff: datetime,
+        limit: int,
+        max_source_id: int | None = None,
+    ) -> list[int]:
+        """List old detail attempt ids bounded by verified archive coverage."""
+
     def count_finished_crawl_run_candidates(self, *, cutoff: datetime) -> int:
         """Count old finished crawl runs before archive coverage filtering."""
 
@@ -233,6 +257,18 @@ def preview_research_archive_housekeeping(
                     coverage=coverage,
                     count_step=housekeeping_repository.count_vacancy_snapshot_candidates,
                     list_step=housekeeping_repository.list_vacancy_snapshot_ids_for_retention,
+                ),
+                _preview_target(
+                    target=TARGET_DETAIL_FETCH_ATTEMPT,
+                    dataset=DATASET_DETAIL_FETCH_ATTEMPT,
+                    retention_days=command.detail_fetch_attempt_retention_days,
+                    evaluated_at=evaluated_at,
+                    delete_limit=command.delete_limit_per_target,
+                    coverage=coverage,
+                    count_step=housekeeping_repository.count_detail_fetch_attempt_candidates,
+                    list_step=(
+                        housekeeping_repository.list_detail_fetch_attempt_ids_for_retention
+                    ),
                 ),
             )
             run_tree_summary = _preview_run_tree(

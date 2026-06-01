@@ -175,14 +175,20 @@ Current status:
   vacancy snapshot candidates only inside verified source-id cursors. It also
   reports old finished runs separately and excludes runs owning
   `vacancy_seen_event` rows above the verified seen-event cursor from the action
-  list. It does not authorize deletion; `detail_fetch_attempt` remains an open
-  gate extension.
+  list. It does not authorize deletion.
 - Initial isolated VPS preview returned `status=ready` with raw cap `81`,
   snapshot cap `1240`, raw candidates `20` and snapshot candidates `0`, but took
   `446861 ms`. After SQL/index optimization and migration
   `0005_snapshot_payload_ref_idx`, repeated VPS timing was `159 ms` (`2.897s`
   wall time including Docker startup) with `20` raw and `20` snapshot
   candidates.
+- Isolated VPS run-tree preview returned one old run candidate but excluded it
+  fail-closed because it owned a `vacancy_seen_event` row above verified cursor
+  `1240`: `coverage_blocked_candidate_count=1`, `action_count=0`. Preview
+  duration was `131 ms`.
+- `silver/detail_fetch_attempt` is added as an append-only checkpoint dataset
+  and bounded preview target. It must pass a fresh isolated S3 coverage smoke
+  before any destructive apply.
 
 ## 4. Parquet policy
 

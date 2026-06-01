@@ -67,6 +67,25 @@ class FakeHousekeepingRepository:
         self.calls.append(("list_snapshot", cutoff, max_source_id or 0, limit))
         return [11, 13]
 
+    def count_detail_fetch_attempt_candidates(
+        self,
+        *,
+        cutoff: datetime,
+        max_source_id: int | None = None,
+    ) -> int:
+        self.calls.append(("count_detail_attempt", cutoff, max_source_id or 0, None))
+        return 3
+
+    def list_detail_fetch_attempt_ids_for_retention(
+        self,
+        *,
+        cutoff: datetime,
+        limit: int,
+        max_source_id: int | None = None,
+    ) -> list[int]:
+        self.calls.append(("list_detail_attempt", cutoff, max_source_id or 0, limit))
+        return [21, 22]
+
     def count_finished_crawl_run_candidates(self, *, cutoff: datetime) -> int:
         self.calls.append(("count_run", cutoff))
         return 3
@@ -144,13 +163,20 @@ def test_preview_research_archive_housekeeping_bounds_candidates_by_verified_cur
 
     assert result.status == RESEARCH_ARCHIVE_HOUSEKEEPING_PREVIEW_STATUS_READY
     assert result.ready is True
-    assert result.total_candidates == 7
-    assert result.total_action_count == 4
+    assert result.total_candidates == 10
+    assert result.total_action_count == 6
     assert repository.calls == [
         ("count_raw", datetime(2026, 5, 22, 12, 0, tzinfo=UTC), 81, None),
         ("list_raw", datetime(2026, 5, 22, 12, 0, tzinfo=UTC), 81, 10),
         ("count_snapshot", datetime(2026, 5, 12, 12, 0, tzinfo=UTC), 1240, None),
         ("list_snapshot", datetime(2026, 5, 12, 12, 0, tzinfo=UTC), 1240, 10),
+        (
+            "count_detail_attempt",
+            datetime(2026, 4, 22, 12, 0, tzinfo=UTC),
+            403,
+            None,
+        ),
+        ("list_detail_attempt", datetime(2026, 4, 22, 12, 0, tzinfo=UTC), 403, 10),
         ("count_run", datetime(2026, 5, 2, 12, 0, tzinfo=UTC)),
         ("count_blocked_run", datetime(2026, 5, 2, 12, 0, tzinfo=UTC), 1240),
         ("list_safe_run", datetime(2026, 5, 2, 12, 0, tzinfo=UTC), 1240, 10),
@@ -177,6 +203,8 @@ def test_housekeeping_repository_applies_verified_source_id_bounds() -> None:
     raw_sql = _sql(session.statement)
     repository.count_vacancy_snapshot_candidates(cutoff=cutoff, max_source_id=1240)
     snapshot_sql = _sql(session.statement)
+    repository.count_detail_fetch_attempt_candidates(cutoff=cutoff, max_source_id=403)
+    detail_attempt_sql = _sql(session.statement)
 
     assert "raw_api_payload.id <= 81" in raw_sql
     assert "vacancy_snapshot.short_payload_ref_id <= 81" in raw_sql
@@ -184,6 +212,7 @@ def test_housekeeping_repository_applies_verified_source_id_bounds() -> None:
     assert "vacancy_snapshot.id <= 1240" in snapshot_sql
     assert "NOT (EXISTS (SELECT 1" in snapshot_sql
     assert "vacancy_snapshot_1.vacancy_id = vacancy_snapshot.vacancy_id" in snapshot_sql
+    assert "detail_fetch_attempt.id <= 403" in detail_attempt_sql
 
     repository.count_finished_crawl_run_candidates_blocked_by_seen_event_coverage(
         cutoff=cutoff,
@@ -223,6 +252,7 @@ def _command() -> PreviewResearchArchiveHousekeepingCommand:
         offsite_root="/hhru-platform/research-archive-smoke/test",
         raw_api_payload_retention_days=10,
         vacancy_snapshot_retention_days=20,
+        detail_fetch_attempt_retention_days=40,
         finished_crawl_run_retention_days=30,
         delete_limit_per_target=10,
         triggered_by="unit-test",
@@ -287,6 +317,16 @@ def _coverage_result(*, complete: bool) -> AuditResearchArchiveCoverageResult:
                 verified_manifest_count=2 if complete else 0,
                 verified_row_count=20 if complete else 0,
                 source_id_covered=1240 if complete else 0,
+                issues=(),
+            ),
+            ResearchArchiveDatasetCoverageSummary(
+                dataset="silver/detail_fetch_attempt",
+                status=status,
+                scanned_checkpoint_count=2,
+                verified_checkpoint_count=2 if complete else 0,
+                verified_manifest_count=2 if complete else 0,
+                verified_row_count=20 if complete else 0,
+                source_id_covered=403 if complete else 0,
                 issues=(),
             ),
         ),

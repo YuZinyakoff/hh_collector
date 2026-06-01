@@ -68,7 +68,7 @@ s3://<bucket>/hhru-platform/research-archive/v1/
       chunk-000001.jsonl.gz
       chunk-000001.manifest.json
   silver/detail_fetch_attempt/
-    year=2026/month=05/
+    year=2026/month=05/day=26/
       chunk-000001.jsonl.gz
       chunk-000001.manifest.json
 
@@ -256,9 +256,10 @@ Fields:
 - `requested_at`
 - `finished_at`
 - `error_message`
-- `request_log_id`
-- `raw_payload_id`
-- `payload_hash`
+
+The current PostgreSQL table does not persist `request_log_id`, `raw_payload_id`
+or `payload_hash` on the attempt row. Add those links only through an explicit
+schema evolution if attempt-to-request lineage becomes a requirement.
 
 ## 6. Manifest Contract
 
@@ -406,8 +407,6 @@ Initial datasets:
 - `silver/vacancy_snapshot`
 - `silver/vacancy_seen_event`
 - `silver/vacancy_current_state`
-
-Optional if cheap in the same slice:
 
 - `silver/detail_fetch_attempt`
 
@@ -572,8 +571,11 @@ archive foundation.
   separately. A run is excluded from the action list while it owns any
   `vacancy_seen_event.id` above the verified seen-event cursor; selected
   partition and seen-event cascade counts are reported explicitly.
-- Extend the coverage gate to `detail_fetch_attempt` before wiring any live DB
-  deletion.
+- Implemented: `silver/detail_fetch_attempt` participates in the append-only
+  settled incremental checkpoint chain and the read-only preview bounds
+  detail-attempt retention candidates by its verified source-id cursor.
+- Run a fresh isolated S3 coverage smoke containing the new checkpoint dataset
+  before wiring any live DB deletion.
 - Add operator runbook for archive-before-delete.
 
 Initial operator cadence:
@@ -610,6 +612,7 @@ Incremental mode intentionally defaults only to append-only datasets:
 - `silver/api_request_log`
 - `silver/vacancy_snapshot`
 - `silver/vacancy_seen_event`
+- `silver/detail_fetch_attempt`
 
 The existing `archive_kind=tool_validation` smoke manifests do not advance
 `archive_kind=production` watermarks. No live PostgreSQL rows may be deleted by
@@ -671,8 +674,8 @@ This proves the non-destructive coverage gate mechanics. It does not yet permit
 live DB deletion: housekeeping still needs explicit wiring and a dry-run preview
 before any destructive apply.
 
-After deploying the preview command, validate the read-only bridge against this
-isolated verified bundle:
+Historical read-only preview validation used this isolated verified bundle
+before `silver/detail_fetch_attempt` became a required checkpoint dataset:
 
 ```bash
 SMOKE_TAG=checkpoint-20260601T201007Z
@@ -705,8 +708,23 @@ bounded raw protection subqueries now use the verified cursor, and latest
 snapshot protection uses an indexed `NOT EXISTS newer snapshot` check instead of
 a global window rank. The repeat VPS preview after migration took `159 ms`
 (`2.897s` wall time including Docker startup) and returned `20` raw plus `20`
-snapshot candidates. Run-tree preview still needs a VPS smoke before extending
-the gate to `detail_fetch_attempt`.
+snapshot candidates.
+
+The follow-up run-tree preview on 2026-06-01 returned
+`seen_event_source_id_covered=1240`, `candidate_count=1`,
+`coverage_blocked_candidate_count=1`, `coverage_safe_candidate_count=0` and
+`action_count=0`. This proves fail-closed run exclusion when a run still owns an
+unverified seen event. Preview duration was `131 ms`.
+
+After adding `silver/detail_fetch_attempt`, use a fresh isolated local directory
+and S3 prefix for the next smoke. Existing checkpoints intentionally become
+`incomplete` under the expanded append-only dataset set because they do not
+contain a detail-attempt cursor.
+
+The fresh smoke preview must include
+`--detail-fetch-attempt-retention-days 1` and report a
+`target_summary target=detail_fetch_attempt` line bounded by the verified
+`silver/detail_fetch_attempt` cursor.
 
 ### Stage F: analytical layer, later
 

@@ -223,19 +223,27 @@ class SqlAlchemyHousekeepingRepository:
             for snapshot in self._session.scalars(statement)
         ]
 
-    def count_detail_fetch_attempt_candidates(self, *, cutoff: datetime) -> int:
+    def count_detail_fetch_attempt_candidates(
+        self,
+        *,
+        cutoff: datetime,
+        max_source_id: int | None = None,
+    ) -> int:
+        filters = [
+            DetailFetchAttemptModel.requested_at < cutoff,
+            or_(
+                CrawlRunModel.id.is_(None),
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+            ),
+            ~DetailFetchAttemptModel.id.in_(self._latest_detail_attempt_ids_subquery()),
+        ]
+        if max_source_id is not None:
+            filters.append(DetailFetchAttemptModel.id <= max_source_id)
         statement = (
             select(func.count())
             .select_from(DetailFetchAttemptModel)
             .outerjoin(CrawlRunModel, DetailFetchAttemptModel.crawl_run_id == CrawlRunModel.id)
-            .where(
-                DetailFetchAttemptModel.requested_at < cutoff,
-                or_(
-                    CrawlRunModel.id.is_(None),
-                    CrawlRunModel.status != ACTIVE_RUN_STATUS,
-                ),
-                ~DetailFetchAttemptModel.id.in_(self._latest_detail_attempt_ids_subquery()),
-            )
+            .where(*filters)
         )
         return int(self._session.scalar(statement) or 0)
 
@@ -244,18 +252,22 @@ class SqlAlchemyHousekeepingRepository:
         *,
         cutoff: datetime,
         limit: int,
+        max_source_id: int | None = None,
     ) -> list[int]:
+        filters = [
+            DetailFetchAttemptModel.requested_at < cutoff,
+            or_(
+                CrawlRunModel.id.is_(None),
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+            ),
+            ~DetailFetchAttemptModel.id.in_(self._latest_detail_attempt_ids_subquery()),
+        ]
+        if max_source_id is not None:
+            filters.append(DetailFetchAttemptModel.id <= max_source_id)
         statement = (
             select(DetailFetchAttemptModel.id)
             .outerjoin(CrawlRunModel, DetailFetchAttemptModel.crawl_run_id == CrawlRunModel.id)
-            .where(
-                DetailFetchAttemptModel.requested_at < cutoff,
-                or_(
-                    CrawlRunModel.id.is_(None),
-                    CrawlRunModel.status != ACTIVE_RUN_STATUS,
-                ),
-                ~DetailFetchAttemptModel.id.in_(self._latest_detail_attempt_ids_subquery()),
-            )
+            .where(*filters)
             .order_by(
                 DetailFetchAttemptModel.requested_at,
                 DetailFetchAttemptModel.id,

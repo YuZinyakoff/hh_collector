@@ -89,6 +89,10 @@ smoke research archive v1.
   `0005_snapshot_payload_ref_idx` и SQL optimization повторный preview занял
   `159 ms` (`2.897s` wall time вместе с Docker startup), raw и snapshot targets
   штатно вернули по `20` кандидатов.
+- cascade-sensitive run-tree preview прошёл isolated VPS smoke: при verified
+  seen-event cursor `1240` единственный старый run был fail-closed исключён из
+  action list: `candidate_count=1`, `coverage_blocked_candidate_count=1`,
+  `coverage_safe_candidate_count=0`, `action_count=0`; preview занял `131 ms`.
 
 Текущий статус не равен full production readiness. Корректная формулировка:
 full search coverage operationally validated, backup/offsite restore contour
@@ -199,8 +203,12 @@ corpus.
    - read-only preview расширен на cascade-sensitive finished-run tree:
      завершенные runs с `vacancy_seen_event.id` выше verified cursor считаются
      blocked и не попадают в action list;
-   - next: повторить VPS preview с run-tree summary, затем покрыть
-     `detail_fetch_attempt` до первого destructive apply;
+   - isolated VPS run-tree preview подтвердил fail-closed блокировку единственного
+     старого run с не покрытым seen event;
+   - `silver/detail_fetch_attempt` добавлен в incremental checkpoint chain и
+     bounded preview;
+   - next: повторить fresh isolated VPS coverage smoke до первого destructive
+     apply;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:
@@ -434,8 +442,9 @@ Next experiment plan:
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
 2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
    только когда появится реальный безопасный deletion candidate.
-3. Повторить VPS preview с cascade-sensitive finished-run summary, затем покрыть
-   `detail_fetch_attempt` archive gate до первого destructive apply.
+3. Прогнать fresh isolated VPS coverage smoke с `silver/detail_fetch_attempt` в
+   checkpoint chain, затем повторить read-only preview до первого destructive
+   apply.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

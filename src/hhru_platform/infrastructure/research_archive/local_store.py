@@ -193,6 +193,26 @@ DATASET_SPECS: dict[str, ResearchArchiveDatasetSpec] = {
             "updated_at",
         ),
     ),
+    "silver/detail_fetch_attempt": ResearchArchiveDatasetSpec(
+        layer="silver",
+        dataset_name="detail_fetch_attempt",
+        id_field="detail_fetch_attempt_id",
+        observed_at_field="requested_at",
+        columns=(
+            "archive_schema_version",
+            "dataset",
+            "detail_fetch_attempt_id",
+            "vacancy_id",
+            "hh_vacancy_id",
+            "crawl_run_id",
+            "reason",
+            "attempt",
+            "status",
+            "requested_at",
+            "finished_at",
+            "error_message",
+        ),
+    ),
 }
 
 
@@ -548,6 +568,10 @@ def _partition_for_record(
         return _date_partition(_datetime_value(record.get("seen_at"), fallback=created_at))
     if spec.dataset_name == "vacancy_current_state":
         return {"snapshot_date": created_at.date().isoformat()}
+    if spec.dataset_name == "detail_fetch_attempt":
+        return _date_partition(
+            _datetime_value(record.get("requested_at"), fallback=created_at)
+        )
     return {"export_date": created_at.date().isoformat()}
 
 

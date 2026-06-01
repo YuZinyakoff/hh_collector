@@ -8,6 +8,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from hhru_platform.infrastructure.db.models.api_request_log import ApiRequestLog
+from hhru_platform.infrastructure.db.models.detail_fetch_attempt import DetailFetchAttempt
 from hhru_platform.infrastructure.db.models.raw_api_payload import RawApiPayload
 from hhru_platform.infrastructure.db.models.vacancy import Vacancy
 from hhru_platform.infrastructure.db.models.vacancy_current_state import (
@@ -70,6 +71,8 @@ class SqlAlchemyResearchArchiveRepository:
             statement = self._vacancy_seen_event_statement()
         elif dataset == "silver/vacancy_current_state":
             statement = self._vacancy_current_state_statement()
+        elif dataset == "silver/detail_fetch_attempt":
+            statement = self._detail_fetch_attempt_statement()
         else:
             raise ValueError(f"unsupported research archive dataset: {dataset}")
 
@@ -234,6 +237,26 @@ class SqlAlchemyResearchArchiveRepository:
         )
         return cast(Select[tuple[Any, ...]], statement)
 
+    @staticmethod
+    def _detail_fetch_attempt_statement() -> Select[tuple[Any, ...]]:
+        statement = (
+            select(
+                DetailFetchAttempt.id.label("detail_fetch_attempt_id"),
+                DetailFetchAttempt.vacancy_id.label("vacancy_id"),
+                Vacancy.hh_vacancy_id.label("hh_vacancy_id"),
+                DetailFetchAttempt.crawl_run_id.label("crawl_run_id"),
+                DetailFetchAttempt.reason.label("reason"),
+                DetailFetchAttempt.attempt.label("attempt"),
+                DetailFetchAttempt.status.label("status"),
+                DetailFetchAttempt.requested_at.label("requested_at"),
+                DetailFetchAttempt.finished_at.label("finished_at"),
+                DetailFetchAttempt.error_message.label("error_message"),
+            )
+            .join(Vacancy, Vacancy.id == DetailFetchAttempt.vacancy_id)
+            .order_by(DetailFetchAttempt.requested_at, DetailFetchAttempt.id)
+        )
+        return cast(Select[tuple[Any, ...]], statement)
+
 
 def _apply_incremental_window(
     statement: Select[tuple[Any, ...]],
@@ -294,4 +317,8 @@ def _incremental_window_columns(dataset: str) -> tuple[Any, Any]:
         "silver/api_request_log": (ApiRequestLog.id, ApiRequestLog.requested_at),
         "silver/vacancy_snapshot": (VacancySnapshot.id, VacancySnapshot.captured_at),
         "silver/vacancy_seen_event": (VacancySeenEvent.id, VacancySeenEvent.seen_at),
+        "silver/detail_fetch_attempt": (
+            DetailFetchAttempt.id,
+            DetailFetchAttempt.requested_at,
+        ),
     }[dataset]

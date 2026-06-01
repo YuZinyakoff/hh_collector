@@ -20,6 +20,11 @@ from hhru_platform.application.commands.export_research_archive import (
     ExportResearchArchiveResult,
     export_research_archive,
 )
+from hhru_platform.application.commands.preview_research_archive_housekeeping import (
+    PreviewResearchArchiveHousekeepingCommand,
+    PreviewResearchArchiveHousekeepingResult,
+    preview_research_archive_housekeeping,
+)
 from hhru_platform.application.commands.sync_research_archive_offsite import (
     SyncResearchArchiveOffsiteCommand,
     SyncResearchArchiveOffsiteResult,
@@ -38,6 +43,9 @@ from hhru_platform.application.commands.verify_research_archive_offsite import (
 from hhru_platform.config.settings import Settings, get_settings
 from hhru_platform.infrastructure.backup.s3_backup_offsite_uploader import (
     S3BackupOffsiteUploader,
+)
+from hhru_platform.infrastructure.db.repositories.housekeeping_repo import (
+    SqlAlchemyHousekeepingRepository,
 )
 from hhru_platform.infrastructure.db.repositories.research_archive_repo import (
     SqlAlchemyResearchArchiveRepository,
@@ -235,6 +243,47 @@ def register_research_archive_commands(
     )
     audit_coverage_parser.set_defaults(handler=handle_audit_research_archive_coverage)
 
+    housekeeping_preview_parser = subparsers.add_parser(
+        "preview-research-archive-housekeeping",
+        help=(
+            "Preview raw payload and vacancy snapshot retention candidates bounded "
+            "by complete verified Archive v1 coverage."
+        ),
+    )
+    housekeeping_preview_parser.add_argument(
+        "--archive-dir",
+        type=Path,
+        help="Archive root directory. Defaults to HHRU_RESEARCH_ARCHIVE_DIR.",
+    )
+    housekeeping_preview_parser.add_argument(
+        "--archive-kind",
+        default="production",
+        help="Archive label to audit before planning. Defaults to production.",
+    )
+    housekeeping_preview_parser.add_argument(
+        "--raw-api-payload-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS.",
+    )
+    housekeeping_preview_parser.add_argument(
+        "--vacancy-snapshot-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS.",
+    )
+    housekeeping_preview_parser.add_argument(
+        "--delete-limit-per-target",
+        type=_positive_int,
+        help="Override HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET.",
+    )
+    housekeeping_preview_parser.add_argument(
+        "--triggered-by",
+        default="preview-research-archive-housekeeping",
+        help="Actor or subsystem that initiated the preview.",
+    )
+    housekeeping_preview_parser.set_defaults(
+        handler=handle_preview_research_archive_housekeeping
+    )
+
 
 def handle_export_research_archive(args: argparse.Namespace) -> int:
     settings = get_settings()
@@ -373,6 +422,53 @@ def handle_audit_research_archive_coverage(args: argparse.Namespace) -> int:
 
     _print_audit_coverage_result(result)
     return 0 if result.complete else 1
+
+
+def handle_preview_research_archive_housekeeping(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        _ensure_research_archive_s3_backend(settings)
+        command = PreviewResearchArchiveHousekeepingCommand(
+            archive_dir=Path(args.archive_dir or settings.research_archive_dir),
+            archive_kind=str(args.archive_kind),
+            offsite_url=_s3_offsite_url(
+                endpoint_url=_research_archive_s3_endpoint_url(settings),
+                bucket=_research_archive_s3_bucket(settings),
+            ),
+            offsite_root=settings.research_archive_offsite_root,
+            raw_api_payload_retention_days=(
+                args.raw_api_payload_retention_days
+                if args.raw_api_payload_retention_days is not None
+                else settings.housekeeping_raw_api_payload_retention_days
+            ),
+            vacancy_snapshot_retention_days=(
+                args.vacancy_snapshot_retention_days
+                if args.vacancy_snapshot_retention_days is not None
+                else settings.housekeeping_vacancy_snapshot_retention_days
+            ),
+            delete_limit_per_target=(
+                args.delete_limit_per_target
+                if args.delete_limit_per_target is not None
+                else settings.housekeeping_delete_limit_per_target
+            ),
+            triggered_by=str(args.triggered_by),
+        )
+        with session_scope() as session:
+            result = preview_research_archive_housekeeping(
+                command,
+                housekeeping_repository=SqlAlchemyHousekeepingRepository(session),
+                checkpoint_store=LocalResearchArchiveCheckpointStore(),
+                receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+                checkpoint_receipt_store=(
+                    LocalResearchArchiveCheckpointVerificationReceiptStore()
+                ),
+            )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_housekeeping_preview_result(result)
+    return 0 if result.ready else 1
 
 
 def _print_export_result(result: ExportResearchArchiveResult) -> None:
@@ -648,6 +744,36 @@ def _print_audit_coverage_result(result: AuditResearchArchiveCoverageResult) -> 
             )
 
 
+def _print_housekeeping_preview_result(
+    result: PreviewResearchArchiveHousekeepingResult,
+) -> None:
+    print("previewed research archive housekeeping")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"evaluated_at={result.evaluated_at.isoformat()}")
+    print(f"archive_dir={result.archive_dir}")
+    print(f"archive_kind={result.archive_kind}")
+    print(f"coverage_status={result.coverage.status}")
+    print(f"coverage_issue_count={result.coverage.issue_count}")
+    print(f"total_candidates={result.total_candidates}")
+    print(f"total_action_count={result.total_action_count}")
+    for summary in result.summaries:
+        print(
+            "target_summary "
+            f"target={summary.target} "
+            f"dataset={summary.dataset} "
+            f"enabled={'yes' if summary.enabled else 'no'} "
+            f"retention_days={summary.retention_days} "
+            f"cutoff={summary.cutoff.isoformat() if summary.cutoff else '-'} "
+            f"source_id_covered={summary.source_id_covered} "
+            f"candidate_count={summary.candidate_count} "
+            f"action_count={summary.action_count} "
+            f"selected_min_id={summary.selected_min_id or '-'} "
+            f"selected_max_id={summary.selected_max_id or '-'} "
+            f"limited={'yes' if summary.limited else 'no'}"
+        )
+
+
 def _git_revision() -> str:
     try:
         result = subprocess.run(
@@ -669,4 +795,18 @@ def _non_negative_float(value: str) -> float:
     normalized_value = float(value)
     if normalized_value < 0:
         raise argparse.ArgumentTypeError("value must be greater than or equal to zero")
+    return normalized_value
+
+
+def _non_negative_int(value: str) -> int:
+    normalized_value = int(value)
+    if normalized_value < 0:
+        raise argparse.ArgumentTypeError("value must be greater than or equal to zero")
+    return normalized_value
+
+
+def _positive_int(value: str) -> int:
+    normalized_value = int(value)
+    if normalized_value < 1:
+        raise argparse.ArgumentTypeError("value must be greater than or equal to one")
     return normalized_value

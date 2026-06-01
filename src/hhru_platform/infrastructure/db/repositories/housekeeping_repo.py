@@ -33,20 +33,28 @@ class SqlAlchemyHousekeepingRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def count_raw_api_payload_candidates(self, *, cutoff: datetime) -> int:
+    def count_raw_api_payload_candidates(
+        self,
+        *,
+        cutoff: datetime,
+        max_source_id: int | None = None,
+    ) -> int:
+        filters = [
+            RawApiPayloadModel.received_at < cutoff,
+            or_(
+                CrawlRunModel.id.is_(None),
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+            ),
+            ~RawApiPayloadModel.id.in_(self._protected_raw_payload_ids_subquery()),
+        ]
+        if max_source_id is not None:
+            filters.append(RawApiPayloadModel.id <= max_source_id)
         statement = (
             select(func.count())
             .select_from(RawApiPayloadModel)
             .join(ApiRequestLog, RawApiPayloadModel.api_request_log_id == ApiRequestLog.id)
             .outerjoin(CrawlRunModel, ApiRequestLog.crawl_run_id == CrawlRunModel.id)
-            .where(
-                RawApiPayloadModel.received_at < cutoff,
-                or_(
-                    CrawlRunModel.id.is_(None),
-                    CrawlRunModel.status != ACTIVE_RUN_STATUS,
-                ),
-                ~RawApiPayloadModel.id.in_(self._protected_raw_payload_ids_subquery()),
-            )
+            .where(*filters)
         )
         return int(self._session.scalar(statement) or 0)
 
@@ -55,19 +63,23 @@ class SqlAlchemyHousekeepingRepository:
         *,
         cutoff: datetime,
         limit: int,
+        max_source_id: int | None = None,
     ) -> list[int]:
+        filters = [
+            RawApiPayloadModel.received_at < cutoff,
+            or_(
+                CrawlRunModel.id.is_(None),
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+            ),
+            ~RawApiPayloadModel.id.in_(self._protected_raw_payload_ids_subquery()),
+        ]
+        if max_source_id is not None:
+            filters.append(RawApiPayloadModel.id <= max_source_id)
         statement = (
             select(RawApiPayloadModel.id)
             .join(ApiRequestLog, RawApiPayloadModel.api_request_log_id == ApiRequestLog.id)
             .outerjoin(CrawlRunModel, ApiRequestLog.crawl_run_id == CrawlRunModel.id)
-            .where(
-                RawApiPayloadModel.received_at < cutoff,
-                or_(
-                    CrawlRunModel.id.is_(None),
-                    CrawlRunModel.status != ACTIVE_RUN_STATUS,
-                ),
-                ~RawApiPayloadModel.id.in_(self._protected_raw_payload_ids_subquery()),
-            )
+            .where(*filters)
             .order_by(RawApiPayloadModel.received_at, RawApiPayloadModel.id)
             .limit(limit)
         )
@@ -113,19 +125,27 @@ class SqlAlchemyHousekeepingRepository:
             )
         return rows
 
-    def count_vacancy_snapshot_candidates(self, *, cutoff: datetime) -> int:
+    def count_vacancy_snapshot_candidates(
+        self,
+        *,
+        cutoff: datetime,
+        max_source_id: int | None = None,
+    ) -> int:
+        filters = [
+            VacancySnapshotModel.captured_at < cutoff,
+            or_(
+                CrawlRunModel.id.is_(None),
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+            ),
+            ~VacancySnapshotModel.id.in_(self._latest_snapshot_ids_subquery()),
+        ]
+        if max_source_id is not None:
+            filters.append(VacancySnapshotModel.id <= max_source_id)
         statement = (
             select(func.count())
             .select_from(VacancySnapshotModel)
             .outerjoin(CrawlRunModel, VacancySnapshotModel.crawl_run_id == CrawlRunModel.id)
-            .where(
-                VacancySnapshotModel.captured_at < cutoff,
-                or_(
-                    CrawlRunModel.id.is_(None),
-                    CrawlRunModel.status != ACTIVE_RUN_STATUS,
-                ),
-                ~VacancySnapshotModel.id.in_(self._latest_snapshot_ids_subquery()),
-            )
+            .where(*filters)
         )
         return int(self._session.scalar(statement) or 0)
 
@@ -134,18 +154,22 @@ class SqlAlchemyHousekeepingRepository:
         *,
         cutoff: datetime,
         limit: int,
+        max_source_id: int | None = None,
     ) -> list[int]:
+        filters = [
+            VacancySnapshotModel.captured_at < cutoff,
+            or_(
+                CrawlRunModel.id.is_(None),
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+            ),
+            ~VacancySnapshotModel.id.in_(self._latest_snapshot_ids_subquery()),
+        ]
+        if max_source_id is not None:
+            filters.append(VacancySnapshotModel.id <= max_source_id)
         statement = (
             select(VacancySnapshotModel.id)
             .outerjoin(CrawlRunModel, VacancySnapshotModel.crawl_run_id == CrawlRunModel.id)
-            .where(
-                VacancySnapshotModel.captured_at < cutoff,
-                or_(
-                    CrawlRunModel.id.is_(None),
-                    CrawlRunModel.status != ACTIVE_RUN_STATUS,
-                ),
-                ~VacancySnapshotModel.id.in_(self._latest_snapshot_ids_subquery()),
-            )
+            .where(*filters)
             .order_by(VacancySnapshotModel.captured_at, VacancySnapshotModel.id)
             .limit(limit)
         )

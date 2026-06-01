@@ -78,6 +78,11 @@ smoke research archive v1.
   продвинулись `0 -> 71 -> 81 -> 91`, snapshot/seen-event cursors
   `0 -> 1230 -> 1240 -> 1250`; local verify подтвердил `13/13` manifests и
   `120` rows.
+- checkpoint-based complete-coverage audit прошёл isolated VPS S3 smoke:
+  до offsite sync/verify он fail-closed вернул `status=incomplete`, после загрузки
+  `9` manifests и `2` checkpoints и remote verify `21` objects вернул
+  `status=complete`, `issue_count=0`; test bundle лежит под отдельным
+  `/hhru-platform/research-archive-smoke/checkpoint-20260601T201007Z`.
 
 Текущий статус не равен full production readiness. Корректная формулировка:
 full search coverage operationally validated, backup/offsite restore contour
@@ -105,9 +110,9 @@ corpus.
   apply smoke ещё нужно проверить на реальном безопасном deletion candidate.
 - Production research archive routine: S3 mechanics доказаны на
   `tool_validation` bundle, per-chunk verification receipts прошли VPS smoke,
-  non-destructive settled incremental export прошёл VPS smoke; checkpoint-based
-  complete-coverage audit реализован, но его VPS smoke и wiring как обязательного
-  gate перед archive-before-delete ещё не закрыты.
+  non-destructive settled incremental export и checkpoint-based complete-coverage
+  audit прошли VPS smoke; wiring audit как обязательного gate перед
+  archive-before-delete ещё не закрыт.
 - Prometheus retention: фактически применён на VPS, volume в пределах configured
   size limit.
 - Многодневная unattended stability на VPS.
@@ -178,8 +183,12 @@ corpus.
    - incremental settled watermark advancement проверен на VPS;
    - checkpoint-based complete coverage audit реализован как non-destructive
      fail-closed report;
-   - next: VPS smoke coverage audit на fresh isolated directory и только потом
-     wiring как обязательного archive-before-delete gate;
+   - isolated VPS S3 coverage smoke прошёл: до offsite verify audit был
+     `incomplete`, после verify стал `complete` с `issue_count=0`;
+   - non-destructive `preview-research-archive-housekeeping` добавлен как первый
+     bridge от verified coverage cursors к age-based raw/snapshot candidates;
+   - next: VPS smoke preview на isolated verified bundle, затем расширение gate
+     на cascade-sensitive targets до первого destructive apply;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:
@@ -413,8 +422,9 @@ Next experiment plan:
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
 2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
    только когда появится реальный безопасный deletion candidate.
-3. Прогнать VPS smoke checkpoint-based complete-coverage audit на fresh isolated
-   directory, затем подключить его как обязательный gate для archive-before-delete.
+3. Прогнать VPS smoke `preview-research-archive-housekeeping` на isolated verified
+   bundle, затем расширить coverage gate на cascade-sensitive targets до первого
+   destructive apply.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

@@ -564,8 +564,13 @@ archive foundation.
   from source cursor `0` and requires a matching S3 verification receipt for every
   referenced chunk and checkpoint. It is non-destructive and exits non-zero with
   `status=incomplete` on any gap or missing receipt.
-- Make housekeeping require verified archive receipts before deleting raw/snapshot
-  rows from production data.
+- Implemented: `preview-research-archive-housekeeping` first runs the complete
+  coverage audit and only then reports age-based `raw_api_payload` and
+  `vacancy_snapshot` candidates bounded by each dataset's verified
+  `source_id_covered`. It is read-only and fail-closed.
+- Extend the coverage gate to cascade-sensitive targets before wiring any live DB
+  deletion. In particular, deleting finished runs may cascade into
+  `vacancy_seen_event`.
 - Add operator runbook for archive-before-delete.
 
 Initial operator cadence:
@@ -646,6 +651,40 @@ For an end-to-end checkpoint audit smoke, use both a fresh local directory and a
 separate S3 prefix. Pass `HHRU_RESEARCH_ARCHIVE_OFFSITE_ROOT` inline for sync and
 remote verify; do not overwrite the main research archive inventory with an
 isolated test bundle.
+
+Isolated VPS checkpoint audit smoke passed on 2026-06-01 under
+`/hhru-platform/research-archive-smoke/checkpoint-20260601T201007Z`:
+
+- before offsite sync and verify, the audit exited non-zero with
+  `status=incomplete`, `issue_count=4` and missing checkpoint receipt issues;
+- full sync uploaded `9` manifests, inventory and `2` checkpoints;
+- remote verify confirmed `9/9` manifests, `2` checkpoints, `21` objects and
+  completed bounded readback for `2/2` selected chunks;
+- after remote verify, the audit returned `status=complete`, `issue_count=0`;
+- receipt counts matched the bundle: `9` chunk verification receipts and `2`
+  checkpoint verification receipts.
+
+This proves the non-destructive coverage gate mechanics. It does not yet permit
+live DB deletion: housekeeping still needs explicit wiring and a dry-run preview
+before any destructive apply.
+
+After deploying the preview command, validate the read-only bridge against this
+isolated verified bundle:
+
+```bash
+SMOKE_TAG=checkpoint-20260601T201007Z
+SMOKE_DIR=".state/archive/research-coverage-smoke-$SMOKE_TAG"
+SMOKE_ROOT="/hhru-platform/research-archive-smoke/$SMOKE_TAG"
+
+HHRU_RESEARCH_ARCHIVE_OFFSITE_ROOT="$SMOKE_ROOT" \
+  make preview-research-archive-housekeeping \
+  ARGS="--archive-dir $SMOKE_DIR --archive-kind incremental_validation --raw-api-payload-retention-days 1 --vacancy-snapshot-retention-days 1 --delete-limit-per-target 20 --triggered-by vps-coverage-housekeeping-preview"
+```
+
+The command must report `status=ready`, `coverage_status=complete` and candidate
+ranges no higher than their matching `source_id_covered`. It must not delete or
+archive rows. The existing `run-housekeeping --execute` path remains separate
+until cascade-sensitive targets are covered.
 
 ### Stage F: analytical layer, later
 

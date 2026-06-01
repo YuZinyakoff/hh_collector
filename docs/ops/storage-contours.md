@@ -165,6 +165,16 @@ Current status:
   exports: raw/request-log cursors advanced `0 -> 71 -> 81 -> 91`,
   snapshot/seen-event cursors advanced `0 -> 1230 -> 1240 -> 1250`, and local
   verification passed for `13/13` manifests with `120` rows.
+- Isolated VPS checkpoint coverage smoke passed on 2026-06-01 under a separate
+  S3 prefix. Before offsite sync/verify the audit returned `status=incomplete`;
+  after uploading `9` manifests and `2` checkpoints and verifying `21` remote
+  objects it returned `status=complete`, `issue_count=0`. This proves the
+  fail-closed non-destructive gate, not live DB deletion wiring.
+- `preview-research-archive-housekeeping` is the first read-only bridge from
+  verified coverage to retention planning. It reports age-based raw payload and
+  vacancy snapshot candidates only inside verified source-id cursors. It does
+  not authorize deletion and intentionally leaves cascade-sensitive targets for
+  a later gate extension.
 
 ## 4. Parquet policy
 

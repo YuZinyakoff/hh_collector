@@ -752,6 +752,11 @@ production prefix, take and verify a pre-delete DB backup, run the restore drill
 review a production preview, then invoke the guarded command with explicit
 `--apply`.
 
+VPS guard-smoke passed on 2026-06-02 after deploying the guarded apply entrypoint:
+running `apply-research-archive-housekeeping` without `--apply` exited non-zero
+with `--apply confirmation is required for destructive housekeeping`. No
+coverage audit or deletion was started.
+
 ### Stage F: analytical layer, later
 
 - Add optional Parquet export once schemas are stable and dependency choice is

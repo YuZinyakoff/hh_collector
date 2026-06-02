@@ -194,6 +194,8 @@ Current status:
   offsite root, reruns verified coverage planning in the transaction, replans
   exact bounded ids, locks selected run-tree roots and aborts on any delete-count
   mismatch. Isolated validation bundles cannot authorize apply.
+- VPS guard-smoke passed on 2026-06-02: invoking the destructive entrypoint
+  without `--apply` exited fail-closed before coverage audit or deletion.
 
 ## 4. Parquet policy
 

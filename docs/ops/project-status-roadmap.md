@@ -212,6 +212,8 @@ corpus.
    - отдельный guarded apply path требует `archive_kind=production`, явный
      `--apply`, canonical `/hhru-platform/research-archive` root, повторный
      verified preview внутри транзакции и lock/recheck выбранных run-tree корней;
+   - VPS guard-smoke прошёл: запуск без `--apply` завершился fail-closed до
+     coverage audit и удаления;
    - next: собрать canonical `archive_kind=production` chain и выполнить
      pre-delete backup/restore drill до первого destructive apply;
    - не делать text features, AI exposure, panels, econometrics или Parquet в

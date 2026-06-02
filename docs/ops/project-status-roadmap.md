@@ -214,6 +214,12 @@ corpus.
      verified preview внутри транзакции и lock/recheck выбранных run-tree корней;
    - VPS guard-smoke прошёл: запуск без `--apply` завершился fail-closed до
      coverage audit и удаления;
+   - первый canonical production bootstrap был прерван Linux OOM-killer при
+     `14.7 GiB` RSS экспортера до записи checkpoint; cursor recovery переведён
+     с orphan manifests на completed checkpoints, а writer получил `32 MiB`
+     byte-buffer ceiling;
+   - next: повторить canonical bootstrap bounded checkpoint-батчами в свежем
+     локальном archive directory, не синхронизируя orphan bundle;
    - next: собрать canonical `archive_kind=production` chain и выполнить
      pre-delete backup/restore drill до первого destructive apply;
    - не делать text features, AI exposure, panels, econometrics или Parquet в

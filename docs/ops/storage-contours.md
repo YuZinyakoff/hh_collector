@@ -150,9 +150,12 @@ Current status:
   is proof for the chunk-level S3 check, not yet permission to delete live DB
   rows.
 - Non-destructive incremental export exists for append-only archive datasets.
-  It derives a per-dataset watermark from local manifests with the same
-  `archive_kind` and exports only the contiguous source-id prefix older than the
-  settled cutoff. Point-in-time dimensions remain explicit snapshot exports.
+  It derives a per-dataset watermark only from completed local checkpoints with
+  the same `archive_kind` and exports only the contiguous source-id prefix older
+  than the settled cutoff. Orphan chunk manifests from an interrupted run do not
+  advance the cursor. Point-in-time dimensions remain explicit snapshot exports.
+- Local chunk buffering is capped by the requested row count and a `32 MiB`
+  serialized-byte ceiling so large raw payload exports remain memory-bounded.
 - Every incremental export now records per-dataset cursor transitions in a
   checkpoint. `audit-research-archive-coverage` verifies the chain from cursor
   `0` and requires matching chunk-level and checkpoint-level S3 verification
@@ -328,7 +331,9 @@ For research archive contour:
 3. Keep append-only archive inventory and repeat S3 verification/readback after
    archive schema or serialization changes.
 4. Use daily `--incremental --settled-delay-hours 24 --archive-kind production`
-   exports for append-only datasets.
+   exports for append-only datasets. Bootstrap a large backlog through repeated
+   `--limit-per-dataset` checkpoint batches in a fresh local archive directory
+   if an earlier attempt left orphan chunks.
 5. Require complete verified archive coverage before any archive-before-delete
    housekeeping.
 6. Add scheduler automation only after the manual production routine is proven.

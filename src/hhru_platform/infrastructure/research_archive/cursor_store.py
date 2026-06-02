@@ -1,10 +1,20 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+from hhru_platform.infrastructure.research_archive.checkpoint_store import (
+    LocalResearchArchiveCheckpointStore,
+)
 
 
 class LocalResearchArchiveCursorStore:
+    def __init__(
+        self,
+        *,
+        checkpoint_store: LocalResearchArchiveCheckpointStore | None = None,
+    ) -> None:
+        self._checkpoint_store = checkpoint_store or LocalResearchArchiveCheckpointStore()
+
     def latest_source_id(
         self,
         *,
@@ -13,21 +23,15 @@ class LocalResearchArchiveCursorStore:
         archive_kind: str,
     ) -> int | None:
         latest_source_id: int | None = None
-        for manifest_file in sorted((archive_dir / "v1").rglob("*.manifest.json")):
-            payload = json.loads(manifest_file.read_text(encoding="utf-8"))
-            if payload.get("dataset_key") != dataset:
-                continue
-            if payload.get("archive_kind") != archive_kind:
-                continue
-            source_max_id = payload.get("source_max_id")
-            if source_max_id is None:
-                continue
-            try:
-                normalized_source_id = int(source_max_id)
-            except (TypeError, ValueError) as error:
-                raise ValueError(
-                    f"manifest {manifest_file} has non-numeric source_max_id: "
-                    f"{source_max_id!r}"
-                ) from error
-            latest_source_id = max(latest_source_id or 0, normalized_source_id)
+        for checkpoint in self._checkpoint_store.load_checkpoints(
+            archive_dir=archive_dir,
+            archive_kind=archive_kind,
+        ):
+            for checkpoint_dataset in checkpoint.datasets:
+                if checkpoint_dataset.dataset != dataset:
+                    continue
+                latest_source_id = max(
+                    latest_source_id or 0,
+                    checkpoint_dataset.source_id_after,
+                )
         return latest_source_id

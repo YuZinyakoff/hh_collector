@@ -236,7 +236,7 @@ def test_export_research_archive_writes_manifest_inventory_and_verifies(
     assert verify_result.total_row_count == 2
 
 
-def test_incremental_export_uses_manifest_cursor_and_is_locally_idempotent(
+def test_incremental_export_uses_checkpoint_cursor_and_is_locally_idempotent(
     tmp_path: Path,
 ) -> None:
     archive_dir = tmp_path / "research"
@@ -310,6 +310,60 @@ def test_incremental_export_uses_manifest_cursor_and_is_locally_idempotent(
     assert checkpoints[0].datasets[0].source_id_after == 101
     assert checkpoints[1].datasets[0].source_id_before == 101
     assert checkpoints[1].datasets[0].source_id_after == 101
+
+
+def test_incremental_cursor_ignores_manifest_without_completed_checkpoint(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    LocalResearchArchiveStore().write_dataset(
+        archive_dir=archive_dir,
+        schema_version="research-archive-v1",
+        dataset="bronze/raw_api_payload",
+        records=(_raw_payload_record(101),),
+        chunk_size=10,
+        created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        archive_kind="production",
+        source_database="hhru_platform",
+        source_git_revision="test-revision",
+        source_command="pytest",
+        triggered_by="unit-test",
+    )
+
+    assert (
+        LocalResearchArchiveCursorStore().latest_source_id(
+            archive_dir=archive_dir,
+            dataset="bronze/raw_api_payload",
+            archive_kind="production",
+        )
+        is None
+    )
+
+
+def test_research_archive_store_flushes_chunk_when_byte_buffer_limit_is_reached(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    summaries = LocalResearchArchiveStore(max_buffer_size_bytes=1).write_dataset(
+        archive_dir=archive_dir,
+        schema_version="research-archive-v1",
+        dataset="bronze/raw_api_payload",
+        records=(_raw_payload_record(99), _raw_payload_record(100)),
+        chunk_size=10,
+        created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        archive_kind="production",
+        source_database="hhru_platform",
+        source_git_revision="test-revision",
+        source_command="pytest",
+        triggered_by="unit-test",
+    )
+
+    assert [summary.row_count for summary in summaries] == [1, 1]
+    manifests = [
+        json.loads(summary.manifest_file.read_text(encoding="utf-8"))
+        for summary in summaries
+    ]
+    assert [manifest["max_buffer_size_bytes"] for manifest in manifests] == [1, 1]
 
 
 def test_research_archive_manifest_source_range_compares_numeric_ids(

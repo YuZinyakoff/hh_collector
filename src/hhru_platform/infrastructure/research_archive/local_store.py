@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+DEFAULT_RESEARCH_ARCHIVE_MAX_BUFFER_SIZE_BYTES = 32 * 1024 * 1024
+
 
 @dataclass(slots=True, frozen=True)
 class ResearchArchiveDatasetSpec:
@@ -217,6 +219,15 @@ DATASET_SPECS: dict[str, ResearchArchiveDatasetSpec] = {
 
 
 class LocalResearchArchiveStore:
+    def __init__(
+        self,
+        *,
+        max_buffer_size_bytes: int = DEFAULT_RESEARCH_ARCHIVE_MAX_BUFFER_SIZE_BYTES,
+    ) -> None:
+        if max_buffer_size_bytes < 1:
+            raise ValueError("max_buffer_size_bytes must be greater than or equal to one")
+        self._max_buffer_size_bytes = max_buffer_size_bytes
+
     def write_dataset(
         self,
         *,
@@ -243,9 +254,10 @@ class LocalResearchArchiveStore:
         active_partition_key: tuple[tuple[str, str], ...] | None = None
         active_partition: dict[str, str] | None = None
         active_records: list[Mapping[str, Any]] = []
+        active_buffer_size_bytes = 0
 
         def flush_active() -> None:
-            nonlocal active_records, active_partition_key, active_partition
+            nonlocal active_records, active_buffer_size_bytes
             if not active_records or active_partition_key is None or active_partition is None:
                 return
             next_index = chunk_indices_by_partition.get(active_partition_key, 0) + 1
@@ -270,6 +282,7 @@ class LocalResearchArchiveStore:
             )
             summaries.append(summary)
             active_records = []
+            active_buffer_size_bytes = 0
 
         for record in records:
             normalized_record = _normalize_record(
@@ -285,14 +298,24 @@ class LocalResearchArchiveStore:
             if spec.dataset_name == "vacancy_current_state":
                 normalized_record.setdefault("snapshot_date", partition["snapshot_date"])
             partition_key = tuple(sorted(partition.items()))
+            record_size_bytes = _json_line_size_bytes(normalized_record)
             if active_partition_key is None:
                 active_partition_key = partition_key
                 active_partition = partition
-            if partition_key != active_partition_key or len(active_records) >= chunk_size:
+            if (
+                partition_key != active_partition_key
+                or len(active_records) >= chunk_size
+                or (
+                    active_records
+                    and active_buffer_size_bytes + record_size_bytes
+                    > self._max_buffer_size_bytes
+                )
+            ):
                 flush_active()
                 active_partition_key = partition_key
                 active_partition = partition
             active_records.append(normalized_record)
+            active_buffer_size_bytes += record_size_bytes
 
         flush_active()
         return tuple(summaries)
@@ -332,15 +355,7 @@ class LocalResearchArchiveStore:
 
         with gzip.open(data_file, "wt", encoding="utf-8") as handle:
             for record in records:
-                handle.write(
-                    json.dumps(
-                        dict(record),
-                        ensure_ascii=True,
-                        sort_keys=True,
-                        default=_json_default,
-                    )
-                )
-                handle.write("\n")
+                handle.write(_json_line(record))
 
         data_sha256 = _sha256(data_file)
         data_size_bytes = data_file.stat().st_size
@@ -363,6 +378,7 @@ class LocalResearchArchiveStore:
             "partition": partition,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
+            "max_buffer_size_bytes": self._max_buffer_size_bytes,
             "created_at": created_at.isoformat(),
             "source_database": source_database,
             "source_git_revision": source_git_revision,
@@ -404,6 +420,7 @@ class LocalResearchArchiveStore:
             "row_count": len(records),
             "data_size_bytes": data_size_bytes,
             "data_sha256": data_sha256,
+            "max_buffer_size_bytes": self._max_buffer_size_bytes,
             "source_min_id": manifest_payload["source_min_id"],
             "source_max_id": manifest_payload["source_max_id"],
             "source_min_observed_at": manifest_payload["source_min_observed_at"],
@@ -528,6 +545,22 @@ def _dataset_spec(dataset: str) -> ResearchArchiveDatasetSpec:
         raise ValueError(
             f"unsupported research archive dataset: {dataset}; supported: {supported}"
         ) from error
+
+
+def _json_line(record: Mapping[str, Any]) -> str:
+    return (
+        json.dumps(
+            dict(record),
+            ensure_ascii=True,
+            sort_keys=True,
+            default=_json_default,
+        )
+        + "\n"
+    )
+
+
+def _json_line_size_bytes(record: Mapping[str, Any]) -> int:
+    return len(_json_line(record).encode("utf-8"))
 
 
 def _normalize_record(

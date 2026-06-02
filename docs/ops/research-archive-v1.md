@@ -549,9 +549,14 @@ archive foundation.
 - Implemented: write per-chunk "archive verified" receipts after S3 object-size
   verification and record whether full readback was performed.
 - Implemented: non-destructive incremental export mode for append-only datasets.
-  The watermark is derived from local manifests with the same `archive_kind`.
+  The watermark is derived only from completed local checkpoints with the same
+  `archive_kind`; chunk manifests written by an interrupted export do not
+  advance it.
   Export stops before the first source row newer than the explicit settled cutoff,
   so a fresh row cannot be skipped by later watermark advancement.
+- Implemented: chunk buffering is bounded by both the requested row count and a
+  `32 MiB` serialized-byte ceiling. Large raw payloads therefore create smaller
+  chunks instead of growing the exporter process until OOM.
 - Implemented: every incremental export writes a control-plane checkpoint under
   `v1/checkpoints/archive_kind=<kind>/`. It records the per-dataset cursor
   transition, chunk list and settled cutoff even when a dataset has no new rows.
@@ -622,6 +627,28 @@ Incremental mode intentionally defaults only to append-only datasets:
 The existing `archive_kind=tool_validation` smoke manifests do not advance
 `archive_kind=production` watermarks. No live PostgreSQL rows may be deleted by
 this routine yet.
+
+### Interrupted initial export recovery
+
+An interrupted export may leave data files, manifests and inventory entries
+without a completed checkpoint. Keep that directory for forensic inspection,
+but do not sync it to S3 and do not use it for the canonical retry. Start the
+production chain in a fresh local directory and pass that same `--archive-dir`
+to local verify, offsite sync, offsite verify, coverage audit and housekeeping.
+
+For a large first catch-up, create bounded checkpoints instead of one monolithic
+run:
+
+```bash
+PROD_ARCHIVE_DIR=.state/archive/research-production
+
+make export-research-archive \
+  ARGS="--archive-dir $PROD_ARCHIVE_DIR --incremental --settled-delay-hours 24 --limit-per-dataset 100000 --chunk-size 100000 --batch-size 10000 --archive-kind production --triggered-by vps-production-archive-catch-up"
+```
+
+Repeat the bounded export until the per-dataset cursor transitions stop
+advancing, then run the standard local verify, S3 sync, remote verify and
+coverage audit sequence against `--archive-dir $PROD_ARCHIVE_DIR`.
 
 Before the first production export, validate incremental watermark advancement
 inside an isolated local directory:
@@ -769,8 +796,9 @@ coverage audit or deletion was started.
 
 ## 12. Open Decisions
 
-- Exact chunk size target: start with `100k` rows or `64-256MB` compressed files,
-  whichever is easier to implement safely.
+- Exact long-term compressed chunk size target is still open. Export buffering is
+  already capped at `32 MiB` serialized bytes independently of the requested row
+  limit so large payloads cannot exhaust process memory.
 - Whether the initial daily append-only cadence should later be supplemented by
   per-completed-run exports after production telemetry is available.
 - Whether current pilot corpus should be archived as evidence or discarded after

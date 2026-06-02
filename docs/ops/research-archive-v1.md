@@ -574,8 +574,13 @@ archive foundation.
 - Implemented: `silver/detail_fetch_attempt` participates in the append-only
   settled incremental checkpoint chain and the read-only preview bounds
   detail-attempt retention candidates by its verified source-id cursor.
-- Run a fresh isolated S3 coverage smoke containing the new checkpoint dataset
-  before wiring any live DB deletion.
+- Implemented: destructive apply is exposed only through the separate
+  `apply-research-archive-housekeeping --apply` command. It requires
+  `archive_kind=production`, the canonical
+  `/hhru-platform/research-archive` offsite root, reruns the verified-coverage
+  preview inside the delete transaction, replans exact bounded ids and locks
+  selected run-tree roots before cascade deletion. Isolated smoke bundles cannot
+  authorize apply.
 - Add operator runbook for archive-before-delete.
 
 Initial operator cadence:
@@ -725,6 +730,27 @@ The fresh smoke preview must include
 `--detail-fetch-attempt-retention-days 1` and report a
 `target_summary target=detail_fetch_attempt` line bounded by the verified
 `silver/detail_fetch_attempt` cursor.
+
+Fresh isolated five-dataset VPS smoke passed on 2026-06-01 under
+`/hhru-platform/research-archive-smoke/detail-attempt-20260601T214443Z`:
+
+- two bounded exports advanced raw/request-log cursors `0 -> 71 -> 81`,
+  snapshot/seen-event cursors `0 -> 1230 -> 1240`, and detail-attempt cursor
+  `0 -> 10 -> 20`;
+- local verification confirmed `11/11` manifests with `100` rows;
+- remote verification confirmed `11/11` manifests, `2` checkpoints, `25`
+  remote objects and `2/2` bounded readbacks;
+- coverage audit returned `status=complete`, `issue_count=0` for all five
+  append-only datasets;
+- read-only preview returned `status=ready`, complete coverage, `20` raw and
+  `20` vacancy-snapshot actions, `0` detail-attempt actions, and excluded the
+  one old run-tree candidate because it remained coverage-blocked.
+
+This isolated proof still does not permit live deletion. Before the first apply,
+build and verify a separate `archive_kind=production` chain under the canonical
+production prefix, take and verify a pre-delete DB backup, run the restore drill,
+review a production preview, then invoke the guarded command with explicit
+`--apply`.
 
 ### Stage F: analytical layer, later
 

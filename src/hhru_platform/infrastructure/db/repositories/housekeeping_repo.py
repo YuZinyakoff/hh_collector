@@ -353,6 +353,29 @@ class SqlAlchemyHousekeepingRepository:
         )
         return list(self._session.scalars(statement))
 
+    def lock_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
+        self,
+        *,
+        run_ids: Sequence[UUID],
+        cutoff: datetime,
+        max_seen_event_source_id: int,
+    ) -> list[UUID]:
+        if not run_ids:
+            return []
+        statement = (
+            select(CrawlRunModel.id)
+            .where(
+                CrawlRunModel.id.in_(tuple(run_ids)),
+                CrawlRunModel.status != ACTIVE_RUN_STATUS,
+                CrawlRunModel.finished_at.is_not(None),
+                CrawlRunModel.finished_at < cutoff,
+                ~self._run_has_seen_event_after(max_seen_event_source_id),
+            )
+            .order_by(CrawlRunModel.finished_at, CrawlRunModel.id)
+            .with_for_update()
+        )
+        return list(self._session.scalars(statement))
+
     def delete_finished_crawl_runs(self, run_ids: Sequence[UUID]) -> int:
         if not run_ids:
             return 0

@@ -225,10 +225,19 @@ def test_housekeeping_repository_applies_verified_source_id_bounds() -> None:
         max_seen_event_source_id=1240,
     )
     safe_run_sql = _sql(session.statement)
+    repository.lock_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
+        run_ids=[UUID("00000000-0000-0000-0000-000000000001")],
+        cutoff=cutoff,
+        max_seen_event_source_id=1240,
+    )
+    locked_safe_run_sql = _sql(session.statement)
 
     assert "vacancy_seen_event.crawl_run_id = crawl_run.id" in blocked_run_sql
     assert "vacancy_seen_event.id > 1240" in blocked_run_sql
     assert "NOT (EXISTS (SELECT 1" in safe_run_sql
+    assert "crawl_run.id IN ('00000000-0000-0000-0000-000000000001')" in locked_safe_run_sql
+    assert "NOT (EXISTS (SELECT 1" in locked_safe_run_sql
+    assert "FOR UPDATE" in locked_safe_run_sql
 
 
 class RecordingSession:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -193,10 +193,10 @@ class ResearchArchiveHousekeepingPreviewRepository(Protocol):
     ) -> list[UUID]:
         """List old finished runs whose seen events are covered by the archive."""
 
-    def count_crawl_partitions_for_run_ids(self, run_ids: list[UUID]) -> int:
+    def count_crawl_partitions_for_run_ids(self, run_ids: Sequence[UUID]) -> int:
         """Count partitions that would cascade-delete with selected runs."""
 
-    def count_vacancy_seen_events_for_run_ids(self, run_ids: list[UUID]) -> int:
+    def count_vacancy_seen_events_for_run_ids(self, run_ids: Sequence[UUID]) -> int:
         """Count seen events that would cascade-delete with selected runs."""
 
 

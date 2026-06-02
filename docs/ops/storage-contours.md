@@ -187,8 +187,13 @@ Current status:
   `1240`: `coverage_blocked_candidate_count=1`, `action_count=0`. Preview
   duration was `131 ms`.
 - `silver/detail_fetch_attempt` is added as an append-only checkpoint dataset
-  and bounded preview target. It must pass a fresh isolated S3 coverage smoke
-  before any destructive apply.
+  and bounded preview target. Fresh isolated five-dataset S3 smoke passed with
+  `11/11` manifests, `2` checkpoints, `25` remote objects and complete coverage.
+- `apply-research-archive-housekeeping --apply` is a separate production-only
+  destructive path. It requires the canonical `/hhru-platform/research-archive`
+  offsite root, reruns verified coverage planning in the transaction, replans
+  exact bounded ids, locks selected run-tree roots and aborts on any delete-count
+  mismatch. Isolated validation bundles cannot authorize apply.
 
 ## 4. Parquet policy
 

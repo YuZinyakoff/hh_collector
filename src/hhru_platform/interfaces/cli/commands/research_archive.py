@@ -7,6 +7,11 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from hhru_platform.application.commands.apply_research_archive_housekeeping import (
+    ApplyResearchArchiveHousekeepingCommand,
+    ApplyResearchArchiveHousekeepingResult,
+    apply_research_archive_housekeeping,
+)
 from hhru_platform.application.commands.audit_research_archive_coverage import (
     AuditResearchArchiveCoverageCommand,
     AuditResearchArchiveCoverageResult,
@@ -294,6 +299,60 @@ def register_research_archive_commands(
         handler=handle_preview_research_archive_housekeeping
     )
 
+    housekeeping_apply_parser = subparsers.add_parser(
+        "apply-research-archive-housekeeping",
+        help=(
+            "Delete production rows only after complete verified Archive v1 coverage "
+            "and explicit --apply confirmation."
+        ),
+    )
+    housekeeping_apply_parser.add_argument(
+        "--archive-dir",
+        type=Path,
+        help="Archive root directory. Defaults to HHRU_RESEARCH_ARCHIVE_DIR.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--archive-kind",
+        default="production",
+        help="Destructive housekeeping requires archive label production.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--raw-api-payload-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--vacancy-snapshot-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--detail-fetch-attempt-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--finished-crawl-run-retention-days",
+        type=_non_negative_int,
+        help="Override HHRU_HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--delete-limit-per-target",
+        type=_positive_int,
+        help="Override HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Required confirmation for destructive production housekeeping.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--triggered-by",
+        default="apply-research-archive-housekeeping",
+        help="Actor or subsystem that initiated destructive housekeeping.",
+    )
+    housekeeping_apply_parser.set_defaults(handler=handle_apply_research_archive_housekeeping)
+
 
 def handle_export_research_archive(args: argparse.Namespace) -> int:
     settings = get_settings()
@@ -489,6 +548,64 @@ def handle_preview_research_archive_housekeeping(args: argparse.Namespace) -> in
 
     _print_housekeeping_preview_result(result)
     return 0 if result.ready else 1
+
+
+def handle_apply_research_archive_housekeeping(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        _ensure_research_archive_s3_backend(settings)
+        command = ApplyResearchArchiveHousekeepingCommand(
+            archive_dir=Path(args.archive_dir or settings.research_archive_dir),
+            archive_kind=str(args.archive_kind),
+            offsite_url=_s3_offsite_url(
+                endpoint_url=_research_archive_s3_endpoint_url(settings),
+                bucket=_research_archive_s3_bucket(settings),
+            ),
+            offsite_root=settings.research_archive_offsite_root,
+            raw_api_payload_retention_days=(
+                args.raw_api_payload_retention_days
+                if args.raw_api_payload_retention_days is not None
+                else settings.housekeeping_raw_api_payload_retention_days
+            ),
+            vacancy_snapshot_retention_days=(
+                args.vacancy_snapshot_retention_days
+                if args.vacancy_snapshot_retention_days is not None
+                else settings.housekeeping_vacancy_snapshot_retention_days
+            ),
+            detail_fetch_attempt_retention_days=(
+                args.detail_fetch_attempt_retention_days
+                if args.detail_fetch_attempt_retention_days is not None
+                else settings.housekeeping_detail_fetch_attempt_retention_days
+            ),
+            finished_crawl_run_retention_days=(
+                args.finished_crawl_run_retention_days
+                if args.finished_crawl_run_retention_days is not None
+                else settings.housekeeping_finished_crawl_run_retention_days
+            ),
+            delete_limit_per_target=(
+                args.delete_limit_per_target
+                if args.delete_limit_per_target is not None
+                else settings.housekeeping_delete_limit_per_target
+            ),
+            confirmed_apply=bool(args.apply),
+            triggered_by=str(args.triggered_by),
+        )
+        with session_scope() as session:
+            result = apply_research_archive_housekeeping(
+                command,
+                housekeeping_repository=SqlAlchemyHousekeepingRepository(session),
+                checkpoint_store=LocalResearchArchiveCheckpointStore(),
+                receipt_store=LocalResearchArchiveOffsiteVerificationReceiptStore(),
+                checkpoint_receipt_store=(
+                    LocalResearchArchiveCheckpointVerificationReceiptStore()
+                ),
+            )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_housekeeping_apply_result(result)
+    return 0
 
 
 def _print_export_result(result: ExportResearchArchiveResult) -> None:
@@ -806,6 +923,41 @@ def _print_housekeeping_preview_result(
         f"selected_partition_count={run_tree.selected_partition_count} "
         f"selected_vacancy_seen_event_count={run_tree.selected_vacancy_seen_event_count} "
         f"limited={'yes' if run_tree.limited else 'no'}"
+    )
+
+
+def _print_housekeeping_apply_result(
+    result: ApplyResearchArchiveHousekeepingResult,
+) -> None:
+    print("applied research archive housekeeping")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"evaluated_at={result.evaluated_at.isoformat()}")
+    print(f"archive_dir={result.archive_dir}")
+    print(f"archive_kind={result.archive_kind}")
+    print(f"coverage_status={result.preview.coverage.status}")
+    print(f"direct_deleted_count={result.direct_deleted_count}")
+    print(f"total_deleted_count={result.total_deleted_count}")
+    for summary in result.summaries:
+        print(
+            "target_summary "
+            f"target={summary.target} "
+            f"dataset={summary.dataset} "
+            f"enabled={'yes' if summary.enabled else 'no'} "
+            f"source_id_covered={summary.source_id_covered} "
+            f"action_count={summary.action_count} "
+            f"deleted_count={summary.deleted_count} "
+            f"selected_min_id={summary.selected_min_id or '-'} "
+            f"selected_max_id={summary.selected_max_id or '-'}"
+        )
+    run_tree = result.run_tree_summary
+    print(
+        "run_tree_summary "
+        f"enabled={'yes' if run_tree.enabled else 'no'} "
+        f"action_count={run_tree.action_count} "
+        f"deleted_run_count={run_tree.deleted_run_count} "
+        f"cascade_partition_count={run_tree.cascade_partition_count} "
+        f"cascade_vacancy_seen_event_count={run_tree.cascade_vacancy_seen_event_count}"
     )
 
 

@@ -207,8 +207,13 @@ corpus.
      старого run с не покрытым seen event;
    - `silver/detail_fetch_attempt` добавлен в incremental checkpoint chain и
      bounded preview;
-   - next: повторить fresh isolated VPS coverage smoke до первого destructive
-     apply;
+   - fresh isolated five-dataset VPS smoke прошёл: `11/11` manifests,
+     `2` checkpoints, `25` remote objects, `issue_count=0`;
+   - отдельный guarded apply path требует `archive_kind=production`, явный
+     `--apply`, canonical `/hhru-platform/research-archive` root, повторный
+     verified preview внутри транзакции и lock/recheck выбранных run-tree корней;
+   - next: собрать canonical `archive_kind=production` chain и выполнить
+     pre-delete backup/restore drill до первого destructive apply;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:
@@ -442,9 +447,8 @@ Next experiment plan:
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
 2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
    только когда появится реальный безопасный deletion candidate.
-3. Прогнать fresh isolated VPS coverage smoke с `silver/detail_fetch_attempt` в
-   checkpoint chain, затем повторить read-only preview до первого destructive
-   apply.
+3. Собрать canonical `archive_kind=production` checkpoint chain, проверить
+   remote coverage и повторить production read-only preview.
 4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.

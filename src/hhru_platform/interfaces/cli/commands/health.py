@@ -50,6 +50,12 @@ def handle_health_check(_: argparse.Namespace) -> int:
         f"http://{settings.alert_webhook_host}:{settings.alert_webhook_port}/alertmanager"
     )
     print(f"alert_telegram_configured={'yes' if _is_alert_telegram_configured(settings) else 'no'}")
+    print(
+        "alert_telegram_proxy_configured="
+        f"{'yes' if bool(settings.alert_telegram_proxy_url) else 'no'}"
+    )
+    print(f"alert_telegram_timeout_seconds={settings.alert_telegram_timeout_seconds}")
+    print(f"alert_telegram_queue_size={settings.alert_telegram_queue_size}")
     print(f"backup_dir={settings.backup_dir}")
     print(f"backup_retention_days={settings.backup_retention_days}")
     print(f"backup_restore_drill_target_db={settings.backup_restore_drill_target_db}")

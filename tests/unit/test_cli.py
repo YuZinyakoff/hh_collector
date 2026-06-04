@@ -129,6 +129,9 @@ def test_health_check_cli_prints_runtime_config(monkeypatch, capsys) -> None:
     assert "metrics_state_path=.state/metrics/metrics.json" in captured.out
     assert "alert_webhook_endpoint=http://0.0.0.0:8010/alertmanager" in captured.out
     assert "alert_telegram_configured=no" in captured.out
+    assert "alert_telegram_proxy_configured=no" in captured.out
+    assert "alert_telegram_timeout_seconds=10.0" in captured.out
+    assert "alert_telegram_queue_size=100" in captured.out
     assert "backup_retention_days=14" in captured.out
     assert "backup_restore_drill_target_db=hhru_platform_restore_drill" in captured.out
     assert "backup_restore_drill_drop_existing=yes" in captured.out

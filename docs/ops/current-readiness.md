@@ -41,8 +41,9 @@ daily archive driver smoke.
 
 - Daily research archive timer включён 2026-06-04; первый unattended запуск и
   несколько последующих успешных запусков ещё нужно наблюдать.
-- Generic host-side timer failure notifier реализован, но synthetic Telegram
-  smoke на VPS ещё не выполнен.
+- Generic host-side timer failure notifier реализован, но non-blocking local
+  acceptance smoke на VPS ещё не выполнен. Direct Telegram egress с VPS
+  недоступен; внешний transport остаётся optional отдельным решением.
 - Daily backup и weekly offsite restore drivers/timers реализованы, но сначала
   должны пройти supervised VPS smoke и только затем быть включены.
 - S3 backup retention apply остаётся manual/dry-run-first, поэтому remote

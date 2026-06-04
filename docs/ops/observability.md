@@ -336,7 +336,12 @@ Alert delivery path:
 - Alertmanager reads `monitoring/alertmanager/alertmanager.yml`.
 - Alertmanager sends webhooks to `alert-webhook:8010/alertmanager`.
 - `alert-webhook` logs every alert payload.
-- If `HHRU_ALERT_TELEGRAM_BOT_TOKEN` and `HHRU_ALERT_TELEGRAM_CHAT_ID` are set, `alert-webhook` also sends Telegram messages.
+- `alert-webhook` responds `202 Accepted` after local validation and queues
+  Telegram delivery in a bounded background worker. Telegram outage does not
+  block Alertmanager or trigger HTTP retry floods.
+- If `HHRU_ALERT_TELEGRAM_BOT_TOKEN` and `HHRU_ALERT_TELEGRAM_CHAT_ID` are set,
+  `alert-webhook` attempts best-effort Telegram delivery. A successful local
+  response proves queue acceptance, not external Telegram delivery.
 
 Production env keys:
 
@@ -348,6 +353,19 @@ Production env keys:
 - `HHRU_ALERT_TELEGRAM_BOT_TOKEN`
 - `HHRU_ALERT_TELEGRAM_CHAT_ID`
 - `HHRU_ALERT_TELEGRAM_DISABLE_NOTIFICATION`
+- `HHRU_ALERT_TELEGRAM_TIMEOUT_SECONDS`
+- `HHRU_ALERT_TELEGRAM_QUEUE_SIZE`
+- `HHRU_ALERT_TELEGRAM_PROXY_URL`: optional HTTP(S) proxy. A WireGuard or
+  policy-routed path works transparently and leaves this empty.
+
+Recommended transport choice when the production VPS cannot reach Telegram:
+
+- prefer a narrowly scoped authenticated HTTP CONNECT proxy or notification
+  relay on a reachable non-RF host;
+- existing WireGuard can route Telegram traffic transparently, but routing and
+  DNS/IP-range maintenance then become host operations;
+- do not route unrelated application/S3/HH traffic through the notification
+  transport unless explicitly intended.
 
 Synthetic local webhook check without Telegram:
 
@@ -356,6 +374,18 @@ curl -X POST http://127.0.0.1:8010/alertmanager \
   -H 'Content-Type: application/json' \
   -d '{"status":"firing","commonLabels":{"alertname":"SyntheticAlert","severity":"warning"},"commonAnnotations":{"summary":"synthetic alert","action":"check alert-webhook logs"},"alerts":[]}'
 ```
+
+Expected local response:
+
+```json
+{"status": "accepted", "telegram_delivery": "queued"}
+```
+
+External delivery must be checked separately in logs:
+
+- `telegram alert delivery succeeded`;
+- `telegram alert delivery failed`;
+- `telegram delivery queue full; dropping alert`.
 
 - `HHRUPlatformMetricsEndpointDown`
 - `HHRUPlatformOperationFailures`

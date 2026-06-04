@@ -145,7 +145,9 @@ corpus.
   последующие несколько ежедневных запусков. Timer уже включён, supervised
   driver smoke завершён успешно.
 - Generic automatic alert/failure signal для host-side storage services
-  реализован, но synthetic Telegram smoke на VPS ещё не выполнен.
+  реализован, но non-blocking local acceptance smoke на VPS ещё не выполнен.
+  Direct Telegram egress с VPS недоступен; внешний proxy/route остаётся
+  отдельным optional transport.
 - Safe destructive research housekeeping на реальном production candidate.
   Guarded apply path реализован, но текущий production preview возвращает
   `0` actions, поэтому deletion proof намеренно ещё не выполнялся.

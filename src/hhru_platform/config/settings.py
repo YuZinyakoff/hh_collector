@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     alert_telegram_bot_token: str | None = Field(default=None, repr=False)
     alert_telegram_chat_id: str | None = None
     alert_telegram_disable_notification: bool = False
+    alert_telegram_timeout_seconds: float = Field(default=10.0, gt=0)
+    alert_telegram_queue_size: int = Field(default=100, ge=1)
+    alert_telegram_proxy_url: str | None = Field(default=None, repr=False)
     backup_dir: str = ".state/backups"
     backup_retention_days: int = 7
     backup_prefix: str = "hhru-platform"

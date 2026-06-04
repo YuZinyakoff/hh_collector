@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import urllib.error
+import queue
+import threading
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Protocol
 
 from hhru_platform.config.logging import configure_logging
 from hhru_platform.config.settings import get_settings
@@ -22,6 +24,17 @@ class TelegramConfig:
     bot_token: str
     chat_id: str
     disable_notification: bool = False
+    timeout_seconds: float = 10.0
+    proxy_url: str | None = None
+
+
+class TelegramMessageDispatcher(Protocol):
+    def enqueue(self, message: str) -> bool:
+        """Queue one Telegram message without waiting for external delivery."""
+
+
+class AlertWebhookServer(ThreadingHTTPServer):
+    daemon_threads = True
 
 
 def main() -> int:
@@ -36,14 +49,25 @@ def main() -> int:
     args = parser.parse_args()
 
     telegram_config = _telegram_config_from_settings(settings)
-    handler = _build_handler(telegram_config=telegram_config)
-    server = ThreadingHTTPServer((str(args.host), int(args.port)), handler)
+    telegram_dispatcher = None
+    if telegram_config is not None:
+        telegram_dispatcher = TelegramDeliveryDispatcher(
+            telegram_config,
+            queue_size=settings.alert_telegram_queue_size,
+        )
+        telegram_dispatcher.start()
+    handler = _build_handler(telegram_dispatcher=telegram_dispatcher)
+    server = AlertWebhookServer((str(args.host), int(args.port)), handler)
     LOGGER.info(
         "alert webhook server started",
         extra={
             "host": str(args.host),
             "port": int(args.port),
             "telegram_configured": telegram_config is not None,
+            "telegram_proxy_configured": bool(
+                telegram_config and telegram_config.proxy_url
+            ),
+            "telegram_queue_size": settings.alert_telegram_queue_size,
         },
     )
     try:
@@ -109,13 +133,74 @@ def send_telegram_message(config: TelegramConfig, message: str) -> None:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
+    opener_handlers: list[urllib.request.BaseHandler] = []
+    if config.proxy_url:
+        opener_handlers.append(
+            urllib.request.ProxyHandler(
+                {
+                    "http": config.proxy_url,
+                    "https": config.proxy_url,
+                }
+            )
+        )
+    opener = urllib.request.build_opener(*opener_handlers)
+    with opener.open(request, timeout=config.timeout_seconds) as response:
         response.read()
+
+
+class TelegramDeliveryDispatcher:
+    def __init__(
+        self,
+        config: TelegramConfig,
+        *,
+        queue_size: int,
+        sender: Callable[[TelegramConfig, str], None] = send_telegram_message,
+    ) -> None:
+        self._config = config
+        self._queue: queue.Queue[str] = queue.Queue(maxsize=queue_size)
+        self._sender = sender
+        self._thread = threading.Thread(
+            target=self._run,
+            name="telegram-delivery",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def enqueue(self, message: str) -> bool:
+        try:
+            self._queue.put_nowait(message)
+        except queue.Full:
+            LOGGER.error(
+                "telegram delivery queue full; dropping alert",
+                extra={"telegram_queue_size": self._queue.maxsize},
+            )
+            return False
+        return True
+
+    def _run(self) -> None:
+        while True:
+            message = self._queue.get()
+            try:
+                self._sender(self._config, message)
+            except Exception as error:
+                LOGGER.error(
+                    "telegram alert delivery failed",
+                    extra={
+                        "error_type": error.__class__.__name__,
+                        "error_message": str(error),
+                    },
+                )
+            else:
+                LOGGER.info("telegram alert delivery succeeded")
+            finally:
+                self._queue.task_done()
 
 
 def _build_handler(
     *,
-    telegram_config: TelegramConfig | None,
+    telegram_dispatcher: TelegramMessageDispatcher | None,
 ) -> type[BaseHTTPRequestHandler]:
     class AlertWebhookHandler(BaseHTTPRequestHandler):
         server_version = "hhru-alert-webhook/1.0"
@@ -146,22 +231,20 @@ def _build_handler(
                 extra={
                     "alert_status": payload.get("status"),
                     "alert_count": alert_count,
-                    "telegram_configured": telegram_config is not None,
+                    "telegram_configured": telegram_dispatcher is not None,
                     "alert_message": message,
                 },
             )
-            if telegram_config is not None:
-                try:
-                    send_telegram_message(telegram_config, message)
-                except (OSError, urllib.error.URLError, TimeoutError) as error:
-                    LOGGER.exception("telegram alert delivery failed: %s", error)
-                    self._write_response(
-                        HTTPStatus.BAD_GATEWAY,
-                        {"status": "telegram_delivery_failed"},
-                    )
-                    return
-
-            self._write_response(HTTPStatus.OK, {"status": "accepted"})
+            self._write_response(
+                HTTPStatus.ACCEPTED,
+                {
+                    "status": "accepted",
+                    "telegram_delivery": _queue_telegram_message(
+                        telegram_dispatcher,
+                        message,
+                    ),
+                },
+            )
 
         def log_message(self, format: str, *args: Any) -> None:
             LOGGER.debug("alert webhook access: " + format, *args)
@@ -187,6 +270,17 @@ def _build_handler(
     return AlertWebhookHandler
 
 
+def _queue_telegram_message(
+    telegram_dispatcher: TelegramMessageDispatcher | None,
+    message: str,
+) -> str:
+    if telegram_dispatcher is None:
+        return "disabled"
+    if telegram_dispatcher.enqueue(message):
+        return "queued"
+    return "dropped_queue_full"
+
+
 def _telegram_config_from_settings(settings: Any) -> TelegramConfig | None:
     bot_token = settings.alert_telegram_bot_token
     chat_id = settings.alert_telegram_chat_id
@@ -196,6 +290,10 @@ def _telegram_config_from_settings(settings: Any) -> TelegramConfig | None:
         bot_token=str(bot_token),
         chat_id=str(chat_id),
         disable_notification=bool(settings.alert_telegram_disable_notification),
+        timeout_seconds=float(settings.alert_telegram_timeout_seconds),
+        proxy_url=str(settings.alert_telegram_proxy_url).strip()
+        if settings.alert_telegram_proxy_url
+        else None,
     )
 
 

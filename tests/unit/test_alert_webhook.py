@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from hhru_platform.interfaces.workers.alert_webhook import format_alertmanager_message
+import threading
+import urllib.request
+from typing import Any
+
+from hhru_platform.interfaces.workers.alert_webhook import (
+    TelegramConfig,
+    TelegramDeliveryDispatcher,
+    _queue_telegram_message,
+    format_alertmanager_message,
+    send_telegram_message,
+)
 
 
 def test_format_alertmanager_message_includes_action_and_alerts() -> None:
@@ -58,3 +68,97 @@ def test_format_alertmanager_message_limits_alert_details() -> None:
     assert "3. Alert2 instance=node-2" in message
     assert "Alert3" not in message
     assert "... omitted 4 alert(s)" in message
+
+
+def test_telegram_dispatcher_uses_bounded_non_blocking_queue() -> None:
+    sender_started = threading.Event()
+    release_sender = threading.Event()
+
+    def blocking_sender(config: TelegramConfig, message: str) -> None:
+        sender_started.set()
+        release_sender.wait(timeout=5)
+
+    dispatcher = TelegramDeliveryDispatcher(
+        TelegramConfig(bot_token="token", chat_id="chat"),
+        queue_size=2,
+        sender=blocking_sender,
+    )
+    dispatcher.start()
+
+    assert dispatcher.enqueue("first") is True
+    assert sender_started.wait(timeout=1)
+    assert dispatcher.enqueue("second") is True
+    assert dispatcher.enqueue("third") is True
+    assert dispatcher.enqueue("dropped") is False
+    release_sender.set()
+
+
+def test_alert_webhook_queues_without_waiting_for_telegram_delivery() -> None:
+    dispatcher = _FakeDispatcher(accepted=True)
+    result = _queue_telegram_message(dispatcher, "message")
+
+    assert result == "queued"
+    assert dispatcher.messages == ["message"]
+
+
+def test_alert_webhook_does_not_retry_when_telegram_queue_is_full() -> None:
+    dispatcher = _FakeDispatcher(accepted=False)
+    result = _queue_telegram_message(dispatcher, "message")
+
+    assert result == "dropped_queue_full"
+    assert dispatcher.messages == ["message"]
+
+
+def test_alert_webhook_accepts_when_telegram_is_disabled() -> None:
+    assert _queue_telegram_message(None, "message") == "disabled"
+
+
+def test_send_telegram_message_uses_configured_proxy_and_timeout(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    class FakeOpener:
+        def open(self, request: urllib.request.Request, timeout: float) -> FakeResponse:
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+    def fake_build_opener(*handlers: urllib.request.BaseHandler) -> FakeOpener:
+        captured["handlers"] = handlers
+        return FakeOpener()
+
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    send_telegram_message(
+        TelegramConfig(
+            bot_token="token",
+            chat_id="chat",
+            timeout_seconds=3.5,
+            proxy_url="http://proxy.example.test:3128",
+        ),
+        "message",
+    )
+
+    proxy_handler = captured["handlers"][0]
+    assert isinstance(proxy_handler, urllib.request.ProxyHandler)
+    assert proxy_handler.proxies["https"] == "http://proxy.example.test:3128"
+    assert captured["timeout"] == 3.5
+
+
+class _FakeDispatcher:
+    def __init__(self, *, accepted: bool) -> None:
+        self._accepted = accepted
+        self.messages: list[str] = []
+
+    def enqueue(self, message: str) -> bool:
+        self.messages.append(message)
+        return self._accepted

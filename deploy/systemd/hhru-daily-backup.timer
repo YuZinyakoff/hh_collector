@@ -1,0 +1,11 @@
+[Unit]
+Description=Run HH.ru platform PostgreSQL backup pipeline daily
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=hhru-daily-backup.service
+
+[Install]
+WantedBy=timers.target

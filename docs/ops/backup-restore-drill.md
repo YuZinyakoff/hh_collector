@@ -401,6 +401,36 @@ make restore BACKUP_FILE=/backups/<file>.dump
 - offsite copy свежего dump-а загружена или сознательно признана недоступной;
 - понятна причина live recovery.
 
+## 9.1. Unattended backup cadence
+
+После ручного end-to-end proof использовать два fail-closed host-side driver-а:
+
+```bash
+make daily-backup
+make weekly-backup-restore-drill
+```
+
+`daily-backup` создаёт dump, повторно локально проверяет именно его,
+синхронизирует свежий dump в S3 и remote-verifies тот же artifact.
+`weekly-backup-restore-drill` выбирает только newest backup с adjacent
+`.dump.offsite.verified.json`, восстанавливает его из S3 в отдельную DB и после
+проверки удаляет drill DB.
+
+Оба driver-а сериализуются с research archive через
+`.state/locks/heavy-ops.lock`, пишут отдельные step logs и не запускают
+destructive S3 cleanup. Daily local dump retention по умолчанию ограничен двумя
+днями из-за текущего размера backup около `13 GB`.
+
+Supplied systemd schedule:
+
+- daily backup: `00:30 UTC` + up to `15m` randomized delay;
+- weekly offsite restore drill: Sunday `06:00 UTC` + up to `30m` randomized
+  delay.
+
+Перед timer enable обязательны sequential supervised smoke обоих driver-ов и
+synthetic failure-notification smoke. Полный rollout и monitoring runbook:
+[unattended-operations.md](/home/yurizinyakov/projects/hh_collector/docs/ops/unattended-operations.md).
+
 ## 10. Metrics и dashboard signals
 
 Оператору важны:

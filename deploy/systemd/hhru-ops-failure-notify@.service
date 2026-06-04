@@ -1,0 +1,11 @@
+[Unit]
+Description=Notify operator about failed HH.ru platform systemd unit %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hh_collector
+EnvironmentFile=-/etc/hhru-platform/ops-failure-notify.env
+ExecStart=/opt/hh_collector/scripts/ops/notify_systemd_failure.sh %i
+TimeoutStartSec=30

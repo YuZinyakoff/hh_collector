@@ -622,6 +622,8 @@ After the manual production routine is proven, use
 `scripts/ops/run_daily_research_archive.sh`. The host-side driver:
 
 - takes a non-blocking `flock` so two daily pipelines cannot overlap;
+- waits on the shared `.state/locks/heavy-ops.lock` so it does not overlap with
+  daily backup or weekly restore drill;
 - runs bounded incremental exports until a zero-row checkpoint is written;
 - fails if the configured maximum number of export batches is exhausted;
 - then runs full local verify, idempotent S3 sync, full offsite verify, coverage
@@ -646,6 +648,7 @@ HHRU_RESEARCH_ARCHIVE_DAILY_CHUNK_SIZE=100000
 HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE=1000
 HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS=24
 HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT=2
+HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS=21600
 ```
 
 Install the supplied systemd units on the single production VPS:
@@ -667,6 +670,20 @@ Inspect status and concise driver events through:
 systemctl status hhru-research-archive.service
 journalctl -u hhru-research-archive.service --since today
 ```
+
+VPS supervised driver smoke on 2026-06-04 succeeded end-to-end against the
+canonical `.state/archive/research-production-v2` archive:
+
+- the first export wrote a zero-row production checkpoint;
+- local verify, idempotent S3 sync, full offsite verify, coverage audit and
+  read-only housekeeping preview all succeeded;
+- coverage remained complete with `issue_count=0` across `28/28` production
+  checkpoints;
+- no destructive housekeeping command was invoked.
+
+This proves the host-side driver. The timer was enabled on the VPS on
+2026-06-04. The first unattended run and several subsequent successful daily
+runs remain operational gates.
 
 Incremental mode intentionally defaults only to append-only datasets:
 

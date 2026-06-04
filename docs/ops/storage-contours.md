@@ -76,6 +76,12 @@ Current status:
   scanned, post-detail-drain milestone retained through `.offsite.keep`, older
   dump skipped fail-safe as unverified, `delete_candidate_count=0`. Destructive
   apply smoke is intentionally deferred until a real safe candidate exists.
+- Fail-closed daily backup and weekly offsite restore drill drivers plus
+  systemd timers are implemented. They share a heavy-ops lock with the research
+  archive driver and require supervised VPS smoke before timer enable.
+- Daily backup local retention defaults to `2` days for the current VPS because
+  one dump is approximately `13 GB`. S3 cleanup remains manual/dry-run-first
+  until a safe real deletion candidate proves apply semantics.
 
 The DB backup contour is considered adequate only after these checks are in place:
 
@@ -337,7 +343,10 @@ For research archive contour:
 5. Require complete verified archive coverage before any archive-before-delete
    housekeeping.
 6. The manual production routine is proven. Use the non-overlapping host-side
-   `daily-research-archive` driver and supplied systemd timer; it automates only
-   export, verification, offsite sync, coverage audit and read-only preview.
-   Destructive apply remains manual.
+   `daily-research-archive` driver and supplied systemd timer; the supervised
+   driver smoke passed end-to-end on 2026-06-04. It automates only export,
+   verification, offsite sync, coverage audit and read-only preview.
+   Destructive apply remains manual. The timer was enabled on 2026-06-04; the
+   first unattended run and several subsequent successful runs remain
+   operational gates.
 7. Add Parquet export only after the v1 dataset schemas are named and stable.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run HH.ru platform offsite backup restore drill weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 06:00:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+Unit=hhru-weekly-backup-restore-drill.service
+
+[Install]
+WantedBy=timers.target

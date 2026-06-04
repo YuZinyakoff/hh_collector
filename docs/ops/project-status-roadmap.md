@@ -1,6 +1,6 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-06-01.
+Дата среза: 2026-06-04.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -93,13 +93,36 @@ smoke research archive v1.
   seen-event cursor `1240` единственный старый run был fail-closed исключён из
   action list: `candidate_count=1`, `coverage_blocked_candidate_count=1`,
   `coverage_safe_candidate_count=0`, `action_count=0`; preview занял `131 ms`.
+- canonical production research archive bootstrap завершён в
+  `.state/archive/research-production-v2`: zero-row checkpoint подтвердил полный
+  catch-up, local verify прошёл для `1557/1557` manifests, `6885371` rows и
+  `7508484645` data bytes;
+- canonical S3 sync и remote verify завершены под
+  `/hhru-platform/research-archive`: uploaded `1557` manifests и `27`
+  checkpoints, verified `1557` manifests / `27` checkpoints / `3142` objects,
+  bounded readback `2/2` прошёл;
+- canonical coverage audit вернул `status=complete`, `issue_count=0` для всех
+  пяти incremental datasets; production default-path housekeeping preview
+  вернул `status=ready`, `total_candidates=0`, `total_action_count=0`;
+- canonical archive directory закреплён на VPS через
+  `HHRU_RESEARCH_ARCHIVE_DIR=.state/archive/research-production-v2`;
+- supervised `daily-research-archive` driver smoke 2026-06-04 прошёл полностью:
+  zero-row export, local verify, idempotent offsite sync, offsite verify,
+  coverage audit и read-only housekeeping preview завершились успешно; audit
+  подтвердил `28/28` verified production checkpoints.
+- `hhru-research-archive.timer` включён на VPS 2026-06-04; первый unattended
+  запуск ожидается 2026-06-05.
+- fail-closed daily backup, weekly offsite restore drill и generic systemd
+  failure notification drivers реализованы; перед включением новых timers им
+  ещё нужны supervised VPS smoke.
 
-Текущий статус не равен full production readiness. Корректная формулировка:
-full search coverage operationally validated, backup/offsite restore contour
-operationally validated, first-detail pilot backlog drained, research archive v1
-local export/verify и S3 upload/verify/readback smoke validated на
-`tool_validation` bundle, но production archive cadence, production storage
-routine и unattended production routine ещё не доказаны.
+Текущий статус не равен full unattended production readiness. Корректная
+формулировка: full search coverage, backup/offsite restore contour, first-detail
+pilot drain и canonical production research archive operationally validated.
+Daily research archive pipeline validated как supervised non-destructive routine,
+его systemd timer включён, но первый unattended run ещё не наблюдался. Общий
+collection/backup/retention routine и многодневная unattended stability ещё не
+доказаны.
 
 Важное ограничение текущего корпуса: данные на VPS являются pilot/test corpus,
 полученным из не свежего search snapshot и серии operational experiments. Его
@@ -118,11 +141,22 @@ corpus.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
 - Backup retention и cleanup routine: backup/offsite contour работает, но retention
   apply smoke ещё нужно проверить на реальном безопасном deletion candidate.
-- Production research archive routine: S3 mechanics доказаны на
-  `tool_validation` bundle, per-chunk verification receipts прошли VPS smoke,
-  non-destructive settled incremental export и checkpoint-based complete-coverage
-  audit прошли VPS smoke; wiring audit как обязательного gate перед
-  archive-before-delete ещё не закрыт.
+- Первый unattended запуск production research archive systemd timer и
+  последующие несколько ежедневных запусков. Timer уже включён, supervised
+  driver smoke завершён успешно.
+- Generic automatic alert/failure signal для host-side storage services
+  реализован, но synthetic Telegram smoke на VPS ещё не выполнен.
+- Safe destructive research housekeeping на реальном production candidate.
+  Guarded apply path реализован, но текущий production preview возвращает
+  `0` actions, поэтому deletion proof намеренно ещё не выполнялся.
+- Регулярный PostgreSQL backup/offsite cadence: daily backup и weekly offsite
+  restore drivers/timers реализованы, но supervised VPS smoke и timer enable ещё
+  не выполнены.
+- Bounded S3 backup retention apply: dry-run path доказан, но automatic cleanup
+  отсутствует намеренно до первого реального безопасного deletion candidate.
+- Явная production cadence для search collection. Текущий `scheduler-loop`
+  является interval-based trigger loop, а не календарной weekly policy, поэтому
+  его нельзя считать готовым многомесячным расписанием без отдельного решения.
 - Prometheus retention: фактически применён на VPS, volume в пределах configured
   size limit.
 - Многодневная unattended stability на VPS.
@@ -139,14 +173,37 @@ corpus.
 | Detail same-run budget | ready as bounded contour | не является completeness guarantee |
 | First-detail backlog | VPS catch-up validated on pilot corpus | `scale=3`, `batch=100` validated as supervised catch-up mode |
 | Detail worker | foundation ready, supervised scale=3 validated | есть one-shot и loop, пока без multi-day unattended proof |
-| Backup / restore drill | VPS validated | post-baseline backup, verify и restore-drill прошли |
+| Backup / restore drill | VPS validated; unattended drivers code-ready | post-baseline backup, verify и restore-drill прошли; daily/weekly drivers ждут supervised VPS smoke |
 | DB backup offsite | S3 end-to-end validated | Timeweb cold S3 upload, idempotency, remote size verify, offsite restore drill и post-detail-drain 13GB upload/verify работают |
 | Retention archive / offsite sync | partially validated | legacy retention bundle sync работает; long-term research archive S3 contour валидирован отдельно |
-| Research archive v1 | S3 smoke validated | local export/verify, S3 sync, remote verify, bounded readback и idempotency прошли на VPS tool-validation bundle; production cadence ещё open |
+| Research archive v1 | production bootstrap and daily driver VPS validated | canonical local/S3 archive complete; timer enabled; first unattended run and multi-day observation remain |
 | Observability | foundation ready | metrics, dashboards, alert rules есть |
 | Alert delivery | foundation ready | delivery до Telegram проверен; payloads нужно сделать информативнее |
 | VPS deploy | validated | search-only pilot completed on Timeweb VPS |
 | Research enrichment | intentionally out of scope | не начинать до стабилизации collection layer |
+
+### 3.1. Насколько Близко До "Включил И Забыл"
+
+Текущий practical status: storage/archive foundation завершён, но вся платформа
+ещё находится между `supervised production-capable` и `unattended validated`.
+
+Для перехода к редкому operator monitoring нужны четыре закрытых gate:
+
+1. Получить первый и затем минимум `3-7` подряд successful запусков уже
+   включённого daily research archive timer без ручного вмешательства.
+2. Выполнить supervised VPS smoke и затем включить unattended PostgreSQL backup
+   pipeline: daily backup, local verify, S3 sync, remote verify и weekly offsite
+   restore drill.
+3. Зафиксировать реальную production cadence search/detail и проверить её
+   совместную работу с archive/backup по CPU, RAM, IO, disk growth и HH failure
+   mix. Не использовать текущий hourly scheduler default как production policy
+   без отдельного решения.
+4. Проверить synthetic failure delivery для host-side timers, доказать bounded
+   S3 backup retention apply и пройти `3-7`-дневный supervised soak. После него
+   провести месячное окно с редким monitoring.
+
+После этих gates корректно будет говорить "включил и мониторю по alerts и
+еженедельному checklist". До них запуск на месяцы без наблюдения преждевременен.
 
 ## 4. Current Execution Plan
 
@@ -227,8 +284,16 @@ corpus.
    - host-side daily archive driver и systemd timer добавлены для
      non-overlapping export/verify/sync/audit/preview cadence; destructive apply
      в automation отсутствует;
-   - next: выполнить supervised daily-driver smoke и pre-delete backup/restore
-     drill до первого destructive apply;
+   - supervised daily-driver smoke завершён 2026-06-04: все шесть steps
+     succeeded, production coverage остался complete;
+   - systemd timer включён 2026-06-04; next: проверить первый и несколько
+     последующих unattended daily runs;
+   - shared heavy-ops lock и generic systemd failure notifier добавлены вместе с
+     daily backup и weekly offsite restore drill drivers/timers;
+   - next: synthetic failure smoke, supervised backup/restore-driver smoke и
+     только затем enable новых timers;
+   - pre-delete backup/restore drill и первый guarded destructive apply выполнять
+     только после появления реального retention candidate;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:
@@ -493,5 +558,6 @@ Go/no-go:
 - [vps-pilot-checklist.md](/home/yurizinyakov/projects/hh_collector/docs/ops/vps-pilot-checklist.md)
 - [first-detail-backlog.md](/home/yurizinyakov/projects/hh_collector/docs/ops/first-detail-backlog.md)
 - [research-archive-v1.md](/home/yurizinyakov/projects/hh_collector/docs/ops/research-archive-v1.md)
+- [unattended-operations.md](/home/yurizinyakov/projects/hh_collector/docs/ops/unattended-operations.md)
 - [hh-api-completeness-implementation-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-completeness-implementation-plan.md)
 - [testing-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/testing-plan.md)

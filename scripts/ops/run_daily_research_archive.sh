@@ -5,6 +5,8 @@ umask 077
 
 ROOT_DIR="${HHRU_RESEARCH_ARCHIVE_DAILY_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 LOCK_FILE="${HHRU_RESEARCH_ARCHIVE_DAILY_LOCK_FILE:-${ROOT_DIR}/.state/locks/research-archive-daily.lock}"
+HEAVY_OPS_LOCK_FILE="${HHRU_HEAVY_OPS_LOCK_FILE:-${ROOT_DIR}/.state/locks/heavy-ops.lock}"
+HEAVY_OPS_LOCK_WAIT_SECONDS="${HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS:-21600}"
 LOG_ROOT="${HHRU_RESEARCH_ARCHIVE_DAILY_LOG_ROOT:-${ROOT_DIR}/.state/logs/research-archive-daily}"
 LOG_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_LOG_RETENTION_DAYS:-30}"
 MAX_EXPORT_BATCHES="${HHRU_RESEARCH_ARCHIVE_DAILY_MAX_EXPORT_BATCHES:-20}"
@@ -36,17 +38,25 @@ require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_MAX_EXPORT_BATCHES "$MAX_EX
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_LIMIT_PER_DATASET "$LIMIT_PER_DATASET"
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_CHUNK_SIZE "$CHUNK_SIZE"
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE "$BATCH_SIZE"
+require_positive_integer HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS "$HEAVY_OPS_LOCK_WAIT_SECONDS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_LOG_RETENTION_DAYS "$LOG_RETENTION_DAYS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS "$SETTLED_DELAY_HOURS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT "$READBACK_LIMIT"
 
 cd "$ROOT_DIR"
-mkdir -p "$(dirname "$LOCK_FILE")" "$LOG_ROOT"
+mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$HEAVY_OPS_LOCK_FILE")" "$LOG_ROOT"
 
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   printf 'status=skipped\nreason=research_archive_daily_lock_held\nlock_file=%s\n' "$LOCK_FILE"
   exit 75
+fi
+
+exec 8>"$HEAVY_OPS_LOCK_FILE"
+if ! flock -w "$HEAVY_OPS_LOCK_WAIT_SECONDS" 8; then
+  printf 'status=failed\nreason=heavy_ops_lock_timeout\nlock_file=%s\n' \
+    "$HEAVY_OPS_LOCK_FILE" >&2
+  exit 1
 fi
 
 if (( LOG_RETENTION_DAYS > 0 )); then

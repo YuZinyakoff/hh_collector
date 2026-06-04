@@ -1,5 +1,5 @@
 [Unit]
-Description=HH.ru platform daily research archive pipeline
+Description=HH.ru platform daily PostgreSQL backup pipeline
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
@@ -8,8 +8,9 @@ OnFailure=hhru-ops-failure-notify@%n.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/hh_collector
-EnvironmentFile=-/etc/hhru-platform/research-archive-daily.env
-ExecStart=/opt/hh_collector/scripts/ops/run_daily_research_archive.sh
+Environment=HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=2
+EnvironmentFile=-/etc/hhru-platform/backup-daily.env
+ExecStart=/opt/hh_collector/scripts/ops/run_daily_backup.sh
 TimeoutStartSec=infinity
 Nice=10
 IOSchedulingClass=best-effort

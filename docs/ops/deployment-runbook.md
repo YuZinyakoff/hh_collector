@@ -188,3 +188,10 @@ make migrate-compose
 ```bash
 make up-observability
 ```
+
+## 11. Unattended storage operations
+
+Daily research archive, daily PostgreSQL backup, weekly offsite restore drill,
+shared heavy-ops locking, systemd failure delivery and safe timer rollout
+documented in
+[unattended-operations.md](/home/yurizinyakov/projects/hh_collector/docs/ops/unattended-operations.md).

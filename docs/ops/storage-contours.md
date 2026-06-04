@@ -336,5 +336,8 @@ For research archive contour:
    if an earlier attempt left orphan chunks.
 5. Require complete verified archive coverage before any archive-before-delete
    housekeeping.
-6. Add scheduler automation only after the manual production routine is proven.
+6. The manual production routine is proven. Use the non-overlapping host-side
+   `daily-research-archive` driver and supplied systemd timer; it automates only
+   export, verification, offsite sync, coverage audit and read-only preview.
+   Destructive apply remains manual.
 7. Add Parquet export only after the v1 dataset schemas are named and stable.

@@ -616,6 +616,58 @@ Initial operator cadence:
      ARGS="--dataset silver/vacancy --dataset silver/vacancy_current_state --archive-kind production --triggered-by completed-sweep-snapshot"
    ```
 
+### Automated daily production cadence
+
+After the manual production routine is proven, use
+`scripts/ops/run_daily_research_archive.sh`. The host-side driver:
+
+- takes a non-blocking `flock` so two daily pipelines cannot overlap;
+- runs bounded incremental exports until a zero-row checkpoint is written;
+- fails if the configured maximum number of export batches is exhausted;
+- then runs full local verify, idempotent S3 sync, full offsite verify, coverage
+  audit and read-only housekeeping preview;
+- never invokes `apply-research-archive-housekeeping`.
+
+Run one supervised driver smoke before enabling the timer:
+
+```bash
+make daily-research-archive
+```
+
+Step logs are written under `.state/logs/research-archive-daily/<UTC run id>/`.
+Optional host-only settings can be placed in
+`/etc/hhru-platform/research-archive-daily.env`:
+
+```bash
+HHRU_RESEARCH_ARCHIVE_DAILY_MAX_EXPORT_BATCHES=20
+HHRU_RESEARCH_ARCHIVE_DAILY_LOG_RETENTION_DAYS=30
+HHRU_RESEARCH_ARCHIVE_DAILY_LIMIT_PER_DATASET=100000
+HHRU_RESEARCH_ARCHIVE_DAILY_CHUNK_SIZE=100000
+HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE=1000
+HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS=24
+HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT=2
+```
+
+Install the supplied systemd units on the single production VPS:
+
+```bash
+install -m 0644 deploy/systemd/hhru-research-archive.service \
+  /etc/systemd/system/hhru-research-archive.service
+install -m 0644 deploy/systemd/hhru-research-archive.timer \
+  /etc/systemd/system/hhru-research-archive.timer
+systemctl daemon-reload
+systemctl enable --now hhru-research-archive.timer
+systemctl list-timers hhru-research-archive.timer
+```
+
+The default timer runs daily at `02:30 UTC` with up to `15m` randomized delay.
+Inspect status and concise driver events through:
+
+```bash
+systemctl status hhru-research-archive.service
+journalctl -u hhru-research-archive.service --since today
+```
+
 Incremental mode intentionally defaults only to append-only datasets:
 
 - `bronze/raw_api_payload`
@@ -783,6 +835,19 @@ VPS guard-smoke passed on 2026-06-02 after deploying the guarded apply entrypoin
 running `apply-research-archive-housekeeping` without `--apply` exited non-zero
 with `--apply confirmation is required for destructive housekeeping`. No
 coverage audit or deletion was started.
+
+Canonical production bootstrap passed on 2026-06-04:
+
+- checkpoint-only crash recovery and the `32 MiB` writer ceiling replaced the
+  initial OOM-killed monolithic attempt;
+- `27` production checkpoints cover all five append-only datasets;
+- local verification passed for `1557/1557` manifests and `6,885,371` rows;
+- canonical S3 sync uploaded `1557` manifests, `27` checkpoints and inventory;
+- offsite verification passed for `1557` manifests, `27` checkpoints, `3142`
+  objects and `2` readbacks;
+- coverage audit returned `status=complete`, `issue_count=0`;
+- default-path production preview returned `status=ready` with `0` candidates
+  and `0` actions.
 
 ### Stage F: analytical layer, later
 

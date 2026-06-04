@@ -11,7 +11,7 @@ ARGS ?=
 	run-sync-research-archive-offsite run-verify-research-archive-offsite run-audit-research-archive-coverage run-preview-research-archive-housekeeping run-apply-research-archive-housekeeping \
 	compose-health compose-show-metrics \
 	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite audit-research-archive-coverage preview-research-archive-housekeeping apply-research-archive-housekeeping detail-worker-measurement \
-	vps-first-detail-measurement \
+	vps-first-detail-measurement daily-research-archive \
 	soak-test soak-test-no-build
 
 up:
@@ -68,6 +68,9 @@ detail-worker-measurement:
 
 vps-first-detail-measurement:
 	bash ./scripts/dev/run_vps_first_detail_measurement.sh
+
+daily-research-archive:
+	bash ./scripts/ops/run_daily_research_archive.sh
 
 run-housekeeping:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-housekeeping $(ARGS)

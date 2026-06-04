@@ -220,8 +220,15 @@ corpus.
      byte-buffer ceiling;
    - next: повторить canonical bootstrap bounded checkpoint-батчами в свежем
      локальном archive directory, не синхронизируя orphan bundle;
-   - next: собрать canonical `archive_kind=production` chain и выполнить
-     pre-delete backup/restore drill до первого destructive apply;
+   - canonical `archive_kind=production` bootstrap завершён: `27` checkpoints,
+     local verify `1557/1557`, remote verify `1557` manifests / `27`
+     checkpoints / `3142` objects, coverage `complete`, default-path preview
+     `ready` с `0` actions;
+   - host-side daily archive driver и systemd timer добавлены для
+     non-overlapping export/verify/sync/audit/preview cadence; destructive apply
+     в automation отсутствует;
+   - next: выполнить supervised daily-driver smoke и pre-delete backup/restore
+     drill до первого destructive apply;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Проверить search interference:

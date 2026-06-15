@@ -408,6 +408,7 @@ make restore BACKUP_FILE=/backups/<file>.dump
 ```bash
 make daily-backup
 make weekly-backup-restore-drill
+make weekly-backup-offsite-cleanup
 ```
 
 `daily-backup` создаёт dump, повторно локально проверяет именно его,
@@ -416,15 +417,22 @@ make weekly-backup-restore-drill
 `.dump.offsite.verified.json`, восстанавливает его из S3 в отдельную DB и после
 проверки удаляет drill DB.
 
-Оба driver-а сериализуются с research archive через
+`weekly-backup-offsite-cleanup` выполняет bounded S3 cleanup. По умолчанию это
+dry-run; destructive apply включается только через
+`HHRU_BACKUP_OFFSITE_CLEANUP_APPLY=true`. Systemd unit additionally requires a
+fresh `success.env` marker from weekly restore drill before cleanup can run.
+
+Все driver-ы сериализуются с research archive через
 `.state/locks/heavy-ops.lock`, пишут отдельные step logs и не запускают
-destructive S3 cleanup. Daily local dump retention по умолчанию ограничен двумя
-днями из-за текущего размера backup около `13 GB`.
+research archive destructive housekeeping. Daily local dump retention по
+умолчанию ограничен двумя днями из-за текущего размера backup около `13 GB`.
 
 Supplied systemd schedule:
 
 - daily backup: `00:30 UTC` + up to `15m` randomized delay;
 - weekly offsite restore drill: Sunday `06:00 UTC` + up to `30m` randomized
+  delay.
+- weekly offsite backup cleanup: Sunday `08:30 UTC` + up to `30m` randomized
   delay.
 
 Перед timer enable обязательны sequential supervised smoke обоих driver-ов и

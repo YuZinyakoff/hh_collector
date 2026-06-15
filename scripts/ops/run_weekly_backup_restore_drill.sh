@@ -151,5 +151,12 @@ run_step cleanup-restore-db drop_target_db
 cleanup_pending=no
 trap - EXIT
 
+{
+  printf 'status=succeeded\n'
+  printf 'run_id=%s\n' "$RUN_ID"
+  printf 'backup_file=%s\n' "$backup_file"
+  printf 'target_db=%s\n' "$TARGET_DB"
+} >"${RUN_LOG_DIR}/success.env"
+
 printf 'operation=weekly_backup_restore_drill status=succeeded run_id=%s backup_file=%s target_db=%s log_dir=%s\n' \
   "$RUN_ID" "$backup_file" "$TARGET_DB" "$RUN_LOG_DIR"

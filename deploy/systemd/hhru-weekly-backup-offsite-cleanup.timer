@@ -1,0 +1,11 @@
+[Unit]
+Description=Run HH.ru platform offsite backup retention cleanup weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 08:30:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+Unit=hhru-weekly-backup-offsite-cleanup.service
+
+[Install]
+WantedBy=timers.target

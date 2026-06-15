@@ -7,6 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DAILY_SCRIPT = REPO_ROOT / "scripts" / "ops" / "run_daily_backup.sh"
 RESTORE_SCRIPT = REPO_ROOT / "scripts" / "ops" / "run_weekly_backup_restore_drill.sh"
+CLEANUP_SCRIPT = REPO_ROOT / "scripts" / "ops" / "run_weekly_backup_offsite_cleanup.sh"
 NOTIFY_SCRIPT = REPO_ROOT / "scripts" / "ops" / "notify_systemd_failure.sh"
 SYSTEMD_ROOT = REPO_ROOT / "deploy" / "systemd"
 
@@ -147,6 +148,13 @@ printf 'status=succeeded\\n'
     assert ".state/backups/fake.dump" in calls[0]
     assert calls[1].startswith("compose exec -T postgres ")
     assert "dropdb" in calls[1]
+    success_markers = list(
+        (tmp_path / ".state" / "logs" / "backup-restore-drill").glob(
+            "*/success.env"
+        )
+    )
+    assert len(success_markers) == 1
+    assert "status=succeeded" in success_markers[0].read_text(encoding="utf-8")
 
 
 def test_weekly_restore_driver_attempts_cleanup_after_restore_failure(
@@ -195,6 +203,127 @@ printf 'status=succeeded\\n'
     assert "dropdb" in calls[1]
 
 
+def test_weekly_backup_offsite_cleanup_driver_dry_runs_by_default(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls_file = tmp_path / "docker-calls.log"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
+printf 'status=succeeded\\n'
+printf 'apply=no\\n'
+printf 'delete_candidate_count=7\\n'
+printf 'deleted_generation_count=0\\n'
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_CALLS": str(calls_file),
+        "HHRU_BACKUP_OFFSITE_CLEANUP_ROOT_DIR": str(tmp_path),
+    }
+
+    result = subprocess.run(
+        ["bash", str(CLEANUP_SCRIPT)],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "operation=weekly_backup_offsite_cleanup status=succeeded" in result.stdout
+    calls = calls_file.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1
+    assert "cleanup-backup-offsite" in calls[0]
+    assert "--keep-latest 3" in calls[0]
+    assert "--keep-weekly 4" in calls[0]
+    assert "--apply" not in calls[0]
+
+
+def test_weekly_backup_offsite_cleanup_driver_can_apply_after_recent_restore_drill(
+    tmp_path: Path,
+) -> None:
+    restore_log_dir = (
+        tmp_path
+        / ".state"
+        / "logs"
+        / "backup-restore-drill"
+        / "20260614T061441Z-1"
+    )
+    restore_log_dir.mkdir(parents=True)
+    (restore_log_dir / "success.env").write_text(
+        "status=succeeded\nrun_id=20260614T061441Z-1\n",
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls_file = tmp_path / "docker-calls.log"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
+printf 'status=succeeded\\n'
+printf 'apply=yes\\n'
+printf 'delete_candidate_count=0\\n'
+printf 'deleted_generation_count=7\\n'
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_CALLS": str(calls_file),
+        "HHRU_BACKUP_OFFSITE_CLEANUP_ROOT_DIR": str(tmp_path),
+        "HHRU_BACKUP_OFFSITE_CLEANUP_APPLY": "true",
+        "HHRU_BACKUP_OFFSITE_CLEANUP_REQUIRE_RECENT_RESTORE_DRILL": "true",
+    }
+
+    result = subprocess.run(
+        ["bash", str(CLEANUP_SCRIPT)],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "restore_drill_success_marker=" in result.stdout
+    calls = calls_file.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1
+    assert "cleanup-backup-offsite" in calls[0]
+    assert "--apply" in calls[0]
+
+
+def test_weekly_backup_offsite_cleanup_requires_recent_restore_marker_when_enabled(
+    tmp_path: Path,
+) -> None:
+    env = {
+        **os.environ,
+        "HHRU_BACKUP_OFFSITE_CLEANUP_ROOT_DIR": str(tmp_path),
+        "HHRU_BACKUP_OFFSITE_CLEANUP_REQUIRE_RECENT_RESTORE_DRILL": "true",
+    }
+
+    result = subprocess.run(
+        ["bash", str(CLEANUP_SCRIPT)],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "reason=restore_log_root_not_found" in result.stderr
+
+
 def test_systemd_failure_notifier_posts_synthetic_alertmanager_payload(
     tmp_path: Path,
 ) -> None:
@@ -238,9 +367,16 @@ def test_unattended_systemd_units_have_expected_safe_schedules_and_failure_hooks
         SYSTEMD_ROOT / "hhru-weekly-backup-restore-drill.service"
     ).read_text()
     restore_timer = (SYSTEMD_ROOT / "hhru-weekly-backup-restore-drill.timer").read_text()
+    cleanup_service = (
+        SYSTEMD_ROOT / "hhru-weekly-backup-offsite-cleanup.service"
+    ).read_text()
+    cleanup_timer = (
+        SYSTEMD_ROOT / "hhru-weekly-backup-offsite-cleanup.timer"
+    ).read_text()
     archive_service = (SYSTEMD_ROOT / "hhru-research-archive.service").read_text()
     daily_script = DAILY_SCRIPT.read_text()
     restore_script = RESTORE_SCRIPT.read_text()
+    cleanup_script = CLEANUP_SCRIPT.read_text()
     archive_script = (
         REPO_ROOT / "scripts" / "ops" / "run_daily_research_archive.sh"
     ).read_text()
@@ -248,13 +384,21 @@ def test_unattended_systemd_units_have_expected_safe_schedules_and_failure_hooks
     assert "Environment=HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=2" in daily_service
     assert "OnCalendar=*-*-* 00:30:00 UTC" in daily_timer
     assert "OnCalendar=Sun *-*-* 06:00:00 UTC" in restore_timer
+    assert "OnCalendar=Sun *-*-* 08:30:00 UTC" in cleanup_timer
     assert "run_weekly_backup_restore_drill.sh" in restore_service
+    assert "run_weekly_backup_offsite_cleanup.sh" in cleanup_service
+    assert (
+        "Environment=HHRU_BACKUP_OFFSITE_CLEANUP_REQUIRE_RECENT_RESTORE_DRILL=true"
+        in cleanup_service
+    )
     assert "OnFailure=hhru-ops-failure-notify@%n.service" in daily_service
     assert "OnFailure=hhru-ops-failure-notify@%n.service" in restore_service
+    assert "OnFailure=hhru-ops-failure-notify@%n.service" in cleanup_service
     assert "OnFailure=hhru-ops-failure-notify@%n.service" in archive_service
     assert all(
         "HHRU_HEAVY_OPS_LOCK_FILE" in script
-        for script in (daily_script, restore_script, archive_script)
+        for script in (daily_script, restore_script, cleanup_script, archive_script)
     )
     assert "cleanup-backup-offsite" not in daily_script
+    assert "cleanup-backup-offsite" in cleanup_script
     assert "apply-research-archive-housekeeping" not in archive_script

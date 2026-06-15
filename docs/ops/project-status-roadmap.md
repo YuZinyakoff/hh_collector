@@ -1,6 +1,6 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-06-04.
+Дата среза: 2026-06-15.
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -11,9 +11,12 @@
 1. `project-status-roadmap.md` - текущий статус, порядок работ и ближайшие решения.
 2. `backup-restore-drill.md` - operator runbook для backup, S3 offsite и restore drill.
 3. `storage-contours.md` - разделение provider snapshot, PostgreSQL backup и research archive.
-4. `research-archive-v1.md` - contract для компактного и анализируемого archive layer.
-5. `first-detail-backlog.md` - detail backlog и worker semantics.
-6. `observability.md` - alerts, metrics, Prometheus/Grafana contour.
+4. `data-corpus-boundary.md` - разделение текущего pilot/test corpus и будущего
+   production analytical corpus.
+5. `archive-analysis-smoke.md` - минимальный DataFrame/plot smoke для archive chunks.
+6. `research-archive-v1.md` - contract для компактного и анализируемого archive layer.
+7. `first-detail-backlog.md` - detail backlog и worker semantics.
+8. `observability.md` - alerts, metrics, Prometheus/Grafana contour.
 
 Остальные документы являются detail plans или historical context. Если они конфликтуют
 с этим roadmap, приоритет у этого файла.
@@ -111,25 +114,78 @@ smoke research archive v1.
   coverage audit и read-only housekeeping preview завершились успешно; audit
   подтвердил `28/28` verified production checkpoints.
 - `hhru-research-archive.timer` включён на VPS 2026-06-04; первый unattended
-  запуск ожидается 2026-06-05.
-- fail-closed daily backup, weekly offsite restore drill и generic systemd
-  failure notification drivers реализованы; перед включением новых timers им
-  ещё нужны supervised VPS smoke.
+  запуск 2026-06-05 завершился успешно: zero-row export, local verify, offsite
+  sync, offsite verify, coverage audit и housekeeping preview all succeeded.
+  Local verify подтвердил `1557/1557` manifests, offsite verify подтвердил
+  `1557/1557` manifests и `29` checkpoints, housekeeping preview вернул
+  `coverage_issue_count=0`, `total_candidates=0`, `total_action_count=0`.
+- fail-closed daily backup systemd driver прошёл supervised VPS smoke
+  2026-06-04: unit завершился с `Result=success`, `ExecMainStatus=0` после
+  create, local verify, offsite sync и offsite verify.
+- первый unattended daily backup timer run прошёл 2026-06-06: unit завершился с
+  `Result=success`, `ExecMainStatus=0`; create, local verify, offsite sync и
+  offsite verify all succeeded; backup file
+  `.state/backups/hhru-platform_hhru_platform_20260606T003301Z.dump`.
+- следующий checked daily backup timer run прошёл 2026-06-08: unit завершился с
+  `Result=success`, `ExecMainStatus=0`; backup
+  `.state/backups/hhru-platform_hhru_platform_20260608T003156Z.dump` был
+  uploaded to S3 and verified as `198` parts + manifest (`199` objects).
+- weekly offsite restore drill systemd driver прошёл supervised VPS smoke
+  2026-06-04: unit восстановил latest offsite-verified backup во временную DB,
+  завершился с `Result=success`, `ExecMainStatus=0` и cleanup step passed.
+- первый unattended weekly offsite restore drill timer run прошёл 2026-06-07:
+  unit завершился с `Result=success`, `ExecMainStatus=0`; backup
+  `.state/backups/hhru-platform_hhru_platform_20260607T004343Z.dump` был
+  восстановлен из offsite в temporary DB, cleanup step succeeded, lingering
+  restore DB отсутствует.
+- checked daily research archive timer run 2026-06-08 прошёл успешно: zero-row
+  export, local verify `1557/1557` manifests, idempotent offsite sync
+  `uploaded_manifest_count=0`, offsite verify `1557/1557` manifests / `32`
+  checkpoints / `3147` objects, coverage `complete`, housekeeping preview
+  `total_action_count=0`.
+- `3-7`-дневный unattended storage/archive soak прошёл без ручного вмешательства:
+  на 2026-06-15 failed units `0`, running app-run containers `0`, daily backup
+  runs 2026-06-11..2026-06-15 all succeeded with offsite verify
+  `verified_object_count=199`, daily archive runs 2026-06-11..2026-06-15 all
+  succeeded with local verify `1557/1557`, offsite verify `1557/1557`, coverage
+  `complete` and housekeeping preview `total_action_count=0`; checkpoint cursor
+  advanced to `39` verified checkpoints.
+- second unattended weekly offsite restore drill passed on 2026-06-14: backup
+  `.state/backups/hhru-platform_hhru_platform_20260614T004152Z.dump` was
+  restored from S3, `198/198` parts downloaded, `schema_verified=yes`,
+  `verified_tables=5/5`, cleanup step succeeded, lingering restore DB absent.
+- storage after soak remained stable enough for current retention window:
+  filesystem `88G/154G` used (`58%`), `.state/backups=37G`,
+  `.state/archive/research-production-v2=7.1G`, `.state/logs=30M`.
+- bounded S3 backup retention apply passed on 2026-06-15 after dry-run:
+  cleanup scanned `13` receipts, deleted `7` verified generations,
+  `1393` remote objects and `28` local sidecars, retained latest `3`, weekly
+  checkpoint `20260607` and protected milestone `20260528`; follow-up dry-run
+  returned `delete_candidate_count=0`, `retained_generation_count=5`,
+  `skipped_generation_count=1` for the old unverified `20260517` generation.
+- non-blocking local failure delivery прошёл VPS smoke 2026-06-04: direct
+  notifier и systemd template вернули success за `22-44 ms`; Telegram egress
+  outage больше не блокирует local monitoring path.
+- local archive analysis smoke прошёл 2026-06-05: из S3 sample загружено
+  `5000` rows из `5` manifests в DataFrame-ready CSV, построен
+  `rows_by_dataset.png`, подтверждено наличие полного vacancy detail text в
+  `payload_json.description`.
 
 Текущий статус не равен full unattended production readiness. Корректная
 формулировка: full search coverage, backup/offsite restore contour, first-detail
 pilot drain и canonical production research archive operationally validated.
-Daily research archive pipeline validated как supervised non-destructive routine,
-его systemd timer включён, но первый unattended run ещё не наблюдался. Общий
-collection/backup/retention routine и многодневная unattended stability ещё не
-доказаны.
+Daily research archive pipeline validated как supervised non-destructive routine
+и multi-day unattended timer routine. Daily backup timer и weekly restore drill
+timer validated как unattended storage routine. Общий production
+search/detail/backup routine and retention automation policy ещё не доказаны.
 
 Важное ограничение текущего корпуса: данные на VPS являются pilot/test corpus,
 полученным из не свежего search snapshot и серии operational experiments. Его
-можно использовать для проверки throughput, storage growth, backup/restore и
-archive tooling, но нельзя считать canonical production dataset. Перед sustained
-production collection нужен clean production start или явно отделённый pilot
-corpus.
+можно использовать для проверки throughput, storage growth, backup/restore,
+archive tooling и DataFrame-readability smoke, но нельзя считать canonical
+production analytical dataset. Boundary зафиксирован в `data-corpus-boundary.md`:
+перед sustained production collection нужен `corpus_id` / `collection_epoch` или
+clean production start.
 
 ## 2. Что Ещё Не Доказано
 
@@ -139,30 +195,31 @@ corpus.
 - Sustained detail throughput/storage growth на production routine, а не только
   на pilot/test corpus.
 - Production-quality Telegram alert payloads: текущие alerts доходят, но мало объясняют причину и scope.
-- Backup retention и cleanup routine: backup/offsite contour работает, но retention
-  apply smoke ещё нужно проверить на реальном безопасном deletion candidate.
-- Первый unattended запуск production research archive systemd timer и
-  последующие несколько ежедневных запусков. Timer уже включён, supervised
-  driver smoke завершён успешно.
+- Backup retention apply доказан manual dry-run-first path-ом; автоматическое
+  включение cleanup теперь имеет guarded weekly timer path, но его ещё нужно
+  deploy/prove на VPS. Старый unverified backup generation `20260517` остаётся
+  fail-safe skipped.
+- Совместная работа production search/detail с daily archive/backup routine.
+  Storage/archive timers прошли multi-day unattended soak, но production
+  collection cadence ещё не включалась как часть общего режима.
 - Generic automatic alert/failure signal для host-side storage services
-  реализован, но non-blocking local acceptance smoke на VPS ещё не выполнен.
-  Direct Telegram egress с VPS недоступен; внешний proxy/route остаётся
-  отдельным optional transport.
+  прошёл non-blocking local acceptance smoke на VPS. Direct Telegram egress с
+  VPS недоступен; внешний proxy/route остаётся отдельным optional transport.
 - Safe destructive research housekeeping на реальном production candidate.
   Guarded apply path реализован, но текущий production preview возвращает
   `0` actions, поэтому deletion proof намеренно ещё не выполнялся.
 - Регулярный PostgreSQL backup/offsite cadence: daily backup и weekly offsite
-  restore drivers/timers реализованы, но supervised VPS smoke и timer enable ещё
-  не выполнены.
-- Bounded S3 backup retention apply: dry-run path доказан, но automatic cleanup
-  отсутствует намеренно до первого реального безопасного deletion candidate.
+  restore systemd drivers прошли supervised VPS smoke, первые unattended runs и
+  `3-7`-дневный storage soak. Manual bounded S3 cleanup apply proved on
+  2026-06-15; guarded weekly cleanup timer path is code-ready and awaits VPS
+  rollout proof.
 - Явная production cadence для search collection. Текущий `scheduler-loop`
   является interval-based trigger loop, а не календарной weekly policy, поэтому
   его нельзя считать готовым многомесячным расписанием без отдельного решения.
 - Prometheus retention: фактически применён на VPS, volume в пределах configured
   size limit.
-- Многодневная unattended stability на VPS.
-- Месячный production режим с backup, housekeeping, offsite archive и operator routine.
+- Месячный production режим с backup, housekeeping, offsite archive и operator
+  routine.
 
 ## 3. Модули По Готовности
 
@@ -175,10 +232,11 @@ corpus.
 | Detail same-run budget | ready as bounded contour | не является completeness guarantee |
 | First-detail backlog | VPS catch-up validated on pilot corpus | `scale=3`, `batch=100` validated as supervised catch-up mode |
 | Detail worker | foundation ready, supervised scale=3 validated | есть one-shot и loop, пока без multi-day unattended proof |
-| Backup / restore drill | VPS validated; unattended drivers code-ready | post-baseline backup, verify и restore-drill прошли; daily/weekly drivers ждут supervised VPS smoke |
+| Backup / restore drill | VPS unattended soak validated | post-baseline backup, verify и restore-drill прошли; daily/weekly systemd drivers прошли supervised smoke; daily backups and weekly restore drills passed unattended soak |
 | DB backup offsite | S3 end-to-end validated | Timeweb cold S3 upload, idempotency, remote size verify, offsite restore drill и post-detail-drain 13GB upload/verify работают |
+| S3 backup cleanup | code-ready guarded timer | manual dry-run/apply validated; weekly timer path requires recent restore success marker and explicit apply env |
 | Retention archive / offsite sync | partially validated | legacy retention bundle sync работает; long-term research archive S3 contour валидирован отдельно |
-| Research archive v1 | production bootstrap and daily driver VPS validated | canonical local/S3 archive complete; timer enabled; first unattended run and multi-day observation remain |
+| Research archive v1 | production bootstrap and multi-day unattended routine validated | canonical local/S3 archive complete; timer enabled; daily archive soak succeeded with complete coverage and zero housekeeping actions |
 | Observability | foundation ready | metrics, dashboards, alert rules есть |
 | Alert delivery | foundation ready | delivery до Telegram проверен; payloads нужно сделать информативнее |
 | VPS deploy | validated | search-only pilot completed on Timeweb VPS |
@@ -186,30 +244,28 @@ corpus.
 
 ### 3.1. Насколько Близко До "Включил И Забыл"
 
-Текущий practical status: storage/archive foundation завершён, но вся платформа
-ещё находится между `supervised production-capable` и `unattended validated`.
+Текущий practical status: storage/archive foundation завершён и прошёл
+multi-day unattended soak. Вся платформа ещё не является full unattended
+production, потому что search/detail production cadence и retention automation
+policy не закрыты.
 
 Для перехода к редкому operator monitoring нужны четыре закрытых gate:
 
-1. Получить первый и затем минимум `3-7` подряд successful запусков уже
-   включённого daily research archive timer без ручного вмешательства.
-2. Выполнить supervised VPS smoke и затем включить unattended PostgreSQL backup
-   pipeline: daily backup, local verify, S3 sync, remote verify и weekly offsite
-   restore drill.
-3. Зафиксировать реальную production cadence search/detail и проверить её
+1. Deploy/prove guarded weekly bounded S3 backup cleanup after weekly restore
+   drill.
+2. Зафиксировать реальную production cadence search/detail и проверить её
    совместную работу с archive/backup по CPU, RAM, IO, disk growth и HH failure
    mix. Не использовать текущий hourly scheduler default как production policy
    без отдельного решения.
-4. Проверить synthetic failure delivery для host-side timers, доказать bounded
-   S3 backup retention apply и пройти `3-7`-дневный supervised soak. После него
-   провести месячное окно с редким monitoring.
+3. Провести месячное окно с редким monitoring, alert-driven checks и weekly
+   operator checklist.
 
 После этих gates корректно будет говорить "включил и мониторю по alerts и
 еженедельному checklist". До них запуск на месяцы без наблюдения преждевременен.
 
 ## 4. Current Execution Plan
 
-Непосредственный порядок работ после S3 offsite restore drill:
+Непосредственный порядок работ после storage timers enablement:
 
 1. Pilot first-detail drain закрыт:
    - active/all backlog `0`;
@@ -230,8 +286,14 @@ corpus.
      dry-run-first команда `cleanup-backup-offsite`;
    - VPS dry-run прошёл на real S3 state: milestone retained, older unverified
      generation skipped fail-safe, deletion candidates `0`;
-   - next: bounded apply smoke только после появления реального безопасного
-     deletion candidate.
+   - bounded apply на реальном безопасном candidate прошёл 2026-06-15:
+     `deleted_generation_count=7`, `remote_deleted_object_count=1393`,
+     follow-up dry-run `delete_candidate_count=0`;
+  - guarded weekly systemd cleanup path added: default dry-run, explicit
+    `HHRU_BACKUP_OFFSITE_CLEANUP_APPLY=true`, recent restore-drill success
+    marker required;
+  - next: deploy/prove the cleanup timer and decide whether to manually handle
+    the old skipped unverified `20260517` generation.
 3. Prometheus retention считается закрытым на 2026-05-26:
    - running flags: `7d` и `8GB`;
    - `hh_collector_prometheus_data`: `5.5G`;
@@ -288,12 +350,12 @@ corpus.
      в automation отсутствует;
    - supervised daily-driver smoke завершён 2026-06-04: все шесть steps
      succeeded, production coverage остался complete;
-   - systemd timer включён 2026-06-04; next: проверить первый и несколько
-     последующих unattended daily runs;
+   - systemd timer включён 2026-06-04; первый unattended daily run прошёл
+     2026-06-05; multi-day unattended archive soak passed by 2026-06-15;
    - shared heavy-ops lock и generic systemd failure notifier добавлены вместе с
      daily backup и weekly offsite restore drill drivers/timers;
-   - next: synthetic failure smoke, supervised backup/restore-driver smoke и
-     только затем enable новых timers;
+   - synthetic failure smoke, supervised backup/restore-driver smoke, first
+     unattended backup/restore timer runs и `3-7` day storage soak прошли;
    - pre-delete backup/restore drill и первый guarded destructive apply выполнять
      только после появления реального retention candidate;
    - не делать text features, AI exposure, panels, econometrics или Parquet в
@@ -308,14 +370,15 @@ corpus.
      offsite verify и restore drill;
    - новый production run должен стартовать из явно чистого состояния или с
      явно помеченной историей, чтобы не смешивать pilot и production metrics/data.
-8. После этого переходить к supervised multi-day unattended routine:
-   - 3-7 дней без ручного вмешательства;
-   - должны штатно работать search/detail/backup/offsite/alerts/retention;
-   - контролировать failed states, expired leases, stale scheduler, disk,
-     Prometheus volume, logs, metrics file и throughput degradation.
-9. После successful multi-day proof запускать sustained production collection
-   с нуля: регулярный search, параллельный detail catch-up, backups, offsite,
-   alerts, retention и operator runbook.
+8. Storage/archive multi-day unattended routine закрыт на 2026-06-15:
+   - daily backup, daily archive, offsite sync/verify and weekly restore drill
+     работали без ручного вмешательства;
+   - search/detail production cadence не входила в этот soak и остаётся
+     отдельным proof.
+9. После search/detail cadence decision запускать sustained production
+   collection с нуля или с явно маркированным corpus: регулярный search,
+   параллельный detail catch-up, backups, offsite, alerts, retention и operator
+   runbook.
 
 ## 5. Detailed Roadmap
 
@@ -524,14 +587,13 @@ VPS observation 2026-05-31:
   skipped the older unverified dump fail-safe and produced `0` deletion
   candidates.
 
-Next experiment plan:
+Updated next experiment plan on 2026-06-15:
 
 1. Не делить backlog на lanes/run/priority до необходимости production telemetry.
-2. Прогнать bounded apply smoke для S3 backup retention delete and sidecar cleanup
-   только когда появится реальный безопасный deletion candidate.
-3. Собрать canonical `archive_kind=production` checkpoint chain, проверить
-   remote coverage и повторить production read-only preview.
-4. Зафиксировать clean production start procedure и решение по pilot/test corpus.
+2. Решить automation policy для S3 backup retention cleanup после successful
+   weekly restore drill.
+3. Зафиксировать clean production start procedure и решение по pilot/test corpus.
+4. Зафиксировать production search/detail cadence.
 5. Проверить search interference: detail-worker on/off during controlled search
    on fresh production routine.
 
@@ -544,15 +606,22 @@ Go/no-go:
 
 ### Stage 6. Week / Month unattended
 
-1. Провести supervised week.
-2. Проверить backup, housekeeping, offsite sync, alerts, disk growth.
-3. Только после этого переходить к месячному unattended окну.
+1. Storage/archive supervised week completed by 2026-06-15.
+2. Backup, archive housekeeping preview, offsite sync/verify, weekly restore
+   drill and disk growth checked clean for the storage/archive contour.
+3. Before full month unattended, define backup-retention automation policy and
+   the production search/detail calendar.
+4. Then transition to a monthly unattended window with alert-driven monitoring
+   and weekly operator checklist.
 
 ## 6. Практический Вывод
 
 Проект уже прошёл главный feasibility risk: собрать near-snapshot hh.ru search-space в рамках одного длинного sweep принципиально возможно.
 
-Следующий риск уже не архитектурный, а операционный: устойчивость к внешним outage, понятная recovery semantics, storage planning, alert delivery и proof, что first-detail backlog можно дренировать без деградации search contour.
+Следующий риск уже не архитектурный, а операционный: retention automation
+policy, понятная production search/detail cadence, устойчивость к внешним
+outage, alert delivery и proof, что first-detail backlog можно дренировать без
+деградации search contour.
 
 Связанные документы:
 

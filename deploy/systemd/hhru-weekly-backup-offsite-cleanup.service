@@ -1,0 +1,17 @@
+[Unit]
+Description=HH.ru platform weekly offsite backup retention cleanup
+Requires=docker.service
+After=docker.service network-online.target hhru-weekly-backup-restore-drill.service
+Wants=network-online.target
+OnFailure=hhru-ops-failure-notify@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hh_collector
+Environment=HHRU_BACKUP_OFFSITE_CLEANUP_REQUIRE_RECENT_RESTORE_DRILL=true
+EnvironmentFile=-/etc/hhru-platform/backup-offsite-cleanup.env
+ExecStart=/opt/hh_collector/scripts/ops/run_weekly_backup_offsite_cleanup.sh
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

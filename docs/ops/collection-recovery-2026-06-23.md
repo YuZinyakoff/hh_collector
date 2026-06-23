@@ -19,10 +19,24 @@ Known facts:
   `run_id=bcf9ef54-27b0-4a90-bd33-728775053ea4`.
 - That run did create fresh list data after `2026-06-23T12:00:00+00:00`, but
   the run finished as `failed` at `2026-06-23 12:15:58 UTC`.
+- The immediate failure was an hh.ru HTTP `503` on one search page. Before the
+  fix, `503` was treated as a normalization failure instead of a retryable
+  transient upstream failure.
 
-Do not start detail catch-up until this failed search run is diagnosed. Detail
-only makes sense after search coverage is either successful or intentionally
-bounded and understood.
+Do not start detail catch-up until the `5xx` fix is deployed and this failed
+search run is resumed or otherwise intentionally closed. Detail only makes sense
+after search coverage is either successful or intentionally bounded and
+understood.
+
+## Fixed Code Path
+
+`status_code=0` and HTTP `5xx` responses are now classified as transport
+responses. This makes search, detail and dictionary requests retry `5xx`
+responses and lets list-engine/run-resume requeue failed partitions as transient
+upstream failures.
+
+HTTP `4xx` behavior is unchanged: captcha, not-found and bad-request style
+responses remain hard/terminal outcomes.
 
 ## VPS Diagnostic Commands
 
@@ -95,13 +109,14 @@ docker compose exec -T postgres psql -U hhru -d hhru_platform -P pager=off -v ON
 
 ## Search Recovery Order
 
-1. Diagnose the failed run from log, partition state and coverage report.
-2. If the failure is resumable, resume the same run instead of starting a
+1. Deploy the `5xx` transport-classification fix to VPS.
+2. Re-check the failed run from log, partition state and coverage report.
+3. Resume the same run instead of starting a
    duplicate production sweep.
-3. If the failure is not resumable, fix the blocker first, then start a new
+4. If the failure is not resumable after the fix, fix the blocker first, then start a new
    supervised search run with a new `triggered_by`.
-4. Verify new rows by timestamp and verify `show-run-coverage`.
-5. Only after search is understood, start detail smoke/catch-up.
+5. Verify new rows by timestamp and verify `show-run-coverage`.
+6. Only after search is understood, start detail smoke/catch-up.
 
 Resume command, only after the diagnostic output shows this is safe:
 

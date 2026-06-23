@@ -222,8 +222,10 @@ clean production start. На snapshot `2026-06-23` post-boundary production corp
 - Fresh production collection itself: no scheduler/detail-worker runtime was
   active on 2026-06-23, and no crawl runs exist after the May baseline.
   Supervised recovery run `bcf9ef54-27b0-4a90-bd33-728775053ea4` did start
-  writing fresh rows on 2026-06-23, but finished as `failed`; diagnose that run
-  before starting detail catch-up or background scheduler.
+  writing fresh rows on 2026-06-23, but finished as `failed` after an hh.ru
+  HTTP `503` was treated as a hard normalization error. The code now classifies
+  HTTP `5xx` as retryable transport failures; deploy that fix and resume the
+  same run before starting detail catch-up or background scheduler.
 - Generic automatic alert/failure signal для host-side storage services
   прошёл non-blocking local acceptance smoke на VPS. Direct Telegram egress с
   VPS недоступен; внешний proxy/route остаётся отдельным optional transport.

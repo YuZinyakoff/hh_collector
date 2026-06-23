@@ -520,6 +520,55 @@ def test_process_list_page_retries_transport_failures_and_succeeds(monkeypatch) 
     assert sleep_calls == [5.0, 30.0]
 
 
+def test_process_list_page_retries_5xx_response_and_succeeds(monkeypatch) -> None:
+    partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=uuid4(),
+        partition_key="pytest-list-partition",
+        params_json={"params": {"text": "pytest list search", "per_page": 2}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+    )
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    vacancy_repository = RecordingVacancyRepository()
+    vacancy_seen_event_repository = RecordingVacancySeenEventRepository()
+    vacancy_current_state_repository = RecordingVacancyCurrentStateRepository()
+    vacancy_snapshot_repository = InMemoryVacancySnapshotRepository()
+    api_client = SequentialVacancySearchApiClient(
+        [_build_service_unavailable_search_response(), _build_successful_search_response()]
+    )
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(process_list_page_module, "_sleep", sleep_calls.append)
+
+    result = process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository(partition),
+        api_client=api_client,
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        vacancy_repository=vacancy_repository,
+        vacancy_seen_event_repository=vacancy_seen_event_repository,
+        vacancy_current_state_repository=vacancy_current_state_repository,
+        vacancy_snapshot_repository=vacancy_snapshot_repository,
+    )
+
+    assert result.partition_status == "done"
+    assert result.request_log_id == 2
+    assert result.raw_payload_id == 2
+    assert api_client.calls == 2
+    assert len(api_request_log_repository.records) == 2
+    assert len(raw_api_payload_repository.records) == 2
+    assert sleep_calls == [5.0]
+
+
 def test_process_list_page_does_not_retry_captcha_response(monkeypatch) -> None:
     partition = CrawlPartition(
         id=uuid4(),
@@ -578,6 +627,23 @@ def _build_transport_search_response() -> VacancySearchResponse:
         payload_json=None,
         error_type="ConnectionResetError",
         error_message="Connection reset by peer",
+    )
+
+
+def _build_service_unavailable_search_response() -> VacancySearchResponse:
+    return VacancySearchResponse(
+        endpoint="/vacancies",
+        method="GET",
+        params_json={"page": 0, "per_page": 2, "text": "pytest list search"},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=503,
+        headers={},
+        latency_ms=250,
+        requested_at=datetime(2026, 3, 12, 12, 1, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 1, 1, tzinfo=UTC),
+        payload_json={"errors": [{"type": "service_unavailable"}]},
+        error_type="service_unavailable",
+        error_message=None,
     )
 
 

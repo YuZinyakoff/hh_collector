@@ -34,7 +34,7 @@ def is_captcha_response(*, status_code: int, error_type: str | None) -> bool:
 
 def is_transport_response(*, status_code: int, error_type: str | None) -> bool:
     del error_type
-    return status_code == 0
+    return status_code == 0 or 500 <= status_code <= 599
 
 
 def build_response_error_message(

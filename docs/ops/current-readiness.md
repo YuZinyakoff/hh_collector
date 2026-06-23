@@ -85,6 +85,11 @@ backup cleanup timer run.
 - Confirmed gap on 2026-06-23: collection is not merely "not production
   labelled"; it is not running. `scheduler`/`detail-worker` containers are not
   up, and the only `crawl_run` is the May `vps-search-baseline`.
+- Supervised recovery search run
+  `bcf9ef54-27b0-4a90-bd33-728775053ea4` wrote fresh rows after
+  `2026-06-23T12:00:00+00:00`, then failed on an hh.ru HTTP `503`. The code path
+  now treats HTTP `5xx` as retryable transport responses; deploy this fix and
+  resume that run before starting detail.
 - Storage/archive routine прошла `3-7`-дневный unattended soak, но совместная
   работа production search/detail с archive/backup ещё не проверена.
 - Текущий VPS corpus остаётся pilot/test evidence. Решение по boundary
@@ -101,10 +106,13 @@ backup cleanup timer run.
 
 ## Следующий Рубеж
 
-1. Запустить supervised fresh production search collection and verify new rows.
-2. Зафиксировать календарную production cadence search/detail.
-3. Проверить совместную работу production search/detail с archive/backup.
-4. Перейти к месячному storage/archive window с alert-driven monitoring и
+1. Deploy `5xx` retry fix and resume supervised production search run
+   `bcf9ef54-27b0-4a90-bd33-728775053ea4`.
+2. Verify terminal search coverage and fresh post-boundary rows.
+3. Run detail smoke on fresh rows, then detail catch-up.
+4. Зафиксировать календарную production cadence search/detail.
+5. Проверить совместную работу production search/detail с archive/backup.
+6. Перейти к месячному storage/archive window с alert-driven monitoring и
    недельным operator checklist.
 
 Практический порядок восстановления collection зафиксирован в

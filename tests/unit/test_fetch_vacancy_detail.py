@@ -263,6 +263,54 @@ def test_fetch_vacancy_detail_retries_transport_failure_once(monkeypatch) -> Non
     assert sleep_calls == [5.0]
 
 
+def test_fetch_vacancy_detail_retries_5xx_response_once(monkeypatch) -> None:
+    vacancy = Vacancy(
+        id=uuid4(),
+        hh_vacancy_id="pytest-detail-vacancy",
+        employer_id=None,
+        area_id=None,
+        name_current="Old vacancy name",
+        published_at=None,
+        created_at_hh=None,
+        archived_at_hh=None,
+        alternate_url=None,
+        employment_type_code=None,
+        schedule_type_code=None,
+        experience_code=None,
+        source_type="hh_api",
+    )
+    detail_fetch_attempt_repository = InMemoryDetailFetchAttemptRepository()
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    vacancy_snapshot_repository = InMemoryVacancySnapshotRepository()
+    vacancy_current_state_repository = RecordingVacancyCurrentStateRepository()
+    vacancy_repository = InMemoryVacancyRepository(vacancy)
+    api_client = SequentialVacancyDetailApiClient(
+        [_build_service_unavailable_detail_response(), _build_successful_detail_response()]
+    )
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(fetch_vacancy_detail_module, "_sleep", sleep_calls.append)
+
+    result = fetch_vacancy_detail(
+        FetchVacancyDetailCommand(vacancy_id=vacancy.id),
+        vacancy_repository=vacancy_repository,
+        api_client=api_client,
+        detail_fetch_attempt_repository=detail_fetch_attempt_repository,
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        vacancy_snapshot_repository=vacancy_snapshot_repository,
+        vacancy_current_state_repository=vacancy_current_state_repository,
+    )
+
+    assert result.detail_fetch_status == "succeeded"
+    assert result.request_log_id == 2
+    assert result.raw_payload_id == 2
+    assert api_client.calls == 2
+    assert len(api_request_log_repository.records) == 2
+    assert len(raw_api_payload_repository.records) == 2
+    assert sleep_calls == [5.0]
+
+
 def test_fetch_vacancy_detail_marks_404_as_terminal() -> None:
     vacancy = Vacancy(
         id=uuid4(),
@@ -325,6 +373,23 @@ def _build_transport_detail_response() -> VacancyDetailResponse:
         payload_json=None,
         error_type="ConnectionResetError",
         error_message="Connection reset by peer",
+    )
+
+
+def _build_service_unavailable_detail_response() -> VacancyDetailResponse:
+    return VacancyDetailResponse(
+        endpoint="/vacancies/pytest-detail-vacancy",
+        method="GET",
+        params_json={},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=503,
+        headers={},
+        latency_ms=400,
+        requested_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 0, 1, tzinfo=UTC),
+        payload_json={"errors": [{"type": "service_unavailable"}]},
+        error_type="service_unavailable",
+        error_message=None,
     )
 
 

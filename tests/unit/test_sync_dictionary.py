@@ -158,12 +158,12 @@ def test_sync_dictionary_marks_run_failed_on_non_200_response() -> None:
         method="GET",
         params_json={},
         request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
-        status_code=503,
+        status_code=418,
         headers={"etag": "pytest-professional-roles-etag"},
         latency_ms=44,
         requested_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
         response_received_at=datetime(2026, 3, 12, 12, 0, 1, tzinfo=UTC),
-        payload_json={"errors": [{"type": "service_unavailable"}]},
+        payload_json={"errors": [{"type": "bad_argument"}]},
     )
     sync_run_repository = InMemoryDictionarySyncRunRepository()
     api_request_log_repository = InMemoryApiRequestLogRepository()
@@ -185,12 +185,12 @@ def test_sync_dictionary_marks_run_failed_on_non_200_response() -> None:
     assert result.created_count == 0
     assert result.updated_count == 0
     assert result.deactivated_count == 0
-    assert result.source_status_code == 503
+    assert result.source_status_code == 418
     assert result.request_log_id == 1
     assert result.raw_payload_id == 1
-    assert result.error_message == "Unexpected status code: 503"
+    assert result.error_message == "Unexpected status code: 418"
     assert dictionary_store.calls == []
-    assert sync_run_repository.runs[result.sync_run_id].notes == "Unexpected status code: 503"
+    assert sync_run_repository.runs[result.sync_run_id].notes == "Unexpected status code: 418"
 
 
 def test_sync_dictionary_retries_transport_failure_once(monkeypatch) -> None:
@@ -224,6 +224,37 @@ def test_sync_dictionary_retries_transport_failure_once(monkeypatch) -> None:
     assert sleep_calls == [30.0]
 
 
+def test_sync_dictionary_retries_5xx_response_once(monkeypatch) -> None:
+    sync_run_repository = InMemoryDictionarySyncRunRepository()
+    api_request_log_repository = InMemoryApiRequestLogRepository()
+    raw_api_payload_repository = InMemoryRawApiPayloadRepository()
+    dictionary_store = RecordingDictionaryStore(
+        DictionaryPersistSummary(created_count=1, updated_count=0, deactivated_count=0)
+    )
+    api_client = SequentialDictionaryApiClient(
+        [_build_service_unavailable_dictionary_response(), _build_successful_dictionary_response()]
+    )
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(sync_dictionary_module, "_sleep", sleep_calls.append)
+
+    result = sync_dictionary(
+        SyncDictionaryCommand(dictionary_name="areas"),
+        api_client=api_client,
+        sync_run_repository=sync_run_repository,
+        api_request_log_repository=api_request_log_repository,
+        raw_api_payload_repository=raw_api_payload_repository,
+        dictionary_store=dictionary_store,
+    )
+
+    assert result.status == "succeeded"
+    assert result.request_log_id == 2
+    assert result.raw_payload_id == 2
+    assert api_client.calls == 2
+    assert len(api_request_log_repository.records) == 2
+    assert len(raw_api_payload_repository.records) == 2
+    assert sleep_calls == [30.0]
+
+
 def _build_transport_dictionary_response() -> DictionaryFetchResponse:
     return DictionaryFetchResponse(
         dictionary_name="areas",
@@ -239,6 +270,24 @@ def _build_transport_dictionary_response() -> DictionaryFetchResponse:
         payload_json=None,
         error_type="ConnectionResetError",
         error_message="Connection reset by peer",
+    )
+
+
+def _build_service_unavailable_dictionary_response() -> DictionaryFetchResponse:
+    return DictionaryFetchResponse(
+        dictionary_name="areas",
+        endpoint="/areas",
+        method="GET",
+        params_json={},
+        request_headers_json={"Accept": "application/json", "User-Agent": "pytest"},
+        status_code=503,
+        headers={},
+        latency_ms=500,
+        requested_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC),
+        response_received_at=datetime(2026, 3, 12, 12, 0, 1, tzinfo=UTC),
+        payload_json={"errors": [{"type": "service_unavailable"}]},
+        error_type="service_unavailable",
+        error_message=None,
     )
 
 

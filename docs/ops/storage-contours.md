@@ -76,12 +76,12 @@ Current status:
   scanned, post-detail-drain milestone retained through `.offsite.keep`, older
   dump skipped fail-safe as unverified, `delete_candidate_count=0`. Destructive
   apply smoke is intentionally deferred until a real safe candidate exists.
-- Fail-closed daily backup and weekly offsite restore drill drivers plus
-  systemd timers are implemented. They share a heavy-ops lock with the research
-  archive driver and require supervised VPS smoke before timer enable.
+- Fail-closed daily backup, weekly offsite restore drill and weekly S3 cleanup
+  drivers plus systemd timers are implemented and VPS validated.
 - Daily backup local retention defaults to `2` days for the current VPS because
-  one dump is approximately `13 GB`. S3 cleanup remains manual/dry-run-first
-  until a safe real deletion candidate proves apply semantics.
+  one dump is approximately `13 GB`. Guarded weekly S3 cleanup proved apply
+  semantics on 2026-06-21 after a successful restore-drill marker:
+  `deleted_generation_count=5`, `remote_deleted_object_count=995`.
 
 The DB backup contour is considered adequate only after these checks are in place:
 

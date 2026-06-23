@@ -119,6 +119,18 @@ def print_basic_host_state(*, repo_root: Path, since: str, skip_systemd: bool) -
         cwd=repo_root,
     )
 
+    print_section("collection runtime containers")
+    run_and_print(
+        [
+            "docker",
+            "compose",
+            "ps",
+            "scheduler",
+            "detail-worker",
+        ],
+        cwd=repo_root,
+    )
+
     print_section("service results")
     for unit in SERVICE_UNITS:
         print(f"--- {unit} ---")
@@ -369,13 +381,66 @@ union all select 'vacancy_snapshot_detail', count(*)::text
   from vacancy_snapshot where snapshot_type = 'detail'
 union all select 'raw_api_payload_total', count(*)::text from raw_api_payload
 union all select 'raw_payload_vacancy_detail', count(*)::text
-  from raw_api_payload where endpoint_type = 'vacancy_detail'
+  from raw_api_payload p
+  join api_request_log l on l.id = p.api_request_log_id
+  where l.request_type = 'vacancy_detail'
+     or p.endpoint_type in ('vacancy_detail', 'vacancies.detail')
 union all select 'detail_fetch_attempt_total', count(*)::text from detail_fetch_attempt
 union all select 'detail_fetch_attempt_succeeded', count(*)::text
   from detail_fetch_attempt where status = 'succeeded'
 union all select 'vacancies_with_success_detail_attempt', count(distinct vacancy_id)::text
   from detail_fetch_attempt where status = 'succeeded'
 union all select 'seen_event_total', count(*)::text from vacancy_seen_event
+order by metric;
+""",
+    )
+
+    print_section("corpus timestamp ranges")
+    psql(
+        repo_root,
+        """
+select 'crawl_run.started_at' as metric,
+       count(*)::text as row_count,
+       min(started_at)::text as min_ts,
+       max(started_at)::text as max_ts
+from crawl_run
+union all select 'vacancy_current_state.first_seen_at',
+       count(*)::text,
+       min(first_seen_at)::text,
+       max(first_seen_at)::text
+from vacancy_current_state
+union all select 'vacancy_current_state.last_seen_at',
+       count(*)::text,
+       min(last_seen_at)::text,
+       max(last_seen_at)::text
+from vacancy_current_state
+union all select 'vacancy_snapshot.short.captured_at',
+       count(*)::text,
+       min(captured_at)::text,
+       max(captured_at)::text
+from vacancy_snapshot
+where snapshot_type = 'short'
+union all select 'vacancy_snapshot.detail.captured_at',
+       count(*)::text,
+       min(captured_at)::text,
+       max(captured_at)::text
+from vacancy_snapshot
+where snapshot_type = 'detail'
+union all select 'detail_fetch_attempt.requested_at',
+       count(*)::text,
+       min(requested_at)::text,
+       max(requested_at)::text
+from detail_fetch_attempt
+union all select 'detail_fetch_attempt.finished_at',
+       count(*)::text,
+       min(finished_at)::text,
+       max(finished_at)::text
+from detail_fetch_attempt
+union all select 'raw_api_payload.received_at',
+       count(*)::text,
+       min(received_at)::text,
+       max(received_at)::text
+from raw_api_payload
 order by metric;
 """,
     )
@@ -407,9 +472,28 @@ union all select 'detail_snapshots_since_boundary', count(*)::text
 union all select 'raw_payloads_since_boundary', count(*)::text
   from raw_api_payload where received_at >= {boundary_literal}::timestamptz
 union all select 'raw_detail_payloads_since_boundary', count(*)::text
-  from raw_api_payload
-  where endpoint_type = 'vacancy_detail' and received_at >= {boundary_literal}::timestamptz
+  from raw_api_payload p
+  join api_request_log l on l.id = p.api_request_log_id
+  where p.received_at >= {boundary_literal}::timestamptz
+    and (l.request_type = 'vacancy_detail'
+      or p.endpoint_type in ('vacancy_detail', 'vacancies.detail'))
 order by metric;
+""",
+    )
+
+    print_section("latest crawl runs")
+    psql(
+        repo_root,
+        """
+select id,
+       run_type,
+       status,
+       triggered_by,
+       started_at,
+       finished_at
+from crawl_run
+order by started_at desc
+limit 12;
 """,
     )
 

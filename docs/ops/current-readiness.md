@@ -1,9 +1,10 @@
 # Current Readiness
 
-Состояние проекта на 2026-06-15 после successful VPS search baseline, полного
+Состояние проекта на 2026-06-23 после successful VPS search baseline, полного
 pilot first-detail drain, production research archive bootstrap, supervised
 daily archive driver smoke, supervised backup systemd smokes и успешного
-`3-7`-дневного unattended storage/archive soak.
+multi-week unattended storage/archive soak, включая первый guarded weekly S3
+backup cleanup timer run.
 
 Детальный статус и порядок работ:
 [project-status-roadmap.md](/home/yurizinyakov/projects/hh_collector/docs/ops/project-status-roadmap.md).
@@ -26,7 +27,9 @@ daily archive driver smoke, supervised backup systemd smokes и успешног
   audit и read-only retention preview;
 - local archive analysis smoke: S3 sample прочитан в DataFrame-ready CSV,
   построен PNG и подтверждено наличие полного vacancy detail text;
-- полный supervised `daily-research-archive` pipeline без destructive apply.
+- полный supervised `daily-research-archive` pipeline без destructive apply;
+- guarded weekly S3 backup cleanup timer на VPS: destructive apply выполняется
+  только после successful weekly restore drill marker и уже прошёл 2026-06-21.
 
 ## Готовность По Контурам
 
@@ -35,7 +38,7 @@ daily archive driver smoke, supervised backup systemd smokes и успешног
 | Search planner/runtime | VPS validated |
 | Detail backlog/worker | supervised pilot catch-up validated |
 | PostgreSQL backup/restore | manual end-to-end and daily/weekly systemd drivers VPS validated; unattended daily backup and weekly restore drill soak succeeded |
-| S3 backup cleanup | manual apply validated; guarded weekly timer path code-ready |
+| S3 backup cleanup | guarded weekly timer VPS validated after successful restore drill |
 | Research archive | production bootstrap validated; daily timer enabled; multi-day unattended archive soak succeeded |
 | Archive housekeeping preview | production read-only validated |
 | Destructive housekeeping | guarded in code, real production apply not yet proven |
@@ -49,9 +52,9 @@ daily archive driver smoke, supervised backup systemd smokes и успешног
   verify `1557/1557` manifests и `29` checkpoints, housekeeping preview
   `0` actions. Следующий checked daily run 2026-06-08 тоже завершился успешно:
   local verify `1557/1557`, offsite verify `1557/1557`, `32` checkpoints,
-  coverage `complete`, housekeeping preview `0` actions. На 2026-06-15
+  coverage `complete`, housekeeping preview `0` actions. На 2026-06-23
   daily archive timer продолжает идти штатно: latest run подтвердил
-  `1557/1557` manifests, `39` verified checkpoints, coverage `complete` и
+  `1557/1557` manifests, `47` verified checkpoints, coverage `complete` и
   housekeeping preview `0` actions.
 - Generic host-side timer failure notifier прошёл VPS smoke: direct notifier и
   systemd template завершились за `22-44 ms` с local queue acceptance. Direct
@@ -71,13 +74,17 @@ daily archive driver smoke, supervised backup systemd smokes и успешног
   verified generations, `1393` remote objects и `28` local sidecars; контрольный
   dry-run вернул `delete_candidate_count=0`. Остался один fail-safe skipped
   unverified backup generation `20260517`.
-- Guarded weekly S3 backup cleanup path добавлен: systemd unit/timer запускается
-  после weekly restore drill window, по умолчанию dry-run, destructive mode
-  требует `HHRU_BACKUP_OFFSITE_CLEANUP_APPLY=true` и свежий restore-drill
-  `success.env` marker.
+- Guarded weekly S3 backup cleanup path теперь доказан на VPS: 2026-06-21
+  cleanup стартовал после successful weekly restore drill marker, удалил `5`
+  verified generations, `995` remote objects и `20` local sidecars, сохранив
+  latest/weekly/milestone generations. Старый unverified backup generation
+  `20260517` остаётся fail-safe skipped.
 - Production cadence для search/detail не зафиксирована. Текущий
   `scheduler-loop` является interval-based trigger loop, а не готовой weekly
   calendar policy.
+- Confirmed gap on 2026-06-23: collection is not merely "not production
+  labelled"; it is not running. `scheduler`/`detail-worker` containers are not
+  up, and the only `crawl_run` is the May `vps-search-baseline`.
 - Storage/archive routine прошла `3-7`-дневный unattended soak, но совместная
   работа production search/detail с archive/backup ещё не проверена.
 - Текущий VPS corpus остаётся pilot/test evidence. Решение по boundary
@@ -85,10 +92,16 @@ daily archive driver smoke, supervised backup systemd smokes и успешног
   [data-corpus-boundary.md](/home/yurizinyakov/projects/hh_collector/docs/ops/data-corpus-boundary.md):
   перед sustained production collection нужен `corpus_id` / `collection_epoch`
   или clean production start.
+- Storage snapshot на 2026-06-23 зафиксирован в
+  [current-state-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-06-23.md):
+  DB `27 GB`, `.state=63G`, local backups `50G`, expected uploaded backup
+  footprint `100.70 GiB`, current live corpus `865868` vacancies, post
+  `2026-06-01` production epoch `0` rows because collection has not run since
+  the May pilot flow.
 
 ## Следующий Рубеж
 
-1. Deploy/prove guarded weekly `cleanup-backup-offsite` timer on VPS.
+1. Запустить supervised fresh production search collection and verify new rows.
 2. Зафиксировать календарную production cadence search/detail.
 3. Проверить совместную работу production search/detail с archive/backup.
 4. Перейти к месячному storage/archive window с alert-driven monitoring и
@@ -106,6 +119,7 @@ foundation. До режима "редко мониторю несколько м
 - [research-archive-v1.md](/home/yurizinyakov/projects/hh_collector/docs/ops/research-archive-v1.md)
 - [storage-contours.md](/home/yurizinyakov/projects/hh_collector/docs/ops/storage-contours.md)
 - [data-corpus-boundary.md](/home/yurizinyakov/projects/hh_collector/docs/ops/data-corpus-boundary.md)
+- [current-state-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-06-23.md)
 - [archive-analysis-smoke.md](/home/yurizinyakov/projects/hh_collector/docs/ops/archive-analysis-smoke.md)
 - [backup-restore-drill.md](/home/yurizinyakov/projects/hh_collector/docs/ops/backup-restore-drill.md)
 - [unattended-operations.md](/home/yurizinyakov/projects/hh_collector/docs/ops/unattended-operations.md)

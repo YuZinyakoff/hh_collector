@@ -10,6 +10,25 @@ The existing VPS database and canonical research archive are treated as
 restore, housekeeping-preview and unattended storage mechanics. They are not the
 canonical analytical production corpus.
 
+Measured state on `2026-06-23`:
+
+- live DB has `865868` vacancies;
+- `848056` vacancies have successful detail snapshots;
+- `17812` vacancies ended in terminal detail `404`;
+- research archive has `6885371` verified rows and `1557/1557` verified
+  manifests;
+- with boundary `2026-06-01T00:00:00+00:00`, post-boundary production counts are
+  all `0`: no new vacancies, no search payloads, no detail attempts and no
+  snapshots.
+
+This is timestamp-boundary accounting, not a statement that storage is empty.
+The existing pilot/test corpus remains available in PostgreSQL, local archive
+and S3 archive, and it is the dataset used by archive readability/notebook
+smokes.
+
+The detailed dated snapshot is fixed in
+[current-state-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-06-23.md).
+
 Do not delete this corpus now:
 
 - it is the current evidence base for operational hardening;
@@ -39,3 +58,7 @@ not part of the current storage timer rollout.
 Any near-term notebooks or DataFrame smoke tests may use the current archive only
 to prove readability and tooling. Their outputs must be labelled as pilot/test
 evidence and must not be presented as production labour-market analysis.
+
+As of `2026-06-23`, "without May test collection" means the post-boundary
+production epoch has no rows yet unless a query intentionally opts into the
+pilot/test corpus.

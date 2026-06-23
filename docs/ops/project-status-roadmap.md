@@ -18,6 +18,8 @@
 7. `first-detail-backlog.md` - detail backlog и worker semantics.
 8. `observability.md` - alerts, metrics, Prometheus/Grafana contour.
 9. `current-state-2026-06-23.md` - датированный storage/corpus snapshot.
+10. `collection-recovery-2026-06-23.md` - текущий runbook восстановления
+    search/detail collection после обнаруженного простоя.
 
 Остальные документы являются detail plans или historical context. Если они конфликтуют
 с этим roadmap, приоритет у этого файла.
@@ -219,6 +221,9 @@ clean production start. На snapshot `2026-06-23` post-boundary production corp
   collection cadence ещё не включалась как часть общего режима.
 - Fresh production collection itself: no scheduler/detail-worker runtime was
   active on 2026-06-23, and no crawl runs exist after the May baseline.
+  Supervised recovery run `bcf9ef54-27b0-4a90-bd33-728775053ea4` did start
+  writing fresh rows on 2026-06-23, but finished as `failed`; diagnose that run
+  before starting detail catch-up or background scheduler.
 - Generic automatic alert/failure signal для host-side storage services
   прошёл non-blocking local acceptance smoke на VPS. Direct Telegram egress с
   VPS недоступен; внешний proxy/route остаётся отдельным optional transport.
@@ -379,9 +384,16 @@ cadence не закрыта и не проверена вместе с heavy sto
    - не делать text features, AI exposure, panels, econometrics или Parquet в
      первом implementation slice.
 6. Немедленно восстановить collection:
-   - запустить supervised fresh search-only `run-once-v2` с production marker;
-   - проверить появление нового `crawl_run` и post-boundary timestamps;
-   - только после этого решать scheduler cadence и detail catch-up mode.
+   - диагностировать failed supervised search run
+     `bcf9ef54-27b0-4a90-bd33-728775053ea4`;
+   - если он resumable, продолжить его через `resume-run-v2` с
+     `--detail-limit 0`;
+   - если он не resumable, сначала устранить blocker, затем запускать новый
+     supervised search-only `run-once-v2` с production marker;
+   - проверить появление свежих post-boundary timestamps и coverage report;
+   - только после этого запускать detail smoke/catch-up;
+   - полный порядок зафиксирован в
+     [collection-recovery-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/collection-recovery-2026-06-23.md).
 7. Проверить search interference:
    - controlled search with detail-worker off/on;
    - подтвердить, что detail catch-up не деградирует search coverage и runtime.

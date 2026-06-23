@@ -107,6 +107,9 @@ backup cleanup timer run.
 4. Перейти к месячному storage/archive window с alert-driven monitoring и
    недельным operator checklist.
 
+Практический порядок восстановления collection зафиксирован в
+[collection-recovery-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/collection-recovery-2026-06-23.md).
+
 ## Практический Вывод
 
 Storage architecture и archive safety contour завершены как production-capable
@@ -120,6 +123,7 @@ foundation. До режима "редко мониторю несколько м
 - [storage-contours.md](/home/yurizinyakov/projects/hh_collector/docs/ops/storage-contours.md)
 - [data-corpus-boundary.md](/home/yurizinyakov/projects/hh_collector/docs/ops/data-corpus-boundary.md)
 - [current-state-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-06-23.md)
+- [collection-recovery-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/collection-recovery-2026-06-23.md)
 - [archive-analysis-smoke.md](/home/yurizinyakov/projects/hh_collector/docs/ops/archive-analysis-smoke.md)
 - [backup-restore-drill.md](/home/yurizinyakov/projects/hh_collector/docs/ops/backup-restore-drill.md)
 - [unattended-operations.md](/home/yurizinyakov/projects/hh_collector/docs/ops/unattended-operations.md)

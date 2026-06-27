@@ -78,8 +78,9 @@ Current status:
   apply smoke is intentionally deferred until a real safe candidate exists.
 - Fail-closed daily backup, weekly offsite restore drill and weekly S3 cleanup
   drivers plus systemd timers are implemented and VPS validated.
-- Daily backup local retention defaults to `2` days for the current VPS because
-  one dump is approximately `13 GB`. Guarded weekly S3 cleanup proved apply
+- Daily backup local retention defaults to `1` day for the current VPS. The
+  local dump is a short technical restore artifact, not long-term research
+  storage. Guarded weekly S3 cleanup proved apply
   semantics on 2026-06-21 after a successful restore-drill marker:
   `deleted_generation_count=5`, `remote_deleted_object_count=995`.
 
@@ -274,8 +275,8 @@ Recommended automation:
 - during active production periods, run periodic backup/offsite, e.g. daily;
 - during quiet steady mode, weekly may be enough;
 - keep bounded generations, not all dumps forever:
-  - last `3` verified backups;
-  - last `4` weekly backups;
+  - last `2` verified backups;
+  - last `0` weekly backups by default;
   - explicitly marked milestone backups;
 - do not delete an old remote backup unless newer backup upload and remote verify
   succeeded, and periodic offsite restore drill remains green.
@@ -284,8 +285,8 @@ Implemented tooling item: `cleanup-backup-offsite` deletes S3 backup generations
 under the `backups/` prefix only after a dry-run plan and explicit `--apply`.
 Deletion order is remote `*.parts/`, remote manifest, then local operational
 sidecars. The local `.dump` remains under the separate local retention policy.
-VPS dry-run is proven. Destructive apply smoke remains open until a real safe
-candidate exists; do not manufacture deletion candidates in the production
+Destructive apply is enabled only through the host env file after a successful
+restore-drill proof. Do not manufacture deletion candidates in the production
 bucket merely to exercise the command.
 
 ### Research archive policy
@@ -311,6 +312,32 @@ Recommended automation:
 - treat bundles as immutable by convention;
 - do not age-delete normal research archive data. Delete only explicitly bad,
   superseded or test bundles after operator review.
+
+### Live DB hot-state policy
+
+The live PostgreSQL database is operational hot state. It keeps enough current
+state and recent history to run search/detail, deduplicate observations and
+repair failures. It is not the long-term analytical store.
+
+The S3 research archive is the cold data product. Live DB cleanup is allowed only
+after the archive contour has complete verified coverage for the selected source
+id range.
+
+Policy for current production:
+
+- keep `vacancy` and `vacancy_current_state` as the hot canonical operational
+  state;
+- allow aged `raw_api_payload`, `detail_fetch_attempt` and old run-tree data to
+  leave the live DB only through verified research archive housekeeping;
+- keep `vacancy_snapshot` deletion disabled until snapshot/raw field inventory is
+  reviewed;
+- do not lower `raw_api_payload` TTL or enable snapshot TTL based only on disk
+  pressure;
+- run [payload-inventory.md](/home/yurizinyakov/projects/hh_collector/docs/ops/payload-inventory.md)
+  before changing the raw/snapshot retention policy.
+
+This preserves the project rule "keep raw API payloads" by moving settled raw
+payloads into the verified research archive before deleting hot DB copies.
 
 Pilot/test corpus policy:
 
@@ -344,9 +371,8 @@ For research archive contour:
    housekeeping.
 6. The manual production routine is proven. Use the non-overlapping host-side
    `daily-research-archive` driver and supplied systemd timer; the supervised
-   driver smoke passed end-to-end on 2026-06-04. It automates only export,
-   verification, offsite sync, coverage audit and read-only preview.
-   Destructive apply remains manual. The timer was enabled on 2026-06-04; the
-   first unattended run and several subsequent successful runs remain
-   operational gates.
+   driver smoke passed end-to-end on 2026-06-04. It automates export,
+   verification, offsite sync, coverage audit and housekeeping preview. It may
+   invoke destructive housekeeping only when
+   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`.
 7. Add Parquet export only after the v1 dataset schemas are named and stable.

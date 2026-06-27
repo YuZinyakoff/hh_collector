@@ -12,7 +12,7 @@ ARGS ?=
 	compose-health compose-show-metrics \
 	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite audit-research-archive-coverage preview-research-archive-housekeeping apply-research-archive-housekeeping detail-worker-measurement \
 	vps-first-detail-measurement daily-research-archive daily-backup weekly-backup-restore-drill weekly-backup-offsite-cleanup \
-	storage-state-snapshot inspect-collection-run \
+	storage-state-snapshot payload-inventory inspect-collection-run \
 	soak-test soak-test-no-build
 
 up:
@@ -84,6 +84,9 @@ weekly-backup-offsite-cleanup:
 
 storage-state-snapshot:
 	$(PYTHON) ./scripts/ops/collect_storage_state_snapshot.py $(ARGS)
+
+payload-inventory:
+	$(PYTHON) ./scripts/ops/collect_payload_inventory.py $(ARGS)
 
 inspect-collection-run:
 	bash ./scripts/ops/inspect_collection_run.sh $(ARGS)

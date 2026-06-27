@@ -73,9 +73,9 @@ All four drivers use `.state/locks/heavy-ops.lock` and wait up to six hours.
 This serializes heavy PostgreSQL, disk and S3 work even after a delayed
 `Persistent=true` timer start.
 
-Daily backup local dump retention defaults to two days through
-`HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=2`. This is intentionally lower than the
-old VPS value because one current dump is approximately `13 GB`. Verification
+Daily backup local dump retention defaults to one day through
+`HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1`. This keeps the local dump as a short
+technical restore artifact rather than long-term research storage. Verification
 receipts and manifests remain available for the offsite restore drill.
 
 ## 3. Safety Boundary
@@ -96,11 +96,13 @@ Automated drivers are fail-closed:
 - the systemd cleanup unit requires a fresh `success.env` marker from
   `weekly-backup-restore-drill`, so cleanup does not run after a missing or
   stale restore-drill proof;
-- no driver invokes `apply-research-archive-housekeeping`.
+- the research archive driver invokes destructive
+  `apply-research-archive-housekeeping --apply` only when
+  `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`.
 
 S3 backup retention apply is operationally proven as a manual dry-run-first
 procedure. The automation path is now fail-closed: schedule it after successful
-weekly restore drill, keep latest `3`, keep weekly `4`, and enable destructive
+weekly restore drill, keep latest `2`, keep weekly `0`, and enable destructive
 apply only through `/etc/hhru-platform/backup-offsite-cleanup.env`.
 
 ## 4. Failure Delivery
@@ -199,8 +201,8 @@ Enable new timers only after both jobs pass:
 install -d -m 0755 /etc/hhru-platform
 cat >/etc/hhru-platform/backup-offsite-cleanup.env <<'EOF'
 HHRU_BACKUP_OFFSITE_CLEANUP_APPLY=true
-HHRU_BACKUP_OFFSITE_CLEANUP_KEEP_LATEST=3
-HHRU_BACKUP_OFFSITE_CLEANUP_KEEP_WEEKLY=4
+HHRU_BACKUP_OFFSITE_CLEANUP_KEEP_LATEST=2
+HHRU_BACKUP_OFFSITE_CLEANUP_KEEP_WEEKLY=0
 EOF
 
 systemctl enable --now hhru-daily-backup.timer

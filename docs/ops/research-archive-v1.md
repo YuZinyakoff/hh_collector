@@ -628,7 +628,9 @@ After the manual production routine is proven, use
 - fails if the configured maximum number of export batches is exhausted;
 - then runs full local verify, idempotent S3 sync, full offsite verify, coverage
   audit and read-only housekeeping preview;
-- never invokes `apply-research-archive-housekeeping`.
+- invokes `apply-research-archive-housekeeping --apply` only when
+  `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`; the default path remains
+  preview-only.
 
 Run one supervised driver smoke before enabling the timer:
 

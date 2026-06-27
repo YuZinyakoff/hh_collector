@@ -15,6 +15,7 @@ CHUNK_SIZE="${HHRU_RESEARCH_ARCHIVE_DAILY_CHUNK_SIZE:-100000}"
 BATCH_SIZE="${HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE:-1000}"
 SETTLED_DELAY_HOURS="${HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS:-24}"
 READBACK_LIMIT="${HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT:-2}"
+HOUSEKEEPING_APPLY="${HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY:-false}"
 
 require_positive_integer() {
   local name="$1"
@@ -34,6 +35,23 @@ require_non_negative_integer() {
   fi
 }
 
+normalize_bool() {
+  local name="$1"
+  local value="$2"
+  case "${value,,}" in
+    true|yes|y|1)
+      printf 'yes'
+      ;;
+    false|no|n|0|'')
+      printf 'no'
+      ;;
+    *)
+      printf '%s must be boolean, got: %s\n' "$name" "$value" >&2
+      exit 2
+      ;;
+  esac
+}
+
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_MAX_EXPORT_BATCHES "$MAX_EXPORT_BATCHES"
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_LIMIT_PER_DATASET "$LIMIT_PER_DATASET"
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_CHUNK_SIZE "$CHUNK_SIZE"
@@ -42,6 +60,11 @@ require_positive_integer HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS "$HEAVY_OPS_LOCK_WAIT_
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_LOG_RETENTION_DAYS "$LOG_RETENTION_DAYS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS "$SETTLED_DELAY_HOURS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT "$READBACK_LIMIT"
+HOUSEKEEPING_APPLY_NORMALIZED="$(
+  normalize_bool \
+    HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY \
+    "$HOUSEKEEPING_APPLY"
+)"
 
 cd "$ROOT_DIR"
 mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$HEAVY_OPS_LOCK_FILE")" "$LOG_ROOT"
@@ -149,6 +172,14 @@ run_step housekeeping-preview \
   "${COMPOSE[@]}" preview-research-archive-housekeeping \
   --archive-kind production \
   --triggered-by "${TRIGGER_PREFIX}-housekeeping-preview"
+
+if [[ "$HOUSEKEEPING_APPLY_NORMALIZED" == "yes" ]]; then
+  run_step housekeeping-apply \
+    "${COMPOSE[@]}" apply-research-archive-housekeeping \
+    --archive-kind production \
+    --apply \
+    --triggered-by "${TRIGGER_PREFIX}-housekeeping-apply"
+fi
 
 printf 'operation=daily_research_archive status=succeeded run_id=%s log_dir=%s\n' \
   "$RUN_ID" "$RUN_LOG_DIR"

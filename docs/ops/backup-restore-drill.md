@@ -263,8 +263,8 @@ VPS check 2026-05-26:
 
 Настройки policy:
 
-- `HHRU_BACKUP_OFFSITE_RETENTION_KEEP_LATEST=3`
-- `HHRU_BACKUP_OFFSITE_RETENTION_KEEP_WEEKLY=4`
+- `HHRU_BACKUP_OFFSITE_RETENTION_KEEP_LATEST=2`
+- `HHRU_BACKUP_OFFSITE_RETENTION_KEEP_WEEKLY=0`
 
 После deploy новой версии сначала повторно проверить свежий сохраняемый backup,
 чтобы создать verification receipt:

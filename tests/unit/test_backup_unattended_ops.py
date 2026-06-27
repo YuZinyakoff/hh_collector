@@ -242,8 +242,8 @@ printf 'deleted_generation_count=0\\n'
     calls = calls_file.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 1
     assert "cleanup-backup-offsite" in calls[0]
-    assert "--keep-latest 3" in calls[0]
-    assert "--keep-weekly 4" in calls[0]
+    assert "--keep-latest 2" in calls[0]
+    assert "--keep-weekly 0" in calls[0]
     assert "--apply" not in calls[0]
 
 
@@ -381,7 +381,7 @@ def test_unattended_systemd_units_have_expected_safe_schedules_and_failure_hooks
         REPO_ROOT / "scripts" / "ops" / "run_daily_research_archive.sh"
     ).read_text()
 
-    assert "Environment=HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=2" in daily_service
+    assert "Environment=HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1" in daily_service
     assert "OnCalendar=*-*-* 00:30:00 UTC" in daily_timer
     assert "OnCalendar=Sun *-*-* 06:00:00 UTC" in restore_timer
     assert "OnCalendar=Sun *-*-* 08:30:00 UTC" in cleanup_timer
@@ -401,4 +401,5 @@ def test_unattended_systemd_units_have_expected_safe_schedules_and_failure_hooks
     )
     assert "cleanup-backup-offsite" not in daily_script
     assert "cleanup-backup-offsite" in cleanup_script
-    assert "apply-research-archive-housekeeping" not in archive_script
+    assert "HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY" in archive_script
+    assert "apply-research-archive-housekeeping" in archive_script

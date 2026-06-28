@@ -123,6 +123,7 @@ def test_operational_metadata_constraints_defaults_and_indexes_match_contract() 
     assert _foreign_key_ondelete("vacancy_seen_event", "crawl_partition_id") == "CASCADE"
     assert _foreign_key_ondelete("vacancy_seen_event", "short_payload_ref_id") == "SET NULL"
     assert "idx_vacancy_seen_event_partition_id" in _metadata_index_names()
+    assert "idx_vacancy_seen_event_short_payload_ref_id" in _metadata_index_names()
     assert "DESC" in _index_sql("vacancy_seen_event", "idx_vacancy_seen_event_seen_at")
 
     assert _server_default_sql("vacancy_current_state", "seen_count") == "1"

@@ -251,6 +251,9 @@ CREATE INDEX idx_vacancy_seen_event_partition_id
 CREATE INDEX idx_vacancy_seen_event_seen_at
     ON vacancy_seen_event(seen_at DESC);
 
+CREATE INDEX idx_vacancy_seen_event_short_payload_ref_id
+    ON vacancy_seen_event(short_payload_ref_id);
+
 CREATE TABLE vacancy_current_state (
     vacancy_id UUID PRIMARY KEY REFERENCES vacancy(id) ON DELETE CASCADE,
     first_seen_at TIMESTAMPTZ NOT NULL,

@@ -26,6 +26,7 @@ class VacancySeenEvent(Base):
         Index("idx_vacancy_seen_event_run_id", "crawl_run_id"),
         Index("idx_vacancy_seen_event_partition_id", "crawl_partition_id"),
         Index("idx_vacancy_seen_event_seen_at", desc("seen_at")),
+        Index("idx_vacancy_seen_event_short_payload_ref_id", "short_payload_ref_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

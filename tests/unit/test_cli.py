@@ -31,6 +31,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "sync-backup-offsite" in captured.out
     assert "verify-backup-offsite" in captured.out
     assert "cleanup-backup-offsite" in captured.out
+    assert "run-backup-offsite-integrity-drill" in captured.out
     assert "run-backup-offsite-restore-drill" in captured.out
     assert "health-check" in captured.out
     assert "run-housekeeping" in captured.out

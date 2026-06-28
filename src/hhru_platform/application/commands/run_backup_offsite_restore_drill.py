@@ -7,14 +7,17 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from hhru_platform.application.commands.run_restore_drill import (
     RestoreDrillMetricsRecorder,
     RunRestoreDrillCommand,
     run_restore_drill,
 )
-from hhru_platform.infrastructure.backup.backup_service import BackupService
+from hhru_platform.infrastructure.backup.backup_service import (
+    BackupArchiveSummary,
+    BackupService,
+)
 from hhru_platform.infrastructure.observability.logging import log_event
 from hhru_platform.infrastructure.observability.operations import (
     log_operation_started,
@@ -25,6 +28,7 @@ from hhru_platform.infrastructure.observability.operations import (
 LOGGER = logging.getLogger(__name__)
 
 BACKUP_OFFSITE_RESTORE_DRILL_STATUS_SUCCEEDED = "succeeded"
+BACKUP_OFFSITE_INTEGRITY_DRILL_STATUS_SUCCEEDED = "succeeded"
 
 
 @dataclass(slots=True, frozen=True)
@@ -52,6 +56,30 @@ class RunBackupOffsiteRestoreDrillCommand:
         object.__setattr__(self, "backup_file", Path(self.backup_file))
         object.__setattr__(self, "backup_dir", Path(self.backup_dir))
         object.__setattr__(self, "target_db", normalized_target_db)
+        object.__setattr__(self, "triggered_by", normalized_triggered_by)
+        object.__setattr__(self, "offsite_url", normalized_offsite_url)
+        object.__setattr__(self, "offsite_root", normalized_offsite_root)
+
+
+@dataclass(slots=True, frozen=True)
+class RunBackupOffsiteIntegrityDrillCommand:
+    backup_file: Path
+    backup_dir: Path = Path(".state/backups")
+    offsite_url: str = ""
+    offsite_root: str = "/hhru-platform/backups"
+    triggered_by: str = "run-backup-offsite-integrity-drill"
+    recorded_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        normalized_triggered_by = self.triggered_by.strip()
+        normalized_offsite_url = self.offsite_url.strip().rstrip("/")
+        normalized_offsite_root = _normalize_offsite_root(self.offsite_root)
+        if not normalized_triggered_by:
+            raise ValueError("triggered_by must not be empty")
+        if not normalized_offsite_url:
+            raise ValueError("offsite_url must not be empty")
+        object.__setattr__(self, "backup_file", Path(self.backup_file))
+        object.__setattr__(self, "backup_dir", Path(self.backup_dir))
         object.__setattr__(self, "triggered_by", normalized_triggered_by)
         object.__setattr__(self, "offsite_url", normalized_offsite_url)
         object.__setattr__(self, "offsite_root", normalized_offsite_root)
@@ -92,9 +120,84 @@ class RunBackupOffsiteRestoreDrillResult:
         return len(self.downloaded_parts)
 
 
+@dataclass(slots=True, frozen=True)
+class RunBackupOffsiteIntegrityDrillResult:
+    status: str
+    triggered_by: str
+    recorded_at: datetime
+    backup_file: Path
+    manifest_file: Path
+    offsite_url: str
+    offsite_root: str
+    backup_size_bytes: int
+    backup_sha256: str
+    chunk_size_bytes: int
+    downloaded_parts: tuple[BackupOffsiteDownloadedPart, ...]
+    archive_entry_count: int
+
+    @property
+    def part_count(self) -> int:
+        return len(self.downloaded_parts)
+
+    @property
+    def downloaded_part_count(self) -> int:
+        return len(self.downloaded_parts)
+
+
 class BackupOffsiteRemoteDownloader(Protocol):
     def download_file(self, *, local_file: Path, remote_path: str) -> None:
         """Download one off-host backup artifact into a local file."""
+
+
+def run_backup_offsite_integrity_drill(
+    command: RunBackupOffsiteIntegrityDrillCommand,
+    *,
+    remote_downloader: BackupOffsiteRemoteDownloader,
+    backup_service: BackupService,
+) -> RunBackupOffsiteIntegrityDrillResult:
+    started_at = log_operation_started(
+        LOGGER,
+        operation="run_backup_offsite_integrity_drill",
+        backup_file=str(command.backup_file),
+        offsite_url=command.offsite_url,
+        offsite_root=command.offsite_root,
+        triggered_by=command.triggered_by,
+    )
+    try:
+        result = _run_backup_offsite_integrity_drill(
+            command=command,
+            remote_downloader=remote_downloader,
+            backup_service=backup_service,
+        )
+    except Exception as error:
+        record_operation_failed(
+            LOGGER,
+            operation="run_backup_offsite_integrity_drill",
+            started_at=started_at,
+            error_type=error.__class__.__name__,
+            error_message=str(error),
+            backup_file=str(command.backup_file),
+            offsite_url=command.offsite_url,
+            offsite_root=command.offsite_root,
+            triggered_by=command.triggered_by,
+        )
+        raise
+
+    record_operation_succeeded(
+        LOGGER,
+        operation="run_backup_offsite_integrity_drill",
+        started_at=started_at,
+        backup_file=str(result.backup_file),
+        offsite_url=result.offsite_url,
+        offsite_root=result.offsite_root,
+        backup_size_bytes=result.backup_size_bytes,
+        chunk_size_bytes=result.chunk_size_bytes,
+        part_count=result.part_count,
+        downloaded_part_count=result.downloaded_part_count,
+        archive_entry_count=result.archive_entry_count,
+        triggered_by=result.triggered_by,
+    )
+    return result
 
 
 def run_backup_offsite_restore_drill(
@@ -164,19 +267,12 @@ def _run_backup_offsite_restore_drill(
 ) -> RunBackupOffsiteRestoreDrillResult:
     backup_root = command.backup_dir.resolve()
     backup_file = command.backup_file.resolve()
+    manifest_payload = _load_and_validate_manifest(
+        backup_root=backup_root,
+        backup_file=backup_file,
+    )
     manifest_file = Path(f"{backup_file}.manifest.json")
-    if not manifest_file.exists():
-        raise FileNotFoundError(f"backup manifest not found: {manifest_file}")
-
-    manifest_payload = json.loads(manifest_file.read_text(encoding="utf-8"))
-    backup_relative_path = backup_file.relative_to(backup_root).as_posix()
     manifest_relative_path = manifest_file.relative_to(backup_root).as_posix()
-    if str(manifest_payload.get("backup_file", "")) != backup_relative_path:
-        raise RuntimeError(
-            "backup manifest does not match selected backup file: "
-            f"manifest_backup_file={manifest_payload.get('backup_file')!r} "
-            f"backup_file={backup_relative_path!r}"
-        )
 
     recorded_at = command.recorded_at or datetime.now(UTC)
     parts = _manifest_parts(manifest_payload)
@@ -193,21 +289,15 @@ def _run_backup_offsite_restore_drill(
             remote_downloader=remote_downloader,
             parts=parts,
             assembled_backup=assembled_backup,
+            operation="run_backup_offsite_restore_drill",
         )
-        assembled_size = assembled_backup.stat().st_size
         expected_size = _payload_int(manifest_payload, "backup_size_bytes")
-        if assembled_size != expected_size:
-            raise RuntimeError(
-                f"assembled backup size mismatch: expected={expected_size} "
-                f"actual={assembled_size}"
-            )
-        assembled_sha256 = _sha256_file(assembled_backup)
         expected_sha256 = str(manifest_payload["backup_sha256"])
-        if assembled_sha256 != expected_sha256:
-            raise RuntimeError(
-                "assembled backup checksum mismatch: "
-                f"expected={expected_sha256} actual={assembled_sha256}"
-            )
+        _verify_assembled_backup(
+            assembled_backup=assembled_backup,
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
 
         restore_result = run_restore_drill(
             RunRestoreDrillCommand(
@@ -241,6 +331,127 @@ def _run_backup_offsite_restore_drill(
     )
 
 
+def _run_backup_offsite_integrity_drill(
+    *,
+    command: RunBackupOffsiteIntegrityDrillCommand,
+    remote_downloader: BackupOffsiteRemoteDownloader,
+    backup_service: BackupService,
+) -> RunBackupOffsiteIntegrityDrillResult:
+    backup_root = command.backup_dir.resolve()
+    backup_file = command.backup_file.resolve()
+    manifest_payload = _load_and_validate_manifest(
+        backup_root=backup_root,
+        backup_file=backup_file,
+    )
+    manifest_file = Path(f"{backup_file}.manifest.json")
+    manifest_relative_path = manifest_file.relative_to(backup_root).as_posix()
+
+    recorded_at = command.recorded_at or datetime.now(UTC)
+    parts = _manifest_parts(manifest_payload)
+    with tempfile.TemporaryDirectory(prefix="hhru-backup-offsite-integrity-") as temp_dir:
+        temp_root = Path(temp_dir)
+        _download_and_verify_remote_manifest(
+            remote_downloader=remote_downloader,
+            local_manifest_file=manifest_file,
+            remote_manifest_relative_path=manifest_relative_path,
+            temp_root=temp_root,
+        )
+        assembled_backup = temp_root / backup_file.name
+        downloaded_parts = _download_and_assemble_parts(
+            remote_downloader=remote_downloader,
+            parts=parts,
+            assembled_backup=assembled_backup,
+            operation="run_backup_offsite_integrity_drill",
+        )
+        expected_size = _payload_int(manifest_payload, "backup_size_bytes")
+        expected_sha256 = str(manifest_payload["backup_sha256"])
+        _verify_assembled_backup(
+            assembled_backup=assembled_backup,
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        )
+        archive_summary = backup_service.inspect_backup_file(assembled_backup)
+
+    return _to_integrity_result(
+        command=command,
+        recorded_at=recorded_at,
+        backup_file=backup_file,
+        manifest_file=manifest_file,
+        manifest_payload=manifest_payload,
+        downloaded_parts=tuple(downloaded_parts),
+        archive_summary=archive_summary,
+    )
+
+
+def _load_and_validate_manifest(
+    *,
+    backup_root: Path,
+    backup_file: Path,
+) -> dict[str, object]:
+    manifest_file = Path(f"{backup_file}.manifest.json")
+    if not manifest_file.exists():
+        raise FileNotFoundError(f"backup manifest not found: {manifest_file}")
+
+    raw_manifest_payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+    if not isinstance(raw_manifest_payload, dict):
+        raise RuntimeError("backup manifest must be an object")
+    manifest_payload = cast(dict[str, object], raw_manifest_payload)
+    backup_relative_path = backup_file.relative_to(backup_root).as_posix()
+    if str(manifest_payload.get("backup_file", "")) != backup_relative_path:
+        raise RuntimeError(
+            "backup manifest does not match selected backup file: "
+            f"manifest_backup_file={manifest_payload.get('backup_file')!r} "
+            f"backup_file={backup_relative_path!r}"
+        )
+    return manifest_payload
+
+
+def _verify_assembled_backup(
+    *,
+    assembled_backup: Path,
+    expected_size: int,
+    expected_sha256: str,
+) -> None:
+    assembled_size = assembled_backup.stat().st_size
+    if assembled_size != expected_size:
+        raise RuntimeError(
+            f"assembled backup size mismatch: expected={expected_size} "
+            f"actual={assembled_size}"
+        )
+    assembled_sha256 = _sha256_file(assembled_backup)
+    if assembled_sha256 != expected_sha256:
+        raise RuntimeError(
+            "assembled backup checksum mismatch: "
+            f"expected={expected_sha256} actual={assembled_sha256}"
+        )
+
+
+def _to_integrity_result(
+    *,
+    command: RunBackupOffsiteIntegrityDrillCommand,
+    recorded_at: datetime,
+    backup_file: Path,
+    manifest_file: Path,
+    manifest_payload: dict[str, object],
+    downloaded_parts: tuple[BackupOffsiteDownloadedPart, ...],
+    archive_summary: BackupArchiveSummary,
+) -> RunBackupOffsiteIntegrityDrillResult:
+    return RunBackupOffsiteIntegrityDrillResult(
+        status=BACKUP_OFFSITE_INTEGRITY_DRILL_STATUS_SUCCEEDED,
+        triggered_by=command.triggered_by,
+        recorded_at=recorded_at,
+        backup_file=backup_file,
+        manifest_file=manifest_file,
+        offsite_url=command.offsite_url,
+        offsite_root=command.offsite_root,
+        backup_size_bytes=_payload_int(manifest_payload, "backup_size_bytes"),
+        backup_sha256=str(manifest_payload["backup_sha256"]),
+        chunk_size_bytes=_payload_int(manifest_payload, "chunk_size_bytes"),
+        downloaded_parts=downloaded_parts,
+        archive_entry_count=archive_summary.archive_entry_count,
+    )
+
+
 def _download_and_verify_remote_manifest(
     *,
     remote_downloader: BackupOffsiteRemoteDownloader,
@@ -264,6 +475,7 @@ def _download_and_assemble_parts(
     remote_downloader: BackupOffsiteRemoteDownloader,
     parts: list[dict[str, object]],
     assembled_backup: Path,
+    operation: str,
 ) -> list[BackupOffsiteDownloadedPart]:
     downloaded_parts: list[BackupOffsiteDownloadedPart] = []
     with assembled_backup.open("wb") as assembled_handle:
@@ -281,8 +493,8 @@ def _download_and_assemble_parts(
             log_event(
                 LOGGER,
                 logging.INFO,
-                "run_backup_offsite_restore_drill.part_download.started",
-                operation="run_backup_offsite_restore_drill",
+                f"{operation}.part_download.started",
+                operation=operation,
                 status="started",
                 part_index=part_index,
                 part_count=len(parts),
@@ -316,8 +528,8 @@ def _download_and_assemble_parts(
             log_event(
                 LOGGER,
                 logging.INFO,
-                "run_backup_offsite_restore_drill.part_download.succeeded",
-                operation="run_backup_offsite_restore_drill",
+                f"{operation}.part_download.succeeded",
+                operation=operation,
                 status="succeeded",
                 part_index=part_index,
                 part_count=len(parts),

@@ -104,7 +104,7 @@ fi
     ]
 
 
-def test_weekly_restore_driver_uses_verified_offsite_backup_and_drops_drill_db(
+def test_weekly_restore_driver_defaults_to_disk_light_integrity_drill(
     tmp_path: Path,
 ) -> None:
     backup_dir = tmp_path / ".state" / "backups"
@@ -143,27 +143,32 @@ printf 'status=succeeded\\n'
 
     assert result.returncode == 0, result.stderr
     assert "operation=weekly_backup_restore_drill status=succeeded" in result.stdout
+    assert "mode=integrity" in result.stdout
     calls = calls_file.read_text(encoding="utf-8").splitlines()
-    assert "run-backup-offsite-restore-drill" in calls[0]
+    assert len(calls) == 1
+    assert "run-backup-offsite-integrity-drill" in calls[0]
     assert ".state/backups/fake.dump" in calls[0]
-    assert calls[1].startswith("compose exec -T postgres ")
-    assert "dropdb" in calls[1]
     success_markers = list(
         (tmp_path / ".state" / "logs" / "backup-restore-drill").glob(
             "*/success.env"
         )
     )
     assert len(success_markers) == 1
-    assert "status=succeeded" in success_markers[0].read_text(encoding="utf-8")
+    success_marker = success_markers[0].read_text(encoding="utf-8")
+    assert "status=succeeded" in success_marker
+    assert "drill_mode=integrity" in success_marker
 
 
-def test_weekly_restore_driver_attempts_cleanup_after_restore_failure(
+def test_weekly_restore_driver_full_mode_restores_and_drops_drill_db(
     tmp_path: Path,
 ) -> None:
     backup_dir = tmp_path / ".state" / "backups"
     backup_dir.mkdir(parents=True)
     backup_file = backup_dir / "fake.dump"
-    Path(f"{backup_file}.manifest.json").write_text("{}", encoding="utf-8")
+    Path(f"{backup_file}.manifest.json").write_text(
+        '{"backup_size_bytes": 1}',
+        encoding="utf-8",
+    )
     Path(f"{backup_file}.offsite.verified.json").write_text("{}", encoding="utf-8")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -174,7 +179,8 @@ def test_weekly_restore_driver_attempts_cleanup_after_restore_failure(
 set -euo pipefail
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
 if [[ "$*" == *" run-backup-offsite-restore-drill "* ]]; then
-  exit 1
+  printf 'status=succeeded\\n'
+  exit 0
 fi
 printf 'status=succeeded\\n'
 """,
@@ -186,6 +192,60 @@ printf 'status=succeeded\\n'
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_DOCKER_CALLS": str(calls_file),
         "HHRU_BACKUP_RESTORE_DRILL_ROOT_DIR": str(tmp_path),
+        "HHRU_BACKUP_RESTORE_DRILL_MODE": "full",
+        "HHRU_BACKUP_RESTORE_DRILL_FULL_REQUIRED_FREE_MULTIPLIER": "1",
+        "HHRU_BACKUP_RESTORE_DRILL_FULL_RESERVE_BYTES": "0",
+    }
+
+    result = subprocess.run(
+        ["bash", str(RESTORE_SCRIPT)],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "disk_preflight_status=passed" in result.stdout
+    assert "mode=full" in result.stdout
+    calls = calls_file.read_text(encoding="utf-8").splitlines()
+    assert "run-backup-offsite-restore-drill" in calls[0]
+    assert calls[1].startswith("compose exec -T postgres ")
+    assert "dropdb" in calls[1]
+
+
+def test_weekly_restore_driver_full_mode_fails_before_restore_when_disk_is_too_small(
+    tmp_path: Path,
+) -> None:
+    backup_dir = tmp_path / ".state" / "backups"
+    backup_dir.mkdir(parents=True)
+    backup_file = backup_dir / "fake.dump"
+    Path(f"{backup_file}.manifest.json").write_text(
+        '{"backup_size_bytes": 999999999999999999}',
+        encoding="utf-8",
+    )
+    Path(f"{backup_file}.offsite.verified.json").write_text("{}", encoding="utf-8")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls_file = tmp_path / "docker-calls.log"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
+printf 'status=succeeded\\n'
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_CALLS": str(calls_file),
+        "HHRU_BACKUP_RESTORE_DRILL_ROOT_DIR": str(tmp_path),
+        "HHRU_BACKUP_RESTORE_DRILL_MODE": "full",
+        "HHRU_BACKUP_RESTORE_DRILL_FULL_REQUIRED_FREE_MULTIPLIER": "1",
+        "HHRU_BACKUP_RESTORE_DRILL_FULL_RESERVE_BYTES": "0",
     }
 
     result = subprocess.run(
@@ -197,10 +257,8 @@ printf 'status=succeeded\\n'
     )
 
     assert result.returncode == 1
-    calls = calls_file.read_text(encoding="utf-8").splitlines()
-    assert "run-backup-offsite-restore-drill" in calls[0]
-    assert calls[1].startswith("compose exec -T postgres ")
-    assert "dropdb" in calls[1]
+    assert "reason=insufficient_disk_space_preflight" in result.stderr
+    assert not calls_file.exists()
 
 
 def test_weekly_backup_offsite_cleanup_driver_dry_runs_by_default(

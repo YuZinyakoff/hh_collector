@@ -342,14 +342,40 @@ make verify-backup-offsite BACKUP_FILE=.state/backups/<file>.dump
 - `verified_object_count = part_count + 1`
 - `backup_sha256` совпадает с local `verify-backup-file`
 
-Текущий verify проверяет remote object sizes. Полная readback-проверка делается через
-offsite restore drill: скачать remote manifest и parts, склеить dump, посчитать
-`backup_sha256`, затем восстановить в отдельную DB.
+Текущий verify проверяет remote object sizes. Disk-light readback-проверка делается
+через offsite integrity drill: скачать remote manifest и parts, склеить dump,
+посчитать `backup_sha256`, затем выполнить `pg_restore --list` без подъёма второй
+полной DB.
 
-## 8. Выполнить offsite restore drill
+## 8. Выполнить offsite integrity / restore drill
 
-Offsite restore drill проверяет, что S3 copy действительно пригодна для восстановления,
-а не только присутствует по размерам:
+Offsite integrity drill проверяет, что S3 copy действительно читается как
+PostgreSQL archive, а не только присутствует по размерам:
+
+```bash
+make backup-offsite-integrity-drill
+```
+
+Для конкретного dump-а:
+
+```bash
+make backup-offsite-integrity-drill BACKUP_FILE=.state/backups/<file>.dump
+```
+
+Ожидаемо:
+
+- `completed backup offsite integrity drill`
+- `status=succeeded`
+- `downloaded_part_count = part_count`
+- `archive_entry_count > 0`
+
+Команда не читает локальный `.dump` как источник данных. Она использует соседний
+`.manifest.json` как inventory, скачивает remote manifest и parts из S3, собирает
+temporary dump, проверяет итоговый `backup_sha256` и вызывает `pg_restore --list`.
+
+Полный offsite restore drill делает всё то же самое, но дополнительно
+восстанавливает dump в отдельную target DB. Это тяжёлая проверка, которая требует
+место под assembled dump и вторую копию БД:
 
 ```bash
 make backup-offsite-restore-drill
@@ -369,11 +395,6 @@ make backup-offsite-restore-drill BACKUP_FILE=.state/backups/<file>.dump
 - `schema_verified=yes`
 - `verified_tables=5/5`
 
-Команда не читает локальный `.dump` как источник данных. Она использует соседний
-`.manifest.json` как inventory, скачивает remote manifest и parts из S3, собирает
-temporary dump, проверяет итоговый `backup_sha256` и запускает обычный restore drill
-в отдельную target DB.
-
 Порядок перед risky/long-running работами:
 
 ```bash
@@ -383,7 +404,8 @@ make verify-backup BACKUP_FILE="$BACKUP_FILE"
 make restore-drill BACKUP_FILE="$BACKUP_FILE"
 make backup-offsite
 make verify-backup-offsite BACKUP_FILE="$BACKUP_FILE"
-make backup-offsite-restore-drill BACKUP_FILE="$BACKUP_FILE"
+make backup-offsite-integrity-drill BACKUP_FILE="$BACKUP_FILE"
+make backup-offsite-restore-drill BACKUP_FILE="$BACKUP_FILE"  # только если есть запас диска
 ```
 
 ## 9. Когда использовать low-level restore
@@ -414,23 +436,26 @@ make weekly-backup-offsite-cleanup
 `daily-backup` создаёт dump, повторно локально проверяет именно его,
 синхронизирует свежий dump в S3 и remote-verifies тот же artifact.
 `weekly-backup-restore-drill` выбирает только newest backup с adjacent
-`.dump.offsite.verified.json`, восстанавливает его из S3 в отдельную DB и после
-проверки удаляет drill DB.
+`.dump.offsite.verified.json`. По умолчанию driver запускает disk-light
+`run-backup-offsite-integrity-drill`. Полный restore включается вручную через
+`HHRU_BACKUP_RESTORE_DRILL_MODE=full`; перед ним driver проверяет свободное
+место и fail-closed при недостаточном запасе.
 
 `weekly-backup-offsite-cleanup` выполняет bounded S3 cleanup. По умолчанию это
 dry-run; destructive apply включается только через
 `HHRU_BACKUP_OFFSITE_CLEANUP_APPLY=true`. Systemd unit additionally requires a
-fresh `success.env` marker from weekly restore drill before cleanup can run.
+fresh `success.env` marker from weekly backup drill before cleanup can run.
 
 Все driver-ы сериализуются с research archive через
 `.state/locks/heavy-ops.lock`, пишут отдельные step logs и не запускают
 research archive destructive housekeeping. Daily local dump retention по
-умолчанию ограничен двумя днями из-за текущего размера backup около `13 GB`.
+умолчанию ограничен одним днём; local dump считается коротким техническим
+artifact-ом, а не долгосрочным хранилищем.
 
 Supplied systemd schedule:
 
 - daily backup: `00:30 UTC` + up to `15m` randomized delay;
-- weekly offsite restore drill: Sunday `06:00 UTC` + up to `30m` randomized
+- weekly offsite integrity drill: Sunday `06:00 UTC` + up to `30m` randomized
   delay.
 - weekly offsite backup cleanup: Sunday `08:30 UTC` + up to `30m` randomized
   delay.

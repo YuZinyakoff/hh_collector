@@ -66,8 +66,8 @@ hourly `scheduler-loop` нельзя включать как production policy �
 | --- | --- | --- |
 | `hhru-daily-backup.timer` | daily `00:30 UTC` + up to `15m` jitter | create, local verify, S3 sync and exact remote verify |
 | `hhru-research-archive.timer` | daily `02:30 UTC` + up to `15m` jitter | settled export, local/S3 verify, coverage audit and read-only preview |
-| `hhru-weekly-backup-restore-drill.timer` | Sunday `06:00 UTC` + up to `30m` jitter | restore newest offsite-verified backup into a temporary DB |
-| `hhru-weekly-backup-offsite-cleanup.timer` | Sunday `08:30 UTC` + up to `30m` jitter | bounded cleanup of verified S3 backup generations after a successful weekly restore drill |
+| `hhru-weekly-backup-restore-drill.timer` | Sunday `06:00 UTC` + up to `30m` jitter | integrity-check newest offsite-verified backup; full restore only when explicitly enabled |
+| `hhru-weekly-backup-offsite-cleanup.timer` | Sunday `08:30 UTC` + up to `30m` jitter | bounded cleanup of verified S3 backup generations after a successful weekly backup drill |
 
 All four drivers use `.state/locks/heavy-ops.lock` and wait up to six hours.
 This serializes heavy PostgreSQL, disk and S3 work even after a delayed
@@ -76,7 +76,7 @@ This serializes heavy PostgreSQL, disk and S3 work even after a delayed
 Daily backup local dump retention defaults to one day through
 `HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1`. This keeps the local dump as a short
 technical restore artifact rather than long-term research storage. Verification
-receipts and manifests remain available for the offsite restore drill.
+receipts and manifests remain available for the offsite integrity/restore drill.
 
 ## 3. Safety Boundary
 
@@ -88,21 +88,23 @@ Automated drivers are fail-closed:
 - daily backup remote-verifies the exact dump created by the same run;
 - weekly drill selects only a backup with an adjacent
   `.dump.offsite.verified.json` receipt;
-- the temporary restore-drill database is dropped after success and cleanup is
-  attempted after failure;
+- the default weekly backup drill is disk-light and does not create a temporary
+  restore DB;
+- full weekly restore mode is opt-in through `HHRU_BACKUP_RESTORE_DRILL_MODE=full`
+  and has a disk-space preflight before downloading/restoring data;
 - weekly S3 backup cleanup is dry-run by default and invokes
   `cleanup-backup-offsite --apply` only when
   `HHRU_BACKUP_OFFSITE_CLEANUP_APPLY=true`;
 - the systemd cleanup unit requires a fresh `success.env` marker from
   `weekly-backup-restore-drill`, so cleanup does not run after a missing or
-  stale restore-drill proof;
+  stale backup-drill proof;
 - the research archive driver invokes destructive
   `apply-research-archive-housekeeping --apply` only when
   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`.
 
 S3 backup retention apply is operationally proven as a manual dry-run-first
 procedure. The automation path is now fail-closed: schedule it after successful
-weekly restore drill, keep latest `2`, keep weekly `0`, and enable destructive
+weekly backup drill, keep latest `2`, keep weekly `0`, and enable destructive
 apply only through `/etc/hhru-platform/backup-offsite-cleanup.env`.
 
 ## 4. Failure Delivery

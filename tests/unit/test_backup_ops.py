@@ -8,7 +8,9 @@ from pathlib import Path
 
 from hhru_platform.application.commands.run_backup import RunBackupCommand, run_backup
 from hhru_platform.application.commands.run_backup_offsite_restore_drill import (
+    RunBackupOffsiteIntegrityDrillCommand,
     RunBackupOffsiteRestoreDrillCommand,
+    run_backup_offsite_integrity_drill,
     run_backup_offsite_restore_drill,
 )
 from hhru_platform.application.commands.run_restore_drill import (
@@ -304,6 +306,102 @@ def test_run_backup_offsite_restore_drill_downloads_parts_and_restores(tmp_path)
     assert 'hhru_restore_drill_run_total{status="succeeded"} 1' in (
         metrics.render_prometheus()
     )
+
+
+def test_run_backup_offsite_integrity_drill_downloads_parts_without_restore(
+    tmp_path,
+) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    backup_file = backup_dir / "sample.dump"
+    parts = (b"first-part", b"second-part")
+    backup_payload = b"".join(parts)
+    backup_sha256 = hashlib.sha256(backup_payload).hexdigest()
+    manifest_file = Path(f"{backup_file.resolve()}.manifest.json")
+    manifest_payload = {
+        "manifest_version": 2,
+        "upload_mode": "parts",
+        "backup_file": backup_file.name,
+        "backup_size_bytes": len(backup_payload),
+        "backup_sha256": backup_sha256,
+        "chunk_size_bytes": 10,
+        "parts": [
+            {
+                "index": 1,
+                "file": f"{backup_file.name}.parts/000001.part",
+                "size_bytes": len(parts[0]),
+                "sha256": hashlib.sha256(parts[0]).hexdigest(),
+            },
+            {
+                "index": 2,
+                "file": f"{backup_file.name}.parts/000002.part",
+                "size_bytes": len(parts[1]),
+                "sha256": hashlib.sha256(parts[1]).hexdigest(),
+            },
+        ],
+    }
+    manifest_file.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    class FakeRemoteDownloader:
+        def __init__(self) -> None:
+            self.download_calls: list[str] = []
+            self.payloads_by_remote_path = {
+                manifest_file.name: manifest_file.read_bytes(),
+                f"{backup_file.name}.parts/000001.part": parts[0],
+                f"{backup_file.name}.parts/000002.part": parts[1],
+            }
+
+        def download_file(self, *, local_file: Path, remote_path: str) -> None:
+            self.download_calls.append(remote_path)
+            local_file.write_bytes(self.payloads_by_remote_path[remote_path])
+
+    class StubBackupService:
+        def __init__(self) -> None:
+            self.inspected_backup_payload: bytes | None = None
+
+        def inspect_backup_file(self, backup_file: Path) -> BackupArchiveSummary:
+            self.inspected_backup_payload = backup_file.read_bytes()
+            return BackupArchiveSummary(
+                backup_file=backup_file,
+                size_bytes=backup_file.stat().st_size,
+                sha256=hashlib.sha256(self.inspected_backup_payload).hexdigest(),
+                archive_entry_count=11,
+            )
+
+        def restore_to_target_db(self, **kwargs) -> RestoreDrillSummary:  # pragma: no cover
+            raise AssertionError("integrity drill must not restore a database")
+
+    remote_downloader = FakeRemoteDownloader()
+    backup_service = StubBackupService()
+
+    result = run_backup_offsite_integrity_drill(
+        RunBackupOffsiteIntegrityDrillCommand(
+            backup_file=backup_file,
+            backup_dir=backup_dir,
+            offsite_url="https://s3.example.test/bucket",
+            offsite_root="/hhru-platform/backups",
+            triggered_by="unit-test",
+            recorded_at=datetime(2026, 6, 28, 12, 0, tzinfo=UTC),
+        ),
+        remote_downloader=remote_downloader,
+        backup_service=backup_service,  # type: ignore[arg-type]
+    )
+
+    assert result.status == "succeeded"
+    assert result.backup_file == backup_file.resolve()
+    assert result.manifest_file == manifest_file
+    assert result.backup_size_bytes == len(backup_payload)
+    assert result.backup_sha256 == backup_sha256
+    assert result.chunk_size_bytes == 10
+    assert result.part_count == 2
+    assert result.downloaded_part_count == 2
+    assert result.archive_entry_count == 11
+    assert backup_service.inspected_backup_payload == backup_payload
+    assert remote_downloader.download_calls == [
+        manifest_file.name,
+        f"{backup_file.name}.parts/000001.part",
+        f"{backup_file.name}.parts/000002.part",
+    ]
 
 
 def test_backup_scripts_are_shell_syntax_valid() -> None:

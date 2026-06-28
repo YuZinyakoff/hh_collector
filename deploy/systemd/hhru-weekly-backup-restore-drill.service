@@ -1,5 +1,5 @@
 [Unit]
-Description=HH.ru platform weekly offsite backup restore drill
+Description=HH.ru platform weekly offsite backup integrity/restore drill
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target

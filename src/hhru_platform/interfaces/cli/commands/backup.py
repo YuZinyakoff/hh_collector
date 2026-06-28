@@ -13,8 +13,11 @@ from hhru_platform.application.commands.cleanup_backup_offsite import (
 from hhru_platform.application.commands.run_backup import RunBackupCommand, run_backup
 from hhru_platform.application.commands.run_backup_offsite_restore_drill import (
     BackupOffsiteRemoteDownloader,
+    RunBackupOffsiteIntegrityDrillCommand,
+    RunBackupOffsiteIntegrityDrillResult,
     RunBackupOffsiteRestoreDrillCommand,
     RunBackupOffsiteRestoreDrillResult,
+    run_backup_offsite_integrity_drill,
     run_backup_offsite_restore_drill,
 )
 from hhru_platform.application.commands.run_restore_drill import (
@@ -212,6 +215,35 @@ def register_backup_commands(
     )
     cleanup_offsite_parser.set_defaults(handler=handle_cleanup_backup_offsite)
 
+    offsite_integrity_parser = subparsers.add_parser(
+        "run-backup-offsite-integrity-drill",
+        help=(
+            "Download a split off-host backup from S3, assemble it, verify checksum, "
+            "and inspect the PostgreSQL archive without restoring data."
+        ),
+    )
+    offsite_integrity_parser.add_argument(
+        "--backup-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the local backup dump identity. The dump itself is not read, "
+            "but the adjacent .manifest.json is required. Defaults to latest dump "
+            "in HHRU_BACKUP_DIR."
+        ),
+    )
+    offsite_integrity_parser.add_argument(
+        "--triggered-by",
+        default="run-backup-offsite-integrity-drill",
+        help=(
+            "Actor or subsystem that initiated off-host integrity drill. "
+            "Defaults to run-backup-offsite-integrity-drill."
+        ),
+    )
+    offsite_integrity_parser.set_defaults(
+        handler=handle_run_backup_offsite_integrity_drill
+    )
+
     offsite_restore_parser = subparsers.add_parser(
         "run-backup-offsite-restore-drill",
         help=(
@@ -394,6 +426,28 @@ def handle_cleanup_backup_offsite(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_run_backup_offsite_integrity_drill(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        command, remote_downloader = (
+            _build_backup_offsite_integrity_drill_command_and_downloader(
+                args=args,
+                settings=settings,
+            )
+        )
+        result = run_backup_offsite_integrity_drill(
+            command,
+            remote_downloader=remote_downloader,
+            backup_service=BackupService(settings),
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_backup_offsite_integrity_drill_summary(result)
+    return 0
+
+
 def handle_run_backup_offsite_restore_drill(args: argparse.Namespace) -> int:
     settings = get_settings()
     try:
@@ -541,6 +595,48 @@ def _build_verify_backup_offsite_command_and_store(
         secret_access_key=secret_access_key,
     )
     return command, remote_store
+
+
+def _build_backup_offsite_integrity_drill_command_and_downloader(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+) -> tuple[RunBackupOffsiteIntegrityDrillCommand, BackupOffsiteRemoteDownloader]:
+    backend = settings.backup_offsite_backend.strip().lower()
+    if backend != "s3":
+        raise ValueError("run-backup-offsite-integrity-drill currently supports only S3 backend")
+    backup_file = Path(args.backup_file) if args.backup_file is not None else _latest_backup_file(
+        Path(settings.backup_dir)
+    )
+    endpoint_url = settings.backup_offsite_s3_endpoint_url.strip()
+    bucket = settings.backup_offsite_s3_bucket.strip()
+    access_key_id = settings.backup_offsite_s3_access_key_id or ""
+    secret_access_key = settings.backup_offsite_s3_secret_access_key or ""
+    if not endpoint_url:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_ENDPOINT_URL must not be empty")
+    if not bucket:
+        raise ValueError("HHRU_BACKUP_OFFSITE_S3_BUCKET must not be empty")
+    if not access_key_id or not secret_access_key:
+        raise ValueError(
+            "HHRU_BACKUP_OFFSITE_S3_ACCESS_KEY_ID and "
+            "HHRU_BACKUP_OFFSITE_S3_SECRET_ACCESS_KEY must be configured"
+        )
+    command = RunBackupOffsiteIntegrityDrillCommand(
+        backup_file=backup_file,
+        backup_dir=Path(settings.backup_dir),
+        offsite_url=_s3_offsite_url(endpoint_url=endpoint_url, bucket=bucket),
+        offsite_root=settings.backup_offsite_root,
+        triggered_by=str(args.triggered_by),
+    )
+    remote_downloader = S3BackupOffsiteUploader.with_credentials(
+        endpoint_url=endpoint_url,
+        bucket=bucket,
+        key_prefix=command.offsite_root,
+        region_name=settings.backup_offsite_s3_region,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+    )
+    return command, remote_downloader
 
 
 def _build_backup_offsite_restore_drill_command_and_downloader(
@@ -737,6 +833,25 @@ def _print_cleanup_backup_offsite_summary(result: CleanupBackupOffsiteResult) ->
             f"remote_deleted_object_count={summary.remote_deleted_object_count} "
             f"local_deleted_sidecar_count={summary.local_deleted_sidecar_count}"
         )
+
+
+def _print_backup_offsite_integrity_drill_summary(
+    result: RunBackupOffsiteIntegrityDrillResult,
+) -> None:
+    print("completed backup offsite integrity drill")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"recorded_at={result.recorded_at.isoformat()}")
+    print(f"backup_file={result.backup_file}")
+    print(f"manifest_file={result.manifest_file}")
+    print(f"offsite_url={result.offsite_url}")
+    print(f"offsite_root={result.offsite_root}")
+    print(f"backup_size_bytes={result.backup_size_bytes}")
+    print(f"backup_sha256={result.backup_sha256}")
+    print(f"chunk_size_bytes={result.chunk_size_bytes}")
+    print(f"part_count={result.part_count}")
+    print(f"downloaded_part_count={result.downloaded_part_count}")
+    print(f"archive_entry_count={result.archive_entry_count}")
 
 
 def _print_backup_offsite_restore_drill_summary(

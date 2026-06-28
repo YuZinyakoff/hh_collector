@@ -7,10 +7,10 @@ ARGS ?=
 	show-metrics serve-metrics run-once-v2 trigger-run-now scheduler-loop worker-detail \
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli run-cleanup-backup-offsite \
-	run-backup-offsite-restore-drill run-export-research-archive run-verify-research-archive \
+	run-backup-offsite-integrity-drill run-backup-offsite-restore-drill run-export-research-archive run-verify-research-archive \
 	run-sync-research-archive-offsite run-verify-research-archive-offsite run-audit-research-archive-coverage run-preview-research-archive-housekeeping run-apply-research-archive-housekeeping \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite audit-research-archive-coverage preview-research-archive-housekeeping apply-research-archive-housekeeping detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-integrity-drill backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite audit-research-archive-coverage preview-research-archive-housekeeping apply-research-archive-housekeeping detail-worker-measurement \
 	vps-first-detail-measurement daily-research-archive daily-backup weekly-backup-restore-drill weekly-backup-offsite-cleanup \
 	storage-state-snapshot payload-inventory inspect-collection-run \
 	soak-test soak-test-no-build
@@ -114,6 +114,9 @@ verify-backup-offsite-cli:
 run-cleanup-backup-offsite:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main cleanup-backup-offsite $(ARGS)
 
+run-backup-offsite-integrity-drill:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-backup-offsite-integrity-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
+
 run-backup-offsite-restore-drill:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)
 
@@ -171,6 +174,9 @@ verify-backup-offsite:
 
 cleanup-backup-offsite:
 	$(COMPOSE) --profile ops run --rm app cleanup-backup-offsite $(ARGS)
+
+backup-offsite-integrity-drill:
+	$(COMPOSE) --profile ops run --rm app run-backup-offsite-integrity-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(ARGS)
 
 backup-offsite-restore-drill:
 	$(COMPOSE) --profile ops run --rm app run-backup-offsite-restore-drill $(if $(BACKUP_FILE),--backup-file "$(BACKUP_FILE)",) $(if $(TARGET_DB),--target-db "$(TARGET_DB)",) $(ARGS)

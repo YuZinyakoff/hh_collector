@@ -57,8 +57,12 @@ Current status:
 - A 2.2 GiB dump uploaded to Timeweb cold S3 in about 82 seconds on 2026-05-23.
 - Idempotency is proven: a repeated run skipped the same dump through `.offsite.json`.
 - Remote size verification exists through `verify-backup-offsite`.
-- Offsite restore drill tooling exists through `run-backup-offsite-restore-drill` /
-  `make backup-offsite-restore-drill`.
+- Disk-light offsite integrity drill tooling exists through
+  `run-backup-offsite-integrity-drill` / `make backup-offsite-integrity-drill`.
+  It downloads remote parts, verifies the assembled dump checksum and runs
+  `pg_restore --list` without creating a second full database.
+- Full offsite restore drill tooling remains available through
+  `run-backup-offsite-restore-drill` / `make backup-offsite-restore-drill`.
 - One real VPS S3 drill succeeded on 2026-05-23: remote parts were downloaded,
   assembled dump passed `backup_sha256`, and core tables were restored into
   `hhru_platform_restore_drill`.
@@ -76,7 +80,7 @@ Current status:
   scanned, post-detail-drain milestone retained through `.offsite.keep`, older
   dump skipped fail-safe as unverified, `delete_candidate_count=0`. Destructive
   apply smoke is intentionally deferred until a real safe candidate exists.
-- Fail-closed daily backup, weekly offsite restore drill and weekly S3 cleanup
+- Fail-closed daily backup, weekly offsite backup drill and weekly S3 cleanup
   drivers plus systemd timers are implemented and VPS validated.
 - Daily backup local retention defaults to `1` day for the current VPS. The
   local dump is a short technical restore artifact, not long-term research
@@ -91,8 +95,10 @@ The DB backup contour is considered adequate only after these checks are in plac
 - offsite upload succeeds;
 - repeated offsite upload is idempotent;
 - remote object existence and sizes are verified against the manifest;
-- at least one offsite restore drill downloads the remote parts, assembles the dump,
-  verifies `backup_sha256`, and restores into a separate database;
+- routine weekly offsite integrity drill downloads the remote parts, assembles
+  the dump, verifies `backup_sha256`, and proves `pg_restore --list`;
+- periodic or manual full offsite restore drill restores into a separate
+  database when enough disk is available;
 - backup retention is explicit for both local and S3 copies.
 
 Do not use Parquet for DB backups. PostgreSQL backup is an operational restore
@@ -350,10 +356,11 @@ Pilot/test corpus policy:
 For DB backup contour:
 
 1. Run `verify-backup-offsite` after every `backup-offsite`.
-2. Run `backup-offsite-restore-drill` periodically, especially after changing backup
-   format, S3 settings, Postgres version, or retention policy.
-3. Keep local backup retention enabled through `HHRU_BACKUP_RETENTION_DAYS`.
-4. Run `cleanup-backup-offsite` as dry-run, review retained/candidate generations,
+2. Run `backup-offsite-integrity-drill` weekly before S3 cleanup.
+3. Run `backup-offsite-restore-drill` periodically or manually, especially after
+   changing backup format, S3 settings, Postgres version, or retention policy.
+4. Keep local backup retention enabled through `HHRU_BACKUP_RETENTION_DAYS`.
+5. Run `cleanup-backup-offsite` as dry-run, review retained/candidate generations,
    then apply explicitly when the policy is correct.
 
 For research archive contour:

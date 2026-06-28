@@ -342,8 +342,22 @@ Policy for current production:
 - run [payload-inventory.md](/home/yurizinyakov/projects/hh_collector/docs/ops/payload-inventory.md)
   before changing the raw/snapshot retention policy.
 
+Recommended single-VPS hot-retention settings after complete verified S3 archive
+coverage:
+
+```text
+HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true
+HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS=14
+HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=0
+HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS=30
+HHRU_RESEARCH_ARCHIVE_DAILY_FINISHED_CRAWL_RUN_RETENTION_DAYS=30
+HHRU_RESEARCH_ARCHIVE_DAILY_DELETE_LIMIT_PER_TARGET=50000
+```
+
 This preserves the project rule "keep raw API payloads" by moving settled raw
 payloads into the verified research archive before deleting hot DB copies.
+PostgreSQL may reuse freed pages internally before the host filesystem size
+shrinks; do not run table-rewrite compaction without a separate disk plan.
 
 Pilot/test corpus policy:
 
@@ -381,5 +395,7 @@ For research archive contour:
    driver smoke passed end-to-end on 2026-06-04. It automates export,
    verification, offsite sync, coverage audit and housekeeping preview. It may
    invoke destructive housekeeping only when
-   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`.
+   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`; daily-only retention
+   overrides let the VPS keep raw payloads hot for days or weeks instead of
+   months without changing global app defaults.
 7. Add Parquet export only after the v1 dataset schemas are named and stable.

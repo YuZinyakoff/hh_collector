@@ -16,6 +16,11 @@ BATCH_SIZE="${HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE:-1000}"
 SETTLED_DELAY_HOURS="${HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS:-24}"
 READBACK_LIMIT="${HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT:-2}"
 HOUSEKEEPING_APPLY="${HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY:-false}"
+HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS:-${HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS:-}}"
+HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS:-${HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS:-}}"
+HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS:-${HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS:-}}"
+HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_FINISHED_CRAWL_RUN_RETENTION_DAYS:-${HHRU_HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS:-}}"
+HOUSEKEEPING_DELETE_LIMIT_PER_TARGET="${HHRU_RESEARCH_ARCHIVE_DAILY_DELETE_LIMIT_PER_TARGET:-${HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET:-}}"
 
 require_positive_integer() {
   local name="$1"
@@ -32,6 +37,22 @@ require_non_negative_integer() {
   if [[ ! "$value" =~ ^[0-9]+$ ]]; then
     printf '%s must be a non-negative integer, got: %s\n' "$name" "$value" >&2
     exit 2
+  fi
+}
+
+require_optional_non_negative_integer() {
+  local name="$1"
+  local value="$2"
+  if [[ -n "$value" ]]; then
+    require_non_negative_integer "$name" "$value"
+  fi
+}
+
+require_optional_positive_integer() {
+  local name="$1"
+  local value="$2"
+  if [[ -n "$value" ]]; then
+    require_positive_integer "$name" "$value"
   fi
 }
 
@@ -60,11 +81,51 @@ require_positive_integer HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS "$HEAVY_OPS_LOCK_WAIT_
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_LOG_RETENTION_DAYS "$LOG_RETENTION_DAYS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS "$SETTLED_DELAY_HOURS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT "$READBACK_LIMIT"
+require_optional_non_negative_integer \
+  HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS \
+  "$HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS"
+require_optional_non_negative_integer \
+  HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS \
+  "$HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS"
+require_optional_non_negative_integer \
+  HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS \
+  "$HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS"
+require_optional_non_negative_integer \
+  HHRU_RESEARCH_ARCHIVE_DAILY_FINISHED_CRAWL_RUN_RETENTION_DAYS \
+  "$HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS"
+require_optional_positive_integer \
+  HHRU_RESEARCH_ARCHIVE_DAILY_DELETE_LIMIT_PER_TARGET \
+  "$HOUSEKEEPING_DELETE_LIMIT_PER_TARGET"
 HOUSEKEEPING_APPLY_NORMALIZED="$(
   normalize_bool \
     HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY \
     "$HOUSEKEEPING_APPLY"
 )"
+
+HOUSEKEEPING_RETENTION_ARGS=()
+append_housekeeping_arg() {
+  local flag="$1"
+  local value="$2"
+  if [[ -n "$value" ]]; then
+    HOUSEKEEPING_RETENTION_ARGS+=("$flag" "$value")
+  fi
+}
+
+append_housekeeping_arg \
+  --raw-api-payload-retention-days \
+  "$HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS"
+append_housekeeping_arg \
+  --vacancy-snapshot-retention-days \
+  "$HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS"
+append_housekeeping_arg \
+  --detail-fetch-attempt-retention-days \
+  "$HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS"
+append_housekeeping_arg \
+  --finished-crawl-run-retention-days \
+  "$HOUSEKEEPING_FINISHED_CRAWL_RUN_RETENTION_DAYS"
+append_housekeeping_arg \
+  --delete-limit-per-target \
+  "$HOUSEKEEPING_DELETE_LIMIT_PER_TARGET"
 
 cd "$ROOT_DIR"
 mkdir -p "$(dirname "$LOCK_FILE")" "$(dirname "$HEAVY_OPS_LOCK_FILE")" "$LOG_ROOT"
@@ -171,6 +232,7 @@ run_step coverage-audit \
 run_step housekeeping-preview \
   "${COMPOSE[@]}" preview-research-archive-housekeeping \
   --archive-kind production \
+  "${HOUSEKEEPING_RETENTION_ARGS[@]}" \
   --triggered-by "${TRIGGER_PREFIX}-housekeeping-preview"
 
 if [[ "$HOUSEKEEPING_APPLY_NORMALIZED" == "yes" ]]; then
@@ -178,6 +240,7 @@ if [[ "$HOUSEKEEPING_APPLY_NORMALIZED" == "yes" ]]; then
     "${COMPOSE[@]}" apply-research-archive-housekeeping \
     --archive-kind production \
     --apply \
+    "${HOUSEKEEPING_RETENTION_ARGS[@]}" \
     --triggered-by "${TRIGGER_PREFIX}-housekeeping-apply"
 fi
 

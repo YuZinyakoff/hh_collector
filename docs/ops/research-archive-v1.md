@@ -631,6 +631,9 @@ After the manual production routine is proven, use
 - invokes `apply-research-archive-housekeeping --apply` only when
   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`; the default path remains
   preview-only.
+- can pass daily-only retention overrides to both preview and apply. If these
+  variables are unset, the CLI falls back to the regular
+  `HHRU_HOUSEKEEPING_*` settings inside the app container.
 
 Run one supervised driver smoke before enabling the timer:
 
@@ -650,8 +653,31 @@ HHRU_RESEARCH_ARCHIVE_DAILY_CHUNK_SIZE=100000
 HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE=1000
 HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS=24
 HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT=2
+HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=false
+HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS=
+HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=
+HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS=
+HHRU_RESEARCH_ARCHIVE_DAILY_FINISHED_CRAWL_RUN_RETENTION_DAYS=
+HHRU_RESEARCH_ARCHIVE_DAILY_DELETE_LIMIT_PER_TARGET=
 HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS=21600
 ```
+
+Recommended single-VPS hot-retention profile after production archive coverage is
+complete and verified in S3:
+
+```bash
+HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true
+HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS=14
+HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=0
+HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS=30
+HHRU_RESEARCH_ARCHIVE_DAILY_FINISHED_CRAWL_RUN_RETENTION_DAYS=30
+HHRU_RESEARCH_ARCHIVE_DAILY_DELETE_LIMIT_PER_TARGET=50000
+```
+
+This keeps the live database as hot operational state while preserving old raw
+payloads and request metadata in the verified S3 research archive. Keep
+`vacancy_snapshot` deletion disabled until snapshot write policy and field
+inventory are reviewed.
 
 Install the supplied systemd units on the single production VPS:
 
@@ -696,8 +722,9 @@ Incremental mode intentionally defaults only to append-only datasets:
 - `silver/detail_fetch_attempt`
 
 The existing `archive_kind=tool_validation` smoke manifests do not advance
-`archive_kind=production` watermarks. No live PostgreSQL rows may be deleted by
-this routine yet.
+`archive_kind=production` watermarks. Live PostgreSQL rows may leave hot storage
+only through the production archive housekeeping gate after complete verified S3
+coverage.
 
 ### Interrupted initial export recovery
 

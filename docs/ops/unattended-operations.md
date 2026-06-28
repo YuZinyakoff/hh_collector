@@ -100,7 +100,10 @@ Automated drivers are fail-closed:
   stale backup-drill proof;
 - the research archive driver invokes destructive
   `apply-research-archive-housekeeping --apply` only when
-  `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`.
+  `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`;
+- research archive housekeeping retention can be narrowed only through explicit
+  daily-driver overrides, and still reruns complete verified S3 coverage before
+  deleting exact ids.
 
 S3 backup retention apply is operationally proven as a manual dry-run-first
 procedure. The automation path is now fail-closed: schedule it after successful

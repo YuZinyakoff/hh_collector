@@ -207,8 +207,9 @@ def test_housekeeping_repository_applies_verified_source_id_bounds() -> None:
     detail_attempt_sql = _sql(session.statement)
 
     assert "raw_api_payload.id <= 81" in raw_sql
-    assert "vacancy_snapshot.short_payload_ref_id <= 81" in raw_sql
-    assert "vacancy_snapshot.detail_payload_ref_id <= 81" in raw_sql
+    assert "vacancy_snapshot_1.short_payload_ref_id = raw_api_payload.id" in raw_sql
+    assert "vacancy_snapshot_2.detail_payload_ref_id = raw_api_payload.id" in raw_sql
+    assert "jsonb_extract_path_text" in raw_sql
     assert "vacancy_snapshot.id <= 1240" in snapshot_sql
     assert "NOT (EXISTS (SELECT 1" in snapshot_sql
     assert "vacancy_snapshot_1.vacancy_id = vacancy_snapshot.vacancy_id" in snapshot_sql

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run HH.ru platform detail catch-up controller every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+RandomizedDelaySec=30s
+Persistent=true
+Unit=hhru-detail-catchup-controller.service
+
+[Install]
+WantedBy=timers.target

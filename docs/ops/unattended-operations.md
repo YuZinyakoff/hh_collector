@@ -68,10 +68,13 @@ hourly `scheduler-loop` нельзя включать как production policy �
 | `hhru-research-archive.timer` | daily `02:30 UTC` + up to `15m` jitter | settled export, local/S3 verify, coverage audit and read-only preview |
 | `hhru-weekly-backup-restore-drill.timer` | Sunday `06:00 UTC` + up to `30m` jitter | integrity-check newest offsite-verified backup; full restore only when explicitly enabled |
 | `hhru-weekly-backup-offsite-cleanup.timer` | Sunday `08:30 UTC` + up to `30m` jitter | bounded cleanup of verified S3 backup generations after a successful weekly backup drill |
+| `hhru-detail-catchup-controller.timer` | every `5m` + up to `30s` jitter | start/stop bounded first-detail catch-up workers when search is idle and active backlog exists |
 
-All four drivers use `.state/locks/heavy-ops.lock` and wait up to six hours.
+The storage drivers use `.state/locks/heavy-ops.lock` and wait up to six hours.
 This serializes heavy PostgreSQL, disk and S3 work even after a delayed
-`Persistent=true` timer start.
+`Persistent=true` timer start. The detail catch-up controller does not hold the
+heavy-ops lock: it only starts or stops bounded `detail-worker` containers and
+stops them when an active crawl run appears.
 
 Daily backup local dump retention defaults to one day through
 `HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1`. This keeps the local dump as a short
@@ -103,7 +106,12 @@ Automated drivers are fail-closed:
   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`;
 - research archive housekeeping retention can be narrowed only through explicit
   daily-driver overrides, and still reruns complete verified S3 coverage before
-  deleting exact ids.
+  deleting exact ids;
+- detail catch-up controller defaults to dry-run. It starts/stops
+  `detail-worker` only when `HHRU_DETAIL_CATCHUP_CONTROLLER_APPLY=true`;
+- detail catch-up controller stops `detail-worker` while an active
+  `crawl_run.status='created'` exists, so first-detail catch-up does not
+  intentionally compete with active search/reconcile runs.
 
 S3 backup retention apply is operationally proven as a manual dry-run-first
 procedure. The automation path is now fail-closed: schedule it after successful
@@ -182,6 +190,8 @@ install -m 0644 deploy/systemd/hhru-weekly-backup-restore-drill.service /etc/sys
 install -m 0644 deploy/systemd/hhru-weekly-backup-restore-drill.timer /etc/systemd/system/
 install -m 0644 deploy/systemd/hhru-weekly-backup-offsite-cleanup.service /etc/systemd/system/
 install -m 0644 deploy/systemd/hhru-weekly-backup-offsite-cleanup.timer /etc/systemd/system/
+install -m 0644 deploy/systemd/hhru-detail-catchup-controller.service /etc/systemd/system/
+install -m 0644 deploy/systemd/hhru-detail-catchup-controller.timer /etc/systemd/system/
 
 systemctl daemon-reload
 ```
@@ -219,7 +229,25 @@ systemctl list-timers \
   hhru-research-archive.timer \
   hhru-weekly-backup-restore-drill.timer \
   hhru-weekly-backup-offsite-cleanup.timer \
+  hhru-detail-catchup-controller.timer \
   --all --no-pager
+```
+
+Enable detail catch-up controller separately after production search/detail
+policy has been validated. The controller is fail-closed; without `APPLY=true`
+it only logs `would_start` / `would_stop`:
+
+```bash
+install -d -m 0755 /etc/hhru-platform
+cat >/etc/hhru-platform/detail-catchup-controller.env <<'EOF'
+HHRU_DETAIL_CATCHUP_CONTROLLER_APPLY=true
+HHRU_DETAIL_CATCHUP_WORKER_SCALE=3
+HHRU_DETAIL_CATCHUP_START_READY_THRESHOLD=1
+HHRU_DETAIL_CATCHUP_STOP_BACKLOG_THRESHOLD=0
+EOF
+
+systemctl enable --now hhru-detail-catchup-controller.timer
+systemctl list-timers hhru-detail-catchup-controller.timer --all --no-pager
 ```
 
 ## 6. Operator Checks
@@ -240,6 +268,8 @@ journalctl -u hhru-daily-backup.service --since yesterday --no-pager
 journalctl -u hhru-research-archive.service --since yesterday --no-pager
 journalctl -u hhru-weekly-backup-restore-drill.service --since '8 days ago' --no-pager
 journalctl -u hhru-weekly-backup-offsite-cleanup.service --since '8 days ago' --no-pager
+journalctl -u hhru-detail-catchup-controller.service --since today --no-pager
+docker compose logs --since=30m detail-worker | grep 'detail_worker_tick' | tail -30
 ```
 
 Inspect driver logs and storage:

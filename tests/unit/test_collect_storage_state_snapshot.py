@@ -56,6 +56,13 @@ def test_collect_backup_generations_reads_manifest_and_sidecars(tmp_path: Path) 
     assert generation.has_verified_receipt is True
 
 
+def test_snapshot_tracks_detail_catchup_systemd_units() -> None:
+    module = _load_module()
+
+    assert "hhru-detail-catchup-controller.timer" in module.TIMER_UNITS
+    assert "hhru-detail-catchup-controller.service" in module.SERVICE_UNITS
+
+
 def test_latest_json_event_returns_last_matching_event(tmp_path: Path) -> None:
     module = _load_module()
     log_path = tmp_path / "offsite-verify.log"

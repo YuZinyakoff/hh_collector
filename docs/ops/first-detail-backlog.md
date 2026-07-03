@@ -138,6 +138,40 @@ where first_detail_lease_expires_at is not null
 ls -lh .state/metrics/metrics.json
 ```
 
+## Automated Catch-Up Controller
+
+Production catch-up automation is intentionally separate from the search
+scheduler. The host-side controller checks three facts every tick:
+
+- active `crawl_run.status='created'` exists;
+- active first-detail backlog size;
+- ready first-detail backlog size after lease/cooldown filtering;
+- currently running `detail-worker` containers.
+
+Policy:
+
+- if an active crawl run exists, stop `detail-worker`;
+- if no active crawl run exists and ready first-detail backlog exists, start or
+  rescale `detail-worker` to the configured scale;
+- if active first-detail backlog is zero, stop `detail-worker`.
+
+The controller defaults to dry-run. Enable real start/stop only with:
+
+```bash
+HHRU_DETAIL_CATCHUP_CONTROLLER_APPLY=true
+HHRU_DETAIL_CATCHUP_WORKER_SCALE=3
+```
+
+Install and enable the supplied systemd timer only after the supervised
+`scale=3` catch-up profile has been validated for the current VPS size:
+
+```bash
+install -m 0644 deploy/systemd/hhru-detail-catchup-controller.service /etc/systemd/system/
+install -m 0644 deploy/systemd/hhru-detail-catchup-controller.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now hhru-detail-catchup-controller.timer
+```
+
 ## VPS First Measurement
 
 После successful VPS `search-only` baseline следующий безопасный шаг - bounded one-shot drain на `100` items, без включения long-running `detail-worker` service.

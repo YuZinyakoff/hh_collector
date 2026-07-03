@@ -6,10 +6,10 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
-
+from typing import Any
 
 DEFAULT_BOUNDARY_UTC = "2026-06-01T00:00:00+00:00"
 TIMER_UNITS = (
@@ -17,12 +17,14 @@ TIMER_UNITS = (
     "hhru-research-archive.timer",
     "hhru-weekly-backup-restore-drill.timer",
     "hhru-weekly-backup-offsite-cleanup.timer",
+    "hhru-detail-catchup-controller.timer",
 )
 SERVICE_UNITS = (
     "hhru-daily-backup.service",
     "hhru-research-archive.service",
     "hhru-weekly-backup-restore-drill.service",
     "hhru-weekly-backup-offsite-cleanup.service",
+    "hhru-detail-catchup-controller.service",
 )
 
 

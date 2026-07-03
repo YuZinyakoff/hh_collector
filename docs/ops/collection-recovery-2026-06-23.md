@@ -167,36 +167,31 @@ The production path should be staged:
 
 1. Supervised search run succeeds or its failure mode is understood.
 2. Supervised detail smoke succeeds.
-3. Explicit scheduler env is chosen and written to deployment config.
-4. `scheduler` is enabled and checked after the first expected tick.
-5. `detail-worker` is enabled only after the detail catch-up rate and search
-   interference are acceptable.
+3. Explicit production search controller env is chosen and written to deployment
+   config.
+4. `hhru-production-search-controller.timer` is enabled and checked after the
+   first expected tick.
+5. `detail-worker` is managed by `hhru-detail-catchup-controller.timer`, not
+   left running blindly.
 
-Conservative scheduler shape for the first background proof:
-
-```bash
-cd /opt/hh_collector
-printf '%s\n' 'HHRU_SCHEDULER_INTERVAL_SECONDS=604800' >> .env
-printf '%s\n' 'HHRU_SCHEDULER_SYNC_DICTIONARIES=no' >> .env
-printf '%s\n' 'HHRU_SCHEDULER_DETAIL_LIMIT=0' >> .env
-printf '%s\n' 'HHRU_SCHEDULER_RUN_TYPE=production_weekly_sweep' >> .env
-printf '%s\n' 'HHRU_SCHEDULER_TRIGGERED_BY=production-scheduler' >> .env
-docker compose --profile ops up -d scheduler
-```
-
-Conservative detail-worker shape for the first background proof:
+Conservative production search controller shape for the first background proof:
 
 ```bash
 cd /opt/hh_collector
-printf '%s\n' 'HHRU_DETAIL_WORKER_BATCH_SIZE=100' >> .env
-printf '%s\n' 'HHRU_DETAIL_WORKER_INTERVAL_SECONDS=300' >> .env
-printf '%s\n' 'HHRU_DETAIL_WORKER_INCLUDE_INACTIVE=no' >> .env
-printf '%s\n' 'HHRU_DETAIL_WORKER_TRIGGERED_BY=production-detail-worker' >> .env
-docker compose --profile ops up -d detail-worker
+printf '%s\n' \
+  'HHRU_PRODUCTION_SEARCH_CONTROLLER_APPLY=true' \
+  'HHRU_PRODUCTION_SEARCH_INTERVAL_SECONDS=604800' \
+  'HHRU_PRODUCTION_SEARCH_RUN_TYPE=production_weekly_sweep' \
+  'HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES=no' \
+  'HHRU_PRODUCTION_SEARCH_DETAIL_LIMIT=0' \
+  'HHRU_PRODUCTION_SEARCH_MAX_BACKLOG_BEFORE_SEARCH=0' \
+  > /etc/hhru-platform/production-search-controller.env
+systemctl enable --now hhru-production-search-controller.timer
 ```
 
-Before appending to `.env`, check whether these keys already exist and edit
-existing values instead of duplicating them.
+The timer wakes hourly, but the controller starts real search only when the last
+successful `production_weekly_sweep` is at least 7 days old and readiness gates
+are green.
 
 ## Acceptance Criteria
 
@@ -207,6 +202,7 @@ Collection recovery is not complete until all are true:
   `vacancy_current_state` show fresh timestamps;
 - coverage is successful or the incomplete scope is explicitly accepted;
 - first detail smoke has run on fresh rows;
-- `scheduler` and `detail-worker` background policy is explicit, not default;
+- production search and detail catch-up background policy is explicit, not
+  default;
 - `storage-state-snapshot` reports current collection containers and latest
   crawl runs so this failure mode is visible in future checks.

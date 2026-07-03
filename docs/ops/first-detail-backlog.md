@@ -172,6 +172,11 @@ systemctl daemon-reload
 systemctl enable --now hhru-detail-catchup-controller.timer
 ```
 
+In the production weekly mode this controller is paired with
+`hhru-production-search-controller.timer`: search runs first with
+`detail-limit=0`, then the detail catch-up controller sees the newly created
+first-detail backlog and runs `detail-worker` until the backlog returns to zero.
+
 ## VPS First Measurement
 
 После successful VPS `search-only` baseline следующий безопасный шаг - bounded one-shot drain на `100` items, без включения long-running `detail-worker` service.

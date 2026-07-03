@@ -1,0 +1,11 @@
+[Unit]
+Description=Check whether HH.ru production search is due
+
+[Timer]
+OnCalendar=*-*-* *:17:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+Unit=hhru-production-search-controller.service
+
+[Install]
+WantedBy=timers.target

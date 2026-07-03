@@ -1,0 +1,17 @@
+[Unit]
+Description=HH.ru platform weekly production search controller
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+OnFailure=hhru-ops-failure-notify@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hh_collector
+EnvironmentFile=-/etc/hhru-platform/production-search-controller.env
+ExecStart=/opt/hh_collector/scripts/ops/run_production_search_controller.sh
+SuccessExitStatus=75
+TimeoutStartSec=infinity
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

@@ -18,6 +18,7 @@ TIMER_UNITS = (
     "hhru-weekly-backup-restore-drill.timer",
     "hhru-weekly-backup-offsite-cleanup.timer",
     "hhru-detail-catchup-controller.timer",
+    "hhru-production-search-controller.timer",
 )
 SERVICE_UNITS = (
     "hhru-daily-backup.service",
@@ -25,6 +26,7 @@ SERVICE_UNITS = (
     "hhru-weekly-backup-restore-drill.service",
     "hhru-weekly-backup-offsite-cleanup.service",
     "hhru-detail-catchup-controller.service",
+    "hhru-production-search-controller.service",
 )
 
 

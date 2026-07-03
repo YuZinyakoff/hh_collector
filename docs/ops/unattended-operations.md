@@ -69,12 +69,15 @@ hourly `scheduler-loop` нельзя включать как production policy �
 | `hhru-weekly-backup-restore-drill.timer` | Sunday `06:00 UTC` + up to `30m` jitter | integrity-check newest offsite-verified backup; full restore only when explicitly enabled |
 | `hhru-weekly-backup-offsite-cleanup.timer` | Sunday `08:30 UTC` + up to `30m` jitter | bounded cleanup of verified S3 backup generations after a successful weekly backup drill |
 | `hhru-detail-catchup-controller.timer` | every `5m` + up to `30s` jitter | start/stop bounded first-detail catch-up workers when search is idle and active backlog exists |
+| `hhru-production-search-controller.timer` | hourly at `*:17 UTC` + up to `5m` jitter | start weekly production search only when due and system gates are green |
 
 The storage drivers use `.state/locks/heavy-ops.lock` and wait up to six hours.
 This serializes heavy PostgreSQL, disk and S3 work even after a delayed
 `Persistent=true` timer start. The detail catch-up controller does not hold the
 heavy-ops lock: it only starts or stops bounded `detail-worker` containers and
-stops them when an active crawl run appears.
+stops them when an active crawl run appears. The production search controller is
+also separate from heavy-ops lock; it gates on failed units, disk space, active
+crawl runs and first-detail backlog before starting a long search run.
 
 Daily backup local dump retention defaults to one day through
 `HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1`. This keeps the local dump as a short
@@ -111,7 +114,13 @@ Automated drivers are fail-closed:
   `detail-worker` only when `HHRU_DETAIL_CATCHUP_CONTROLLER_APPLY=true`;
 - detail catch-up controller stops `detail-worker` while an active
   `crawl_run.status='created'` exists, so first-detail catch-up does not
-  intentionally compete with active search/reconcile runs.
+  intentionally compete with active search/reconcile runs;
+- production search controller defaults to dry-run. It starts search only when
+  `HHRU_PRODUCTION_SEARCH_CONTROLLER_APPLY=true`;
+- production search controller uses weekly due logic from the last successful
+  `production_weekly_sweep`, refuses to start while active first-detail backlog
+  remains, and stops `detail-worker` immediately before handing off to
+  `trigger-run-now`.
 
 S3 backup retention apply is operationally proven as a manual dry-run-first
 procedure. The automation path is now fail-closed: schedule it after successful
@@ -192,6 +201,8 @@ install -m 0644 deploy/systemd/hhru-weekly-backup-offsite-cleanup.service /etc/s
 install -m 0644 deploy/systemd/hhru-weekly-backup-offsite-cleanup.timer /etc/systemd/system/
 install -m 0644 deploy/systemd/hhru-detail-catchup-controller.service /etc/systemd/system/
 install -m 0644 deploy/systemd/hhru-detail-catchup-controller.timer /etc/systemd/system/
+install -m 0644 deploy/systemd/hhru-production-search-controller.service /etc/systemd/system/
+install -m 0644 deploy/systemd/hhru-production-search-controller.timer /etc/systemd/system/
 
 systemctl daemon-reload
 ```
@@ -230,6 +241,7 @@ systemctl list-timers \
   hhru-weekly-backup-restore-drill.timer \
   hhru-weekly-backup-offsite-cleanup.timer \
   hhru-detail-catchup-controller.timer \
+  hhru-production-search-controller.timer \
   --all --no-pager
 ```
 
@@ -248,6 +260,28 @@ EOF
 
 systemctl enable --now hhru-detail-catchup-controller.timer
 systemctl list-timers hhru-detail-catchup-controller.timer --all --no-pager
+```
+
+Enable production search controller separately. The timer wakes hourly, but the
+controller starts a search only when the last successful `production_weekly_sweep`
+is at least `7` days old. It is safe to start the service manually after install:
+with a fresh successful search it should print `action=skipped_not_due`.
+
+```bash
+install -d -m 0755 /etc/hhru-platform
+printf '%s\n' \
+  'HHRU_PRODUCTION_SEARCH_CONTROLLER_APPLY=true' \
+  'HHRU_PRODUCTION_SEARCH_INTERVAL_SECONDS=604800' \
+  'HHRU_PRODUCTION_SEARCH_RUN_TYPE=production_weekly_sweep' \
+  'HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES=no' \
+  'HHRU_PRODUCTION_SEARCH_DETAIL_LIMIT=0' \
+  'HHRU_PRODUCTION_SEARCH_MAX_BACKLOG_BEFORE_SEARCH=0' \
+  'HHRU_PRODUCTION_SEARCH_MIN_FREE_BYTES=21474836480' \
+  > /etc/hhru-platform/production-search-controller.env
+
+systemctl start hhru-production-search-controller.service
+systemctl enable --now hhru-production-search-controller.timer
+systemctl list-timers hhru-production-search-controller.timer --all --no-pager
 ```
 
 ## 6. Operator Checks
@@ -269,6 +303,7 @@ journalctl -u hhru-research-archive.service --since yesterday --no-pager
 journalctl -u hhru-weekly-backup-restore-drill.service --since '8 days ago' --no-pager
 journalctl -u hhru-weekly-backup-offsite-cleanup.service --since '8 days ago' --no-pager
 journalctl -u hhru-detail-catchup-controller.service --since today --no-pager
+journalctl -u hhru-production-search-controller.service --since '8 days ago' --no-pager
 docker compose logs --since=30m detail-worker | grep 'detail_worker_tick' | tail -30
 ```
 

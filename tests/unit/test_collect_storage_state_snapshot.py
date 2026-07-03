@@ -61,6 +61,8 @@ def test_snapshot_tracks_detail_catchup_systemd_units() -> None:
 
     assert "hhru-detail-catchup-controller.timer" in module.TIMER_UNITS
     assert "hhru-detail-catchup-controller.service" in module.SERVICE_UNITS
+    assert "hhru-production-search-controller.timer" in module.TIMER_UNITS
+    assert "hhru-production-search-controller.service" in module.SERVICE_UNITS
 
 
 def test_latest_json_event_returns_last_matching_event(tmp_path: Path) -> None:

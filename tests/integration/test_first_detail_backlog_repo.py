@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import OperationalError
 
 from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyDetailFetchAttemptRepository,
     SqlAlchemyVacancyCurrentStateRepository,
+)
+from hhru_platform.infrastructure.db.repositories import (
+    detail_fetch_attempt_repo as detail_attempt_repo_module,
 )
 from hhru_platform.infrastructure.db.session import (
     create_engine_from_settings,
@@ -179,6 +183,117 @@ def test_first_detail_backlog_repository_lists_active_missing_detail_rows() -> N
             )
             connection.execute(
                 text("DELETE FROM vacancy_current_state WHERE vacancy_id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+            connection.execute(
+                text("DELETE FROM vacancy WHERE id = ANY(:vacancy_ids)"),
+                {"vacancy_ids": list(vacancy_ids)},
+            )
+        engine.dispose()
+
+
+def test_latest_attempt_numbers_by_vacancy_ids_chunks_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        detail_attempt_repo_module,
+        "DETAIL_ATTEMPT_LOOKUP_CHUNK_SIZE",
+        2,
+    )
+    engine = create_engine_from_settings()
+    session_factory = create_session_factory(engine)
+    now = datetime(2000, 1, 2, 8, 0, tzinfo=UTC)
+    vacancy_ids = tuple(uuid4() for _ in range(6))
+    vacancy_ids_with_attempts = vacancy_ids[:-1]
+    expected_attempts = {
+        vacancy_id: attempt
+        for vacancy_id, attempt in zip(
+            vacancy_ids_with_attempts,
+            range(11, 16),
+            strict=True,
+        )
+    }
+    lookup_param_counts: list[int] = []
+
+    def capture_lookup_query(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        del conn, cursor, context, executemany
+        if (
+            "FROM detail_fetch_attempt" not in statement
+            or "ORDER BY detail_fetch_attempt.vacancy_id" not in statement
+        ):
+            return
+        if isinstance(parameters, dict):
+            lookup_param_counts.append(
+                sum(1 for key in parameters if str(key).startswith("vacancy_id_"))
+            )
+        else:
+            lookup_param_counts.append(len(parameters or ()))
+
+    event.listen(engine, "before_cursor_execute", capture_lookup_query)
+    try:
+        with engine.begin() as connection:
+            for vacancy_id in vacancy_ids:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO vacancy (
+                            id,
+                            hh_vacancy_id,
+                            name_current,
+                            source_type
+                        )
+                        VALUES (
+                            :vacancy_id,
+                            :hh_vacancy_id,
+                            'Pytest chunked detail attempt lookup vacancy',
+                            'hh_api'
+                        )
+                        """
+                    ),
+                    {
+                        "vacancy_id": vacancy_id,
+                        "hh_vacancy_id": f"pytest-chunked-attempt-{vacancy_id}",
+                    },
+                )
+
+            for vacancy_id, latest_attempt in expected_attempts.items():
+                _insert_attempt(
+                    connection,
+                    vacancy_id=vacancy_id,
+                    attempt=1,
+                    requested_at=now - timedelta(hours=1),
+                )
+                _insert_attempt(
+                    connection,
+                    vacancy_id=vacancy_id,
+                    attempt=latest_attempt,
+                    requested_at=now + timedelta(seconds=latest_attempt),
+                )
+
+        with session_scope(session_factory) as session:
+            attempt_repository = SqlAlchemyDetailFetchAttemptRepository(session)
+
+            assert (
+                attempt_repository.latest_attempt_numbers_by_vacancy_ids(
+                    list(vacancy_ids)
+                )
+                == expected_attempts
+            )
+
+        assert len(lookup_param_counts) == 3
+        assert max(lookup_param_counts) <= 2
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_lookup_query)
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM detail_fetch_attempt WHERE vacancy_id = ANY(:vacancy_ids)"),
                 {"vacancy_ids": list(vacancy_ids)},
             )
             connection.execute(
@@ -454,9 +569,9 @@ def test_first_detail_backlog_claim_uses_lease_to_prevent_duplicate_batches() ->
 
 
 def _insert_current_state(
-    connection,
+    connection: Any,
     *,
-    vacancy_id,
+    vacancy_id: UUID,
     first_seen_at: datetime,
     detail_fetch_status: str,
     last_detail_fetched_at: datetime | None,
@@ -512,9 +627,9 @@ def _insert_current_state(
 
 
 def _insert_attempt(
-    connection,
+    connection: Any,
     *,
-    vacancy_id,
+    vacancy_id: UUID,
     attempt: int,
     requested_at: datetime,
 ) -> None:

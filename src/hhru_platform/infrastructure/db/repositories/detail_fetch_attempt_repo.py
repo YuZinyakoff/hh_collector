@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -10,6 +11,8 @@ from hhru_platform.domain.entities.detail_fetch_attempt import (
     DetailFetchAttempt as DetailFetchAttemptEntity,
 )
 from hhru_platform.infrastructure.db.models.detail_fetch_attempt import DetailFetchAttempt
+
+DETAIL_ATTEMPT_LOOKUP_CHUNK_SIZE = 10_000
 
 
 class SqlAlchemyDetailFetchAttemptRepository:
@@ -80,6 +83,21 @@ class SqlAlchemyDetailFetchAttemptRepository:
         if not vacancy_ids:
             return {}
 
+        latest_attempt_numbers: dict[UUID, int] = {}
+        unique_vacancy_ids = tuple(dict.fromkeys(vacancy_ids))
+        for vacancy_id_chunk in _iter_chunks(
+            unique_vacancy_ids,
+            DETAIL_ATTEMPT_LOOKUP_CHUNK_SIZE,
+        ):
+            latest_attempt_numbers.update(
+                self._latest_attempt_numbers_by_vacancy_id_chunk(vacancy_id_chunk)
+            )
+        return latest_attempt_numbers
+
+    def _latest_attempt_numbers_by_vacancy_id_chunk(
+        self,
+        vacancy_ids: Sequence[UUID],
+    ) -> dict[UUID, int]:
         latest_attempts = (
             select(DetailFetchAttempt.vacancy_id, DetailFetchAttempt.attempt)
             .where(DetailFetchAttempt.vacancy_id.in_(tuple(vacancy_ids)))
@@ -108,3 +126,11 @@ class SqlAlchemyDetailFetchAttemptRepository:
             finished_at=model.finished_at,
             error_message=model.error_message,
         )
+
+
+def _iter_chunks(
+    items: Sequence[UUID],
+    chunk_size: int,
+) -> Iterator[tuple[UUID, ...]]:
+    for offset in range(0, len(items), chunk_size):
+        yield tuple(items[offset : offset + chunk_size])

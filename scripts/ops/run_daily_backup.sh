@@ -10,6 +10,7 @@ HEAVY_OPS_LOCK_WAIT_SECONDS="${HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS:-21600}"
 LOG_ROOT="${HHRU_BACKUP_DAILY_LOG_ROOT:-${ROOT_DIR}/.state/logs/backup-daily}"
 LOG_RETENTION_DAYS="${HHRU_BACKUP_DAILY_LOG_RETENTION_DAYS:-30}"
 LOCAL_BACKUP_RETENTION_DAYS="${HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS:-1}"
+PRUNE_VERIFIED_LOCAL_DUMPS="${HHRU_BACKUP_DAILY_PRUNE_VERIFIED_LOCAL_DUMPS:-true}"
 
 require_non_negative_integer() {
   local name="$1"
@@ -29,9 +30,31 @@ require_positive_integer() {
   fi
 }
 
+normalize_bool() {
+  local name="$1"
+  local value="$2"
+  case "${value,,}" in
+    true|yes|y|1)
+      printf 'yes'
+      ;;
+    false|no|n|0|'')
+      printf 'no'
+      ;;
+    *)
+      printf '%s must be boolean, got: %s\n' "$name" "$value" >&2
+      exit 2
+      ;;
+  esac
+}
+
 require_non_negative_integer HHRU_BACKUP_DAILY_LOG_RETENTION_DAYS "$LOG_RETENTION_DAYS"
 require_positive_integer HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS "$LOCAL_BACKUP_RETENTION_DAYS"
 require_positive_integer HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS "$HEAVY_OPS_LOCK_WAIT_SECONDS"
+PRUNE_VERIFIED_LOCAL_DUMPS_NORMALIZED="$(
+  normalize_bool \
+    HHRU_BACKUP_DAILY_PRUNE_VERIFIED_LOCAL_DUMPS \
+    "$PRUNE_VERIFIED_LOCAL_DUMPS"
+)"
 export HHRU_BACKUP_RETENTION_DAYS="$LOCAL_BACKUP_RETENTION_DAYS"
 
 cd "$ROOT_DIR"
@@ -86,6 +109,51 @@ summary_value() {
   awk -F= -v key="$key" '$1 == key { value = $2 } END { print value }' "$log_file"
 }
 
+prune_verified_local_dumps() {
+  local created_backup_file="$1"
+  local backup_dir
+  local deleted_count=0
+  local deleted_bytes=0
+
+  if [[ "$PRUNE_VERIFIED_LOCAL_DUMPS_NORMALIZED" != "yes" ]]; then
+    printf 'local_prune_enabled=no\n'
+    printf 'local_deleted_dump_count=0\n'
+    printf 'local_deleted_dump_bytes=0\n'
+    return 0
+  fi
+
+  backup_dir="$(dirname "$created_backup_file")"
+  if [[ ! -d "$backup_dir" ]]; then
+    printf 'local_prune_enabled=yes\n'
+    printf 'local_deleted_dump_count=0\n'
+    printf 'local_deleted_dump_bytes=0\n'
+    printf 'local_prune_skip_reason=backup_dir_not_found\n'
+    printf 'backup_dir=%s\n' "$backup_dir"
+    return 0
+  fi
+
+  while IFS= read -r -d '' dump_file; do
+    local manifest_file="${dump_file}.manifest.json"
+    local upload_receipt_file="${dump_file}.offsite.json"
+    local verification_receipt_file="${dump_file}.offsite.verified.json"
+    local dump_size
+
+    if [[ ! -f "$manifest_file" || ! -f "$upload_receipt_file" || ! -f "$verification_receipt_file" ]]; then
+      continue
+    fi
+
+    dump_size="$(stat -c %s "$dump_file")"
+    rm -f -- "$dump_file"
+    deleted_count=$((deleted_count + 1))
+    deleted_bytes=$((deleted_bytes + dump_size))
+    printf 'local_deleted_dump=%s size_bytes=%s\n' "$dump_file" "$dump_size"
+  done < <(find "$backup_dir" -maxdepth 1 -type f -name '*.dump' -print0)
+
+  printf 'local_prune_enabled=yes\n'
+  printf 'local_deleted_dump_count=%s\n' "$deleted_count"
+  printf 'local_deleted_dump_bytes=%s\n' "$deleted_bytes"
+}
+
 printf 'operation=daily_backup status=started run_id=%s log_dir=%s\n' \
   "$RUN_ID" "$RUN_LOG_DIR"
 
@@ -127,6 +195,8 @@ run_step offsite-verify \
   "${COMPOSE[@]}" verify-backup-offsite \
   --backup-file "$backup_file" \
   --triggered-by "${TRIGGER_PREFIX}-offsite-verify"
+
+run_step prune-local-verified-dumps prune_verified_local_dumps "$backup_file"
 
 printf 'operation=daily_backup status=succeeded run_id=%s backup_file=%s log_dir=%s\n' \
   "$RUN_ID" "$backup_file" "$RUN_LOG_DIR"

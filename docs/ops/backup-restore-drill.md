@@ -448,9 +448,11 @@ fresh `success.env` marker from weekly backup drill before cleanup can run.
 
 Все driver-ы сериализуются с research archive через
 `.state/locks/heavy-ops.lock`, пишут отдельные step logs и не запускают
-research archive destructive housekeeping. Daily local dump retention по
-умолчанию ограничен одним днём; local dump считается коротким техническим
-artifact-ом, а не долгосрочным хранилищем.
+research archive destructive housekeeping. После успешного exact offsite verify
+daily backup удаляет локальные `.dump`, если рядом есть `.manifest.json`,
+`.offsite.json` и `.offsite.verified.json`; sidecar-файлы остаются для weekly
+offsite integrity/restore drill. Age-based retention на один день остаётся
+safety net для dump-ов, которые ещё не получили verified offsite receipt.
 
 Supplied systemd schedule:
 

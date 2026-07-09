@@ -79,10 +79,15 @@ stops them when an active crawl run appears. The production search controller is
 also separate from heavy-ops lock; it gates on failed units, disk space, active
 crawl runs and first-detail backlog before starting a long search run.
 
-Daily backup local dump retention defaults to one day through
-`HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1`. This keeps the local dump as a short
-technical restore artifact rather than long-term research storage. Verification
-receipts and manifests remain available for the offsite integrity/restore drill.
+Daily backup prunes local `.dump` files immediately after exact S3 verification
+when adjacent `.manifest.json`, `.offsite.json` and `.offsite.verified.json`
+receipts exist. This keeps the local dump as a short technical artifact rather
+than long-term storage, while preserving the sidecars required for offsite
+integrity/restore drills. Set
+`HHRU_BACKUP_DAILY_PRUNE_VERIFIED_LOCAL_DUMPS=false` only for a deliberate local
+restore/debug window. The older age-based
+`HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1` remains as a safety net for local
+dumps that were not yet offsite-verified.
 
 ## 3. Safety Boundary
 

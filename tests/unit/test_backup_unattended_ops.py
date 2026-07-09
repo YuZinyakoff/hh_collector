@@ -12,7 +12,9 @@ NOTIFY_SCRIPT = REPO_ROOT / "scripts" / "ops" / "notify_systemd_failure.sh"
 SYSTEMD_ROOT = REPO_ROOT / "deploy" / "systemd"
 
 
-def test_daily_backup_driver_runs_verified_non_destructive_pipeline(tmp_path: Path) -> None:
+def test_daily_backup_driver_runs_verified_pipeline_and_prunes_local_dump(
+    tmp_path: Path,
+) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     calls_file = tmp_path / "docker-calls.log"
@@ -22,10 +24,17 @@ def test_daily_backup_driver_runs_verified_non_destructive_pipeline(tmp_path: Pa
 set -euo pipefail
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
 if [[ "$*" == *" run-backup "* ]]; then
+  mkdir -p .state/backups
+  printf 'fake backup payload' > .state/backups/fake.dump
+  printf '{}\\n' > .state/backups/fake.dump.manifest.json
   printf 'status=succeeded\\nbackup_file=.state/backups/fake.dump\\n'
 elif [[ "$*" == *" sync-backup-offsite "* ]]; then
+  printf '{}\\n' > .state/backups/fake.dump.offsite.json
   printf 'status=succeeded\\nscanned_backup_count=1\\n'
   printf 'backup=/app/.state/backups/fake.dump uploaded=yes skipped=no\\n'
+elif [[ "$*" == *" verify-backup-offsite "* ]]; then
+  printf '{}\\n' > .state/backups/fake.dump.offsite.verified.json
+  printf 'status=succeeded\\n'
 else
   printf 'status=succeeded\\n'
 fi
@@ -58,6 +67,20 @@ fi
         "verify-backup-offsite",
     ]
     assert all("cleanup-backup-offsite" not in call for call in calls)
+    backup_file = tmp_path / ".state" / "backups" / "fake.dump"
+    assert not backup_file.exists()
+    assert Path(f"{backup_file}.manifest.json").is_file()
+    assert Path(f"{backup_file}.offsite.json").is_file()
+    assert Path(f"{backup_file}.offsite.verified.json").is_file()
+    prune_logs = list(
+        (tmp_path / ".state" / "logs" / "backup-daily").glob(
+            "*/prune-local-verified-dumps.log"
+        )
+    )
+    assert len(prune_logs) == 1
+    prune_log = prune_logs[0].read_text(encoding="utf-8")
+    assert "local_prune_enabled=yes" in prune_log
+    assert "local_deleted_dump_count=1" in prune_log
 
 
 def test_daily_backup_driver_fails_before_offsite_when_local_verify_fails(

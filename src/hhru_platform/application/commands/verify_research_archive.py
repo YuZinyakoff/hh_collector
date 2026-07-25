@@ -13,6 +13,9 @@ from hhru_platform.infrastructure.research_archive import (
     ResearchArchiveManifestVerifier,
     ResearchArchiveVerificationSummary,
 )
+from hhru_platform.infrastructure.research_archive.local_store import (
+    ResearchArchiveOffsiteVerificationReceiptLoader,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +27,9 @@ class VerifyResearchArchiveCommand:
     archive_dir: Path = Path(".state/archive/research")
     manifest_files: tuple[Path, ...] = ()
     limit: int | None = None
+    allow_offsite_only: bool = False
+    offsite_url: str = ""
+    offsite_root: str = "/hhru-platform/research-archive"
     triggered_by: str = "verify-research-archive"
 
     def __post_init__(self) -> None:
@@ -48,6 +54,8 @@ class VerifyResearchArchiveResult:
     verified_manifest_count: int
     total_row_count: int
     total_data_size_bytes: int
+    local_manifest_count: int
+    offsite_only_manifest_count: int
     summaries: tuple[ResearchArchiveVerificationSummary, ...]
 
 
@@ -55,6 +63,9 @@ def verify_research_archive(
     command: VerifyResearchArchiveCommand,
     *,
     manifest_verifier: ResearchArchiveManifestVerifier,
+    verification_receipt_store: (
+        ResearchArchiveOffsiteVerificationReceiptLoader | None
+    ) = None,
 ) -> VerifyResearchArchiveResult:
     started_at = log_operation_started(
         LOGGER,
@@ -67,6 +78,10 @@ def verify_research_archive(
             archive_dir=command.archive_dir,
             manifest_files=command.manifest_files,
             limit=command.limit,
+            allow_offsite_only=command.allow_offsite_only,
+            offsite_url=command.offsite_url,
+            offsite_root=command.offsite_root,
+            verification_receipt_store=verification_receipt_store,
         )
     except Exception as error:
         record_operation_failed(
@@ -88,6 +103,12 @@ def verify_research_archive(
         verified_manifest_count=sum(1 for summary in summaries if summary.verified),
         total_row_count=sum(summary.row_count for summary in summaries),
         total_data_size_bytes=sum(summary.data_size_bytes for summary in summaries),
+        local_manifest_count=sum(
+            1 for summary in summaries if summary.storage_mode == "local"
+        ),
+        offsite_only_manifest_count=sum(
+            1 for summary in summaries if summary.storage_mode == "offsite_only"
+        ),
         summaries=summaries,
     )
     record_operation_succeeded(
@@ -100,5 +121,7 @@ def verify_research_archive(
         verified_manifest_count=result.verified_manifest_count,
         total_row_count=result.total_row_count,
         total_data_size_bytes=result.total_data_size_bytes,
+        local_manifest_count=result.local_manifest_count,
+        offsite_only_manifest_count=result.offsite_only_manifest_count,
     )
     return result

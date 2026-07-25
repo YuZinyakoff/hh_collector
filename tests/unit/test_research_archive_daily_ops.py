@@ -134,6 +134,74 @@ fi
     assert "--apply" in calls[-1]
 
 
+def test_daily_research_archive_driver_can_catch_up_and_prune_verified_chunks(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls_file = tmp_path / "docker-calls.log"
+    apply_count_file = tmp_path / "apply-count"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
+if [[ "$*" == *" export-research-archive "* ]]; then
+  printf 'total_row_count=0\\n'
+elif [[ "$*" == *" preview-research-archive-housekeeping "* ]]; then
+  printf 'status=ready\\ntotal_action_count=1\\n'
+elif [[ "$*" == *" apply-research-archive-housekeeping "* ]]; then
+  count=0
+  if [[ -f "$FAKE_DOCKER_APPLY_COUNT" ]]; then
+    count="$(cat "$FAKE_DOCKER_APPLY_COUNT")"
+  fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$FAKE_DOCKER_APPLY_COUNT"
+  if (( count == 1 )); then
+    printf 'status=succeeded\\ntotal_deleted_count=50000\\n'
+  else
+    printf 'status=succeeded\\ntotal_deleted_count=0\\n'
+  fi
+else
+  printf 'status=succeeded\\n'
+fi
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_CALLS": str(calls_file),
+        "FAKE_DOCKER_APPLY_COUNT": str(apply_count_file),
+        "HHRU_RESEARCH_ARCHIVE_DAILY_ROOT_DIR": str(tmp_path),
+        "HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY": "true",
+        "HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES": "3",
+        "HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS": "true",
+        "HHRU_RESEARCH_ARCHIVE_DAILY_LOCAL_CHUNK_RETENTION_HOURS": "0",
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT)],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = calls_file.read_text(encoding="utf-8").splitlines()
+    assert sum(" apply-research-archive-housekeeping " in call for call in calls) == 2
+    assert sum(" prune-research-archive-local " in call for call in calls) == 1
+    local_verify_call = next(
+        call for call in calls if " verify-research-archive " in call
+    )
+    assert "--allow-offsite-only" in local_verify_call
+    prune_call = next(call for call in calls if " prune-research-archive-local " in call)
+    assert "--apply" in prune_call
+    assert "--min-age-hours 0" in prune_call
+
+
 def test_daily_research_archive_driver_passes_housekeeping_retention_overrides(
     tmp_path: Path,
 ) -> None:

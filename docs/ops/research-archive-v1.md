@@ -654,6 +654,9 @@ HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE=1000
 HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS=24
 HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT=2
 HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=false
+HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES=1
+HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS=false
+HHRU_RESEARCH_ARCHIVE_DAILY_LOCAL_CHUNK_RETENTION_HOURS=24
 HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS=
 HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=
 HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS=
@@ -668,16 +671,33 @@ complete and verified in S3:
 ```bash
 HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true
 HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS=14
-HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=0
+HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=14
 HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS=30
 HHRU_RESEARCH_ARCHIVE_DAILY_FINISHED_CRAWL_RUN_RETENTION_DAYS=30
 HHRU_RESEARCH_ARCHIVE_DAILY_DELETE_LIMIT_PER_TARGET=50000
+HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES=1
+HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS=true
+HHRU_RESEARCH_ARCHIVE_DAILY_LOCAL_CHUNK_RETENTION_HOURS=24
 ```
 
 This keeps the live database as hot operational state while preserving old raw
 payloads and request metadata in the verified S3 research archive. Keep
-`vacancy_snapshot` deletion disabled until snapshot write policy and field
-inventory are reviewed.
+the newest `vacancy_snapshot` for every vacancy and snapshot type in PostgreSQL;
+only older versions beyond the TTL are eligible, and only inside complete
+verified S3 coverage.
+
+When an existing VPS has a large retention backlog, temporarily raise
+`HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES` instead of creating
+one unbounded delete statement. Every pass retains the existing exact-id limit
+and reruns the fail-closed coverage checks. Return it to `1` after
+`total_deleted_count=0`.
+
+Local archive pruning removes only `.jsonl.gz` data chunks whose manifest,
+upload receipt and offsite verification receipt match exactly. Manifests,
+inventory, checkpoints and receipts remain local, so coverage and future
+incremental cursors remain auditable. `verify-research-archive
+--allow-offsite-only`, sync and offsite verification support this cold-only
+state.
 
 Install the supplied systemd units on the single production VPS:
 

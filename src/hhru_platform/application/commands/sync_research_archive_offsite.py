@@ -234,6 +234,7 @@ class _ResearchArchiveBundle:
     data_size_bytes: int
     data_sha256: str
     manifest_sha256: str
+    data_present: bool
 
 
 def _sync_one_manifest(
@@ -266,6 +267,11 @@ def _sync_one_manifest(
             uploaded=False,
             skipped=True,
             receipt_file=Path(f"{bundle.manifest_file}.offsite.json"),
+        )
+    if not bundle.data_present:
+        raise FileNotFoundError(
+            "research archive data file is offsite-only but no matching upload "
+            f"receipt exists: {bundle.data_file}"
         )
 
     log_event(
@@ -394,27 +400,22 @@ def _load_bundle(
     if not data_file.is_absolute():
         data_file = archive_root / data_file
     data_file = data_file.resolve()
-    if not data_file.is_file():
-        raise FileNotFoundError(
-            f"research archive data file not found for manifest {resolved_manifest_file}: "
-            f"{data_file}"
-        )
-
     expected_size_bytes = int(manifest_payload["data_size_bytes"])
-    actual_size_bytes = data_file.stat().st_size
-    if actual_size_bytes != expected_size_bytes:
-        raise RuntimeError(
-            f"research archive data size mismatch for {data_file}: "
-            f"expected={expected_size_bytes} actual={actual_size_bytes}"
-        )
-
     expected_sha256 = str(manifest_payload["data_sha256"])
-    actual_sha256 = _sha256_file(data_file)
-    if actual_sha256 != expected_sha256:
-        raise RuntimeError(
-            f"research archive data sha256 mismatch for {data_file}: "
-            f"expected={expected_sha256} actual={actual_sha256}"
-        )
+    data_present = data_file.is_file()
+    if data_present:
+        actual_size_bytes = data_file.stat().st_size
+        if actual_size_bytes != expected_size_bytes:
+            raise RuntimeError(
+                f"research archive data size mismatch for {data_file}: "
+                f"expected={expected_size_bytes} actual={actual_size_bytes}"
+            )
+        actual_sha256 = _sha256_file(data_file)
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"research archive data sha256 mismatch for {data_file}: "
+                f"expected={expected_sha256} actual={actual_sha256}"
+            )
 
     manifest_relative_path = resolved_manifest_file.relative_to(archive_root).as_posix()
     manifest_sha256 = _sha256_file(resolved_manifest_file)
@@ -428,9 +429,10 @@ def _load_bundle(
         remote_manifest_relative_path=manifest_relative_path,
         remote_data_path=_join_remote_path(offsite_root, data_relative_path),
         remote_manifest_path=_join_remote_path(offsite_root, manifest_relative_path),
-        data_size_bytes=actual_size_bytes,
-        data_sha256=actual_sha256,
+        data_size_bytes=expected_size_bytes,
+        data_sha256=expected_sha256,
         manifest_sha256=manifest_sha256,
+        data_present=data_present,
     )
 
 

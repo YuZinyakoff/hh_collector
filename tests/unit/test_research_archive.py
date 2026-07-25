@@ -3,7 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,6 +18,10 @@ from hhru_platform.application.commands.export_research_archive import (
     INCREMENTAL_RESEARCH_ARCHIVE_DATASETS,
     ExportResearchArchiveCommand,
     export_research_archive,
+)
+from hhru_platform.application.commands.prune_research_archive_local import (
+    PruneResearchArchiveLocalCommand,
+    prune_research_archive_local,
 )
 from hhru_platform.application.commands.sync_research_archive_offsite import (
     SyncResearchArchiveOffsiteCommand,
@@ -622,6 +626,186 @@ def test_sync_and_verify_research_archive_offsite(
     assert [
         receipt.readback_verified for receipt in verification_receipts if receipt is not None
     ] == [True, False]
+
+
+def test_verified_research_archive_chunk_can_become_offsite_only(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    export_result = export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            chunk_size=10,
+            batch_size=100,
+            archive_kind="production",
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+            created_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        ),
+        research_archive_repository=FakeResearchArchiveRepository(),
+        research_archive_store=LocalResearchArchiveStore(),
+    )
+    remote_store = FakeResearchArchiveRemoteStore()
+    upload_receipt_store = LocalResearchArchiveOffsiteUploadReceiptStore()
+    verification_receipt_store = LocalResearchArchiveOffsiteVerificationReceiptStore()
+    offsite_url = "https://s3.example.test/bucket-id"
+    offsite_root = "/hhru-platform/research-archive"
+    sync_command = SyncResearchArchiveOffsiteCommand(
+        archive_dir=archive_dir,
+        offsite_url=offsite_url,
+        offsite_root=offsite_root,
+        triggered_by="unit-test",
+    )
+
+    sync_research_archive_offsite(
+        sync_command,
+        offsite_uploader=remote_store,
+        receipt_store=upload_receipt_store,
+    )
+    verify_research_archive_offsite(
+        VerifyResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url=offsite_url,
+            offsite_root=offsite_root,
+            readback_limit=1,
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
+    )
+
+    data_file = export_result.summaries[0].data_files[0]
+    data_size_bytes = data_file.stat().st_size
+    prune_result = prune_research_archive_local(
+        PruneResearchArchiveLocalCommand(
+            archive_dir=archive_dir,
+            offsite_url=offsite_url,
+            offsite_root=offsite_root,
+            min_age_hours=0,
+            confirmed_apply=True,
+            evaluated_at=datetime.now(UTC) + timedelta(hours=1),
+            triggered_by="unit-test",
+        ),
+        upload_receipt_store=upload_receipt_store,
+        verification_receipt_store=verification_receipt_store,
+    )
+
+    assert prune_result.candidate_count == 1
+    assert prune_result.pruned_count == 1
+    assert prune_result.freed_bytes == data_size_bytes
+    assert not data_file.exists()
+
+    with pytest.raises(ValueError, match="archive data file not found"):
+        verify_research_archive(
+            VerifyResearchArchiveCommand(archive_dir=archive_dir),
+            manifest_verifier=ResearchArchiveManifestVerifier(),
+        )
+
+    offsite_only_result = verify_research_archive(
+        VerifyResearchArchiveCommand(
+            archive_dir=archive_dir,
+            allow_offsite_only=True,
+            offsite_url=offsite_url,
+            offsite_root=offsite_root,
+        ),
+        manifest_verifier=ResearchArchiveManifestVerifier(),
+        verification_receipt_store=verification_receipt_store,
+    )
+    assert offsite_only_result.local_manifest_count == 0
+    assert offsite_only_result.offsite_only_manifest_count == 1
+    assert offsite_only_result.summaries[0].storage_mode == "offsite_only"
+
+    second_sync = sync_research_archive_offsite(
+        sync_command,
+        offsite_uploader=remote_store,
+        receipt_store=upload_receipt_store,
+    )
+    assert second_sync.skipped_manifest_count == 1
+
+    second_verify = verify_research_archive_offsite(
+        VerifyResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url=offsite_url,
+            offsite_root=offsite_root,
+            readback_limit=1,
+            triggered_by="unit-test",
+        ),
+        remote_store=remote_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
+    )
+    assert second_verify.verified_manifest_count == 1
+    assert second_verify.readback_count == 1
+
+
+def test_local_archive_prune_rejects_mismatched_verification_receipt(
+    tmp_path: Path,
+) -> None:
+    archive_dir = tmp_path / "research"
+    export_result = export_research_archive(
+        ExportResearchArchiveCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            chunk_size=10,
+            batch_size=100,
+            source_database="hhru_platform",
+            source_git_revision="test-revision",
+            source_command="pytest",
+        ),
+        research_archive_repository=FakeResearchArchiveRepository(),
+        research_archive_store=LocalResearchArchiveStore(),
+    )
+    remote_store = FakeResearchArchiveRemoteStore()
+    upload_receipt_store = LocalResearchArchiveOffsiteUploadReceiptStore()
+    verification_receipt_store = LocalResearchArchiveOffsiteVerificationReceiptStore()
+    offsite_url = "https://s3.example.test/bucket-id"
+    offsite_root = "/hhru-platform/research-archive"
+    sync_research_archive_offsite(
+        SyncResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url=offsite_url,
+            offsite_root=offsite_root,
+        ),
+        offsite_uploader=remote_store,
+        receipt_store=upload_receipt_store,
+    )
+    verify_research_archive_offsite(
+        VerifyResearchArchiveOffsiteCommand(
+            archive_dir=archive_dir,
+            offsite_url=offsite_url,
+            offsite_root=offsite_root,
+        ),
+        remote_store=remote_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=LocalResearchArchiveCheckpointVerificationReceiptStore(),
+    )
+    manifest_file = export_result.summaries[0].manifest_files[0]
+    receipt_file = Path(f"{manifest_file}.offsite.verified.json")
+    receipt_file.write_text(
+        receipt_file.read_text(encoding="utf-8").replace(
+            '"manifest_sha256": "',
+            '"manifest_sha256": "tampered-',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="matching offsite verification receipt"):
+        prune_research_archive_local(
+            PruneResearchArchiveLocalCommand(
+                archive_dir=archive_dir,
+                offsite_url=offsite_url,
+                offsite_root=offsite_root,
+                min_age_hours=0,
+                confirmed_apply=True,
+                evaluated_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+            upload_receipt_store=upload_receipt_store,
+            verification_receipt_store=verification_receipt_store,
+        )
+    assert export_result.summaries[0].data_files[0].exists()
 
 
 def test_audit_research_archive_coverage_requires_verified_checkpoint_chain(

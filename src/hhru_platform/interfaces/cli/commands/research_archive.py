@@ -30,6 +30,11 @@ from hhru_platform.application.commands.preview_research_archive_housekeeping im
     PreviewResearchArchiveHousekeepingResult,
     preview_research_archive_housekeeping,
 )
+from hhru_platform.application.commands.prune_research_archive_local import (
+    PruneResearchArchiveLocalCommand,
+    PruneResearchArchiveLocalResult,
+    prune_research_archive_local,
+)
 from hhru_platform.application.commands.sync_research_archive_offsite import (
     SyncResearchArchiveOffsiteCommand,
     SyncResearchArchiveOffsiteResult,
@@ -152,6 +157,14 @@ def register_research_archive_commands(
         help="Optional manifest count limit for a quick smoke check.",
     )
     verify_parser.add_argument(
+        "--allow-offsite-only",
+        action="store_true",
+        help=(
+            "Accept a missing local chunk only when an exact S3 verification "
+            "receipt matches its retained manifest."
+        ),
+    )
+    verify_parser.add_argument(
         "--triggered-by",
         default="verify-research-archive",
         help="Actor or subsystem that initiated verification.",
@@ -220,6 +233,41 @@ def register_research_archive_commands(
         help="Actor or subsystem that initiated offsite verification.",
     )
     verify_offsite_parser.set_defaults(handler=handle_verify_research_archive_offsite)
+
+    prune_local_parser = subparsers.add_parser(
+        "prune-research-archive-local",
+        help=(
+            "Remove local Archive v1 data chunks only after exact S3 upload and "
+            "verification receipts match."
+        ),
+    )
+    prune_local_parser.add_argument(
+        "--archive-dir",
+        type=Path,
+        help="Archive root directory. Defaults to HHRU_RESEARCH_ARCHIVE_DIR.",
+    )
+    prune_local_parser.add_argument(
+        "--min-age-hours",
+        type=_non_negative_int,
+        default=24,
+        help="Keep recently written local chunks for this many hours. Defaults to 24.",
+    )
+    prune_local_parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        help="Optional maximum number of local chunks to prune.",
+    )
+    prune_local_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete matching local data chunks. Without this flag, only preview.",
+    )
+    prune_local_parser.add_argument(
+        "--triggered-by",
+        default="prune-research-archive-local",
+        help="Actor or subsystem that initiated local archive pruning.",
+    )
+    prune_local_parser.set_defaults(handler=handle_prune_research_archive_local)
 
     audit_coverage_parser = subparsers.add_parser(
         "audit-research-archive-coverage",
@@ -403,10 +451,23 @@ def handle_export_research_archive(args: argparse.Namespace) -> int:
 
 def handle_verify_research_archive(args: argparse.Namespace) -> int:
     settings = get_settings()
+    allow_offsite_only = bool(args.allow_offsite_only)
+    if allow_offsite_only:
+        _ensure_research_archive_s3_backend(settings)
     command = VerifyResearchArchiveCommand(
         archive_dir=Path(args.archive_dir or settings.research_archive_dir),
         manifest_files=tuple(args.manifest_file or ()),
         limit=args.limit,
+        allow_offsite_only=allow_offsite_only,
+        offsite_url=(
+            _s3_offsite_url(
+                endpoint_url=_research_archive_s3_endpoint_url(settings),
+                bucket=_research_archive_s3_bucket(settings),
+            )
+            if allow_offsite_only
+            else ""
+        ),
+        offsite_root=settings.research_archive_offsite_root,
         triggered_by=str(args.triggered_by),
     )
 
@@ -414,6 +475,11 @@ def handle_verify_research_archive(args: argparse.Namespace) -> int:
         result = verify_research_archive(
             command,
             manifest_verifier=ResearchArchiveManifestVerifier(),
+            verification_receipt_store=(
+                LocalResearchArchiveOffsiteVerificationReceiptStore()
+                if allow_offsite_only
+                else None
+            ),
         )
     except Exception as error:
         print(str(error), file=sys.stderr)
@@ -461,6 +527,36 @@ def handle_verify_research_archive_offsite(args: argparse.Namespace) -> int:
         return 1
 
     _print_verify_offsite_result(result)
+    return 0
+
+
+def handle_prune_research_archive_local(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        _ensure_research_archive_s3_backend(settings)
+        result = prune_research_archive_local(
+            PruneResearchArchiveLocalCommand(
+                archive_dir=Path(args.archive_dir or settings.research_archive_dir),
+                offsite_url=_s3_offsite_url(
+                    endpoint_url=_research_archive_s3_endpoint_url(settings),
+                    bucket=_research_archive_s3_bucket(settings),
+                ),
+                offsite_root=settings.research_archive_offsite_root,
+                min_age_hours=int(args.min_age_hours),
+                limit=args.limit,
+                confirmed_apply=bool(args.apply),
+                triggered_by=str(args.triggered_by),
+            ),
+            upload_receipt_store=LocalResearchArchiveOffsiteUploadReceiptStore(),
+            verification_receipt_store=(
+                LocalResearchArchiveOffsiteVerificationReceiptStore()
+            ),
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    _print_prune_local_result(result)
     return 0
 
 
@@ -647,6 +743,8 @@ def _print_verify_result(result: VerifyResearchArchiveResult) -> None:
     print(f"verified_manifest_count={result.verified_manifest_count}")
     print(f"total_row_count={result.total_row_count}")
     print(f"total_data_size_bytes={result.total_data_size_bytes}")
+    print(f"local_manifest_count={result.local_manifest_count}")
+    print(f"offsite_only_manifest_count={result.offsite_only_manifest_count}")
     for summary in result.summaries:
         print(
             "manifest_summary "
@@ -654,9 +752,25 @@ def _print_verify_result(result: VerifyResearchArchiveResult) -> None:
             f"layer={summary.layer} "
             f"row_count={summary.row_count} "
             f"data_size_bytes={summary.data_size_bytes} "
+            f"storage_mode={summary.storage_mode} "
             f"verified={'yes' if summary.verified else 'no'} "
             f"manifest_file={summary.manifest_file}"
         )
+
+
+def _print_prune_local_result(result: PruneResearchArchiveLocalResult) -> None:
+    print("completed local research archive pruning")
+    print(f"status={result.status}")
+    print(f"triggered_by={result.triggered_by}")
+    print(f"evaluated_at={result.evaluated_at.isoformat()}")
+    print(f"archive_dir={result.archive_dir}")
+    print(f"apply={'yes' if result.apply else 'no'}")
+    print(f"scanned_manifest_count={result.scanned_manifest_count}")
+    print(f"candidate_count={result.candidate_count}")
+    print(f"pruned_count={result.pruned_count}")
+    print(f"already_offsite_only_count={result.already_offsite_only_count}")
+    print(f"retained_count={result.retained_count}")
+    print(f"freed_bytes={result.freed_bytes}")
 
 
 def _build_research_archive_offsite_command_and_store(

@@ -16,6 +16,9 @@ BATCH_SIZE="${HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE:-1000}"
 SETTLED_DELAY_HOURS="${HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS:-24}"
 READBACK_LIMIT="${HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT:-2}"
 HOUSEKEEPING_APPLY="${HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY:-false}"
+HOUSEKEEPING_MAX_APPLY_BATCHES="${HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES:-1}"
+PRUNE_VERIFIED_LOCAL_CHUNKS="${HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS:-false}"
+LOCAL_CHUNK_RETENTION_HOURS="${HHRU_RESEARCH_ARCHIVE_DAILY_LOCAL_CHUNK_RETENTION_HOURS:-24}"
 HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS:-${HHRU_HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS:-}}"
 HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS:-${HHRU_HOUSEKEEPING_VACANCY_SNAPSHOT_RETENTION_DAYS:-}}"
 HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS="${HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS:-${HHRU_HOUSEKEEPING_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS:-}}"
@@ -77,10 +80,16 @@ require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_MAX_EXPORT_BATCHES "$MAX_EX
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_LIMIT_PER_DATASET "$LIMIT_PER_DATASET"
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_CHUNK_SIZE "$CHUNK_SIZE"
 require_positive_integer HHRU_RESEARCH_ARCHIVE_DAILY_BATCH_SIZE "$BATCH_SIZE"
+require_positive_integer \
+  HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES \
+  "$HOUSEKEEPING_MAX_APPLY_BATCHES"
 require_positive_integer HHRU_HEAVY_OPS_LOCK_WAIT_SECONDS "$HEAVY_OPS_LOCK_WAIT_SECONDS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_LOG_RETENTION_DAYS "$LOG_RETENTION_DAYS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_SETTLED_DELAY_HOURS "$SETTLED_DELAY_HOURS"
 require_non_negative_integer HHRU_RESEARCH_ARCHIVE_DAILY_READBACK_LIMIT "$READBACK_LIMIT"
+require_non_negative_integer \
+  HHRU_RESEARCH_ARCHIVE_DAILY_LOCAL_CHUNK_RETENTION_HOURS \
+  "$LOCAL_CHUNK_RETENTION_HOURS"
 require_optional_non_negative_integer \
   HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS \
   "$HOUSEKEEPING_RAW_API_PAYLOAD_RETENTION_DAYS"
@@ -100,6 +109,11 @@ HOUSEKEEPING_APPLY_NORMALIZED="$(
   normalize_bool \
     HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY \
     "$HOUSEKEEPING_APPLY"
+)"
+PRUNE_VERIFIED_LOCAL_CHUNKS_NORMALIZED="$(
+  normalize_bool \
+    HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS \
+    "$PRUNE_VERIFIED_LOCAL_CHUNKS"
 )"
 
 HOUSEKEEPING_RETENTION_ARGS=()
@@ -213,6 +227,7 @@ fi
 
 run_step local-verify \
   "${COMPOSE[@]}" verify-research-archive \
+  --allow-offsite-only \
   --triggered-by "${TRIGGER_PREFIX}-local-verify"
 
 run_step offsite-sync \
@@ -236,12 +251,40 @@ run_step housekeeping-preview \
   --triggered-by "${TRIGGER_PREFIX}-housekeeping-preview"
 
 if [[ "$HOUSEKEEPING_APPLY_NORMALIZED" == "yes" ]]; then
-  run_step housekeeping-apply \
-    "${COMPOSE[@]}" apply-research-archive-housekeeping \
-    --archive-kind production \
+  for apply_batch_number in $(seq 1 "$HOUSEKEEPING_MAX_APPLY_BATCHES"); do
+    apply_step="housekeeping-apply"
+    if (( apply_batch_number > 1 )); then
+      apply_step="${apply_step}-${apply_batch_number}"
+    fi
+    run_step "$apply_step" \
+      "${COMPOSE[@]}" apply-research-archive-housekeeping \
+      --archive-kind production \
+      --apply \
+      "${HOUSEKEEPING_RETENTION_ARGS[@]}" \
+      --triggered-by "${TRIGGER_PREFIX}-${apply_step}"
+
+    total_deleted_count="$(
+      awk -F= '$1 == "total_deleted_count" { value = $2 } END { print value }' \
+        "${RUN_LOG_DIR}/${apply_step}.log"
+    )"
+    if [[ ! "$total_deleted_count" =~ ^[0-9]+$ ]]; then
+      printf 'step=%s status=failed reason=missing_total_deleted_count\n' \
+        "$apply_step" >&2
+      exit 1
+    fi
+    printf 'step=%s total_deleted_count=%s\n' "$apply_step" "$total_deleted_count"
+    if (( total_deleted_count == 0 )); then
+      break
+    fi
+  done
+fi
+
+if [[ "$PRUNE_VERIFIED_LOCAL_CHUNKS_NORMALIZED" == "yes" ]]; then
+  run_step local-prune \
+    "${COMPOSE[@]}" prune-research-archive-local \
     --apply \
-    "${HOUSEKEEPING_RETENTION_ARGS[@]}" \
-    --triggered-by "${TRIGGER_PREFIX}-housekeeping-apply"
+    --min-age-hours "$LOCAL_CHUNK_RETENTION_HOURS" \
+    --triggered-by "${TRIGGER_PREFIX}-local-prune"
 fi
 
 printf 'operation=daily_research_archive status=succeeded run_id=%s log_dir=%s\n' \

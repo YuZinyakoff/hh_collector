@@ -8,8 +8,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
+
+from hhru_platform.infrastructure.research_archive.offsite_verification_receipt_store import (
+    ResearchArchiveOffsiteVerificationReceipt,
+)
 
 DEFAULT_RESEARCH_ARCHIVE_MAX_BUFFER_SIZE_BYTES = 32 * 1024 * 1024
 
@@ -47,6 +51,16 @@ class ResearchArchiveVerificationSummary:
     row_count: int
     data_size_bytes: int
     verified: bool
+    storage_mode: str
+
+
+class ResearchArchiveOffsiteVerificationReceiptLoader(Protocol):
+    def load_receipt(
+        self,
+        *,
+        manifest_file: Path,
+    ) -> ResearchArchiveOffsiteVerificationReceipt | None:
+        """Load an exact offsite verification receipt for one manifest."""
 
 
 DATASET_SPECS: dict[str, ResearchArchiveDatasetSpec] = {
@@ -461,6 +475,12 @@ class ResearchArchiveManifestVerifier:
         archive_dir: Path,
         manifest_files: tuple[Path, ...] = (),
         limit: int | None = None,
+        allow_offsite_only: bool = False,
+        offsite_url: str = "",
+        offsite_root: str = "/hhru-platform/research-archive",
+        verification_receipt_store: (
+            ResearchArchiveOffsiteVerificationReceiptLoader | None
+        ) = None,
     ) -> tuple[ResearchArchiveVerificationSummary, ...]:
         selected_manifest_files = _select_manifest_files(
             archive_dir=archive_dir,
@@ -473,6 +493,10 @@ class ResearchArchiveManifestVerifier:
                 archive_dir=archive_dir,
                 manifest_file=manifest_file,
                 inventory_manifest_files=inventory_manifest_files,
+                allow_offsite_only=allow_offsite_only,
+                offsite_url=offsite_url,
+                offsite_root=offsite_root,
+                verification_receipt_store=verification_receipt_store,
             )
             for manifest_file in selected_manifest_files
         )
@@ -483,6 +507,12 @@ class ResearchArchiveManifestVerifier:
         archive_dir: Path,
         manifest_file: Path,
         inventory_manifest_files: set[str],
+        allow_offsite_only: bool,
+        offsite_url: str,
+        offsite_root: str,
+        verification_receipt_store: (
+            ResearchArchiveOffsiteVerificationReceiptLoader | None
+        ),
     ) -> ResearchArchiveVerificationSummary:
         manifest_payload = json.loads(manifest_file.read_text(encoding="utf-8"))
         _require_manifest_fields(manifest_file, manifest_payload)
@@ -491,33 +521,43 @@ class ResearchArchiveManifestVerifier:
         data_file = Path(data_file_value)
         if not data_file.is_absolute():
             data_file = archive_dir / data_file
-        if not data_file.is_file():
+        expected_sha256 = str(manifest_payload["data_sha256"])
+        expected_size = int(manifest_payload["data_size_bytes"])
+        expected_row_count = int(manifest_payload["row_count"])
+        storage_mode = "local"
+        if data_file.is_file():
+            actual_sha256 = _sha256(data_file)
+            if actual_sha256 != expected_sha256:
+                raise ValueError(
+                    f"archive sha256 mismatch for {data_file}: "
+                    f"expected {expected_sha256}, got {actual_sha256}"
+                )
+            actual_size = data_file.stat().st_size
+            if actual_size != expected_size:
+                raise ValueError(
+                    f"archive size mismatch for {data_file}: "
+                    f"expected {expected_size}, got {actual_size}"
+                )
+            actual_row_count = _count_jsonl_gzip_rows(data_file)
+            if actual_row_count != expected_row_count:
+                raise ValueError(
+                    f"archive row_count mismatch for {data_file}: "
+                    f"expected {expected_row_count}, got {actual_row_count}"
+                )
+        elif allow_offsite_only and _matching_offsite_verification_receipt_exists(
+            archive_dir=archive_dir,
+            manifest_file=manifest_file,
+            manifest_payload=manifest_payload,
+            offsite_url=offsite_url,
+            offsite_root=offsite_root,
+            verification_receipt_store=verification_receipt_store,
+        ):
+            actual_size = expected_size
+            actual_row_count = expected_row_count
+            storage_mode = "offsite_only"
+        else:
             raise ValueError(
                 f"archive data file not found for manifest {manifest_file}: {data_file}"
-            )
-
-        expected_sha256 = str(manifest_payload["data_sha256"])
-        actual_sha256 = _sha256(data_file)
-        if actual_sha256 != expected_sha256:
-            raise ValueError(
-                f"archive sha256 mismatch for {data_file}: "
-                f"expected {expected_sha256}, got {actual_sha256}"
-            )
-
-        expected_size = int(manifest_payload["data_size_bytes"])
-        actual_size = data_file.stat().st_size
-        if actual_size != expected_size:
-            raise ValueError(
-                f"archive size mismatch for {data_file}: "
-                f"expected {expected_size}, got {actual_size}"
-            )
-
-        expected_row_count = int(manifest_payload["row_count"])
-        actual_row_count = _count_jsonl_gzip_rows(data_file)
-        if actual_row_count != expected_row_count:
-            raise ValueError(
-                f"archive row_count mismatch for {data_file}: "
-                f"expected {expected_row_count}, got {actual_row_count}"
             )
 
         relative_manifest_file = _relative_to_archive(manifest_file, archive_dir)
@@ -534,7 +574,53 @@ class ResearchArchiveManifestVerifier:
             row_count=actual_row_count,
             data_size_bytes=actual_size,
             verified=True,
+            storage_mode=storage_mode,
         )
+
+
+def _matching_offsite_verification_receipt_exists(
+    *,
+    archive_dir: Path,
+    manifest_file: Path,
+    manifest_payload: Mapping[str, Any],
+    offsite_url: str,
+    offsite_root: str,
+    verification_receipt_store: ResearchArchiveOffsiteVerificationReceiptLoader | None,
+) -> bool:
+    if verification_receipt_store is None:
+        return False
+    receipt = verification_receipt_store.load_receipt(manifest_file=manifest_file)
+    if receipt is None or int(receipt.verified_object_count) < 2:
+        return False
+    relative_manifest = manifest_file.resolve().relative_to(archive_dir.resolve()).as_posix()
+    relative_data = str(manifest_payload["data_file"])
+    expected = {
+        "offsite_url": offsite_url.strip().rstrip("/"),
+        "offsite_root": _normalize_archive_offsite_root(offsite_root),
+        "dataset": str(manifest_payload["dataset_key"]),
+        "layer": str(manifest_payload["layer"]),
+        "row_count": int(manifest_payload["row_count"]),
+        "data_size_bytes": int(manifest_payload["data_size_bytes"]),
+        "data_sha256": str(manifest_payload["data_sha256"]),
+        "manifest_sha256": _sha256(manifest_file),
+        "remote_data_path": _join_archive_remote_path(offsite_root, relative_data),
+        "remote_manifest_path": _join_archive_remote_path(
+            offsite_root,
+            relative_manifest,
+        ),
+    }
+    return all(getattr(receipt, key) == value for key, value in expected.items())
+
+
+def _normalize_archive_offsite_root(offsite_root: str) -> str:
+    parts = tuple(part for part in offsite_root.strip().split("/") if part)
+    return "/" + "/".join(parts) if parts else "/"
+
+
+def _join_archive_remote_path(offsite_root: str, relative_path: str) -> str:
+    root = _normalize_archive_offsite_root(offsite_root).strip("/")
+    suffix = relative_path.strip("/")
+    return f"/{root}/{suffix}" if root else f"/{suffix}"
 
 
 def _dataset_spec(dataset: str) -> ResearchArchiveDatasetSpec:

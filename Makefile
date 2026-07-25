@@ -8,9 +8,9 @@ ARGS ?=
 	drain-first-detail-backlog run-housekeeping \
 	run-backup verify-backup-file run-restore-drill sync-backup-offsite verify-backup-offsite-cli run-cleanup-backup-offsite \
 	run-backup-offsite-integrity-drill run-backup-offsite-restore-drill run-export-research-archive run-verify-research-archive \
-	run-sync-research-archive-offsite run-verify-research-archive-offsite run-audit-research-archive-coverage run-preview-research-archive-housekeeping run-apply-research-archive-housekeeping \
+	run-sync-research-archive-offsite run-verify-research-archive-offsite run-prune-research-archive-local run-audit-research-archive-coverage run-preview-research-archive-housekeeping run-apply-research-archive-housekeeping \
 	compose-health compose-show-metrics \
-	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-integrity-drill backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite audit-research-archive-coverage preview-research-archive-housekeeping apply-research-archive-housekeeping detail-worker-measurement \
+	backup verify-backup restore restore-drill backup-offsite verify-backup-offsite cleanup-backup-offsite backup-offsite-integrity-drill backup-offsite-restore-drill export-research-archive verify-research-archive sync-research-archive-offsite verify-research-archive-offsite prune-research-archive-local audit-research-archive-coverage preview-research-archive-housekeeping apply-research-archive-housekeeping detail-worker-measurement \
 	vps-first-detail-measurement daily-research-archive daily-backup weekly-backup-restore-drill weekly-backup-offsite-cleanup \
 	weekly-production-search storage-state-snapshot payload-inventory inspect-collection-run \
 	soak-test soak-test-no-build
@@ -135,6 +135,9 @@ run-sync-research-archive-offsite:
 run-verify-research-archive-offsite:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main verify-research-archive-offsite $(ARGS)
 
+run-prune-research-archive-local:
+	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main prune-research-archive-local $(ARGS)
+
 run-audit-research-archive-coverage:
 	PYTHONPATH=src $(PYTHON) -m hhru_platform.interfaces.cli.main audit-research-archive-coverage $(ARGS)
 
@@ -195,6 +198,9 @@ sync-research-archive-offsite:
 
 verify-research-archive-offsite:
 	$(COMPOSE) --profile ops run --rm app verify-research-archive-offsite $(ARGS)
+
+prune-research-archive-local:
+	$(COMPOSE) --profile ops run --rm app prune-research-archive-local $(ARGS)
 
 audit-research-archive-coverage:
 	$(COMPOSE) --profile ops run --rm app audit-research-archive-coverage $(ARGS)

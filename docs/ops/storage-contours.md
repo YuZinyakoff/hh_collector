@@ -335,8 +335,8 @@ Policy for current production:
   state;
 - allow aged `raw_api_payload`, `detail_fetch_attempt` and old run-tree data to
   leave the live DB only through verified research archive housekeeping;
-- keep `vacancy_snapshot` deletion disabled until snapshot/raw field inventory is
-  reviewed;
+- retain the newest `vacancy_snapshot` for every vacancy and snapshot type in
+  PostgreSQL, while allowing older verified versions to age into S3;
 - do not lower `raw_api_payload` TTL or enable snapshot TTL based only on disk
   pressure;
 - run [payload-inventory.md](/home/yurizinyakov/projects/hh_collector/docs/ops/payload-inventory.md)
@@ -348,16 +348,25 @@ coverage:
 ```text
 HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true
 HHRU_RESEARCH_ARCHIVE_DAILY_RAW_API_PAYLOAD_RETENTION_DAYS=14
-HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=0
+HHRU_RESEARCH_ARCHIVE_DAILY_VACANCY_SNAPSHOT_RETENTION_DAYS=14
 HHRU_RESEARCH_ARCHIVE_DAILY_DETAIL_FETCH_ATTEMPT_RETENTION_DAYS=30
 HHRU_RESEARCH_ARCHIVE_DAILY_FINISHED_CRAWL_RUN_RETENTION_DAYS=30
 HHRU_RESEARCH_ARCHIVE_DAILY_DELETE_LIMIT_PER_TARGET=50000
+HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES=1
+HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS=true
+HHRU_RESEARCH_ARCHIVE_DAILY_LOCAL_CHUNK_RETENTION_HOURS=24
 ```
 
 This preserves the project rule "keep raw API payloads" by moving settled raw
 payloads into the verified research archive before deleting hot DB copies.
 PostgreSQL may reuse freed pages internally before the host filesystem size
 shrinks; do not run table-rewrite compaction without a separate disk plan.
+
+The local archive is a staging and metadata contour, not a second permanent cold
+copy. After exact S3 verification, the daily driver may prune local data chunks
+while retaining manifests, checkpoints, inventory and receipts. This behavior
+is opt-in and fail-closed through
+`HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS=true`.
 
 Pilot/test corpus policy:
 

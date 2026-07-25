@@ -41,6 +41,7 @@ def test_cli_help_returns_zero(monkeypatch, capsys) -> None:
     assert "verify-research-archive" in captured.out
     assert "sync-research-archive-offsite" in captured.out
     assert "verify-research-archive-offsite" in captured.out
+    assert "prune-research-archive-local" in captured.out
     assert "create-run" in captured.out
     assert "run-once" in captured.out
     assert "run-once-v2" in captured.out

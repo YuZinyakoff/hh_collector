@@ -1,6 +1,34 @@
 # Current Readiness
 
-Состояние проекта на 2026-06-23 после successful VPS search baseline, полного
+## Update - 2026-07-10
+
+Этот update supersedes более ранние пункты ниже, где collection обозначена как
+не запущенная. Первый полный automatic production cycle завершён:
+
+- weekly `production_weekly_sweep`
+  `707e2420-f3c6-4268-ba15-34bde49a16c1` работал с
+  `2026-07-07T08:19:25+00:00` до `2026-07-08T11:44:05+00:00` и завершился
+  `succeeded`;
+- automatic detail catch-up при scale `3` погасил созданный этим sweep
+  first-detail backlog `206824` до `0`;
+- scheduled daily backup 2026-07-10 прошёл local verify, S3 sync и exact S3
+  verify, затем `prune-local-verified-dumps` успешно удалил локальный dump;
+- scheduled research archive 2026-07-10 прошёл export, local/S3 verify,
+  coverage audit и guarded housekeeping apply;
+- на контрольной точке `systemctl --failed` был пуст, временных `app-run`
+  containers не осталось, root filesystem занимал `99G/154G` (`64%`).
+
+Это переводит платформу с manual daily operation на alert-driven monitoring с
+коротким weekly review. Это ещё не доказательство режима «не трогаем месяцами»:
+нужны несколько следующих weekly cycles, свежий restore drill/S3 cleanup и
+измеренная скорость роста PostgreSQL и archive.
+
+Датированный evidence-снимок:
+[current-state-2026-07-10.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-07-10.md).
+
+---
+
+Historical readiness on 2026-06-23 after successful VPS search baseline, полного
 pilot first-detail drain, production research archive bootstrap, supervised
 daily archive driver smoke, supervised backup systemd smokes и успешного
 multi-week unattended storage/archive soak, включая первый guarded weekly S3
@@ -131,6 +159,7 @@ foundation. До режима "редко мониторю несколько м
 - [storage-contours.md](/home/yurizinyakov/projects/hh_collector/docs/ops/storage-contours.md)
 - [data-corpus-boundary.md](/home/yurizinyakov/projects/hh_collector/docs/ops/data-corpus-boundary.md)
 - [current-state-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-06-23.md)
+- [current-state-2026-07-10.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-07-10.md)
 - [collection-recovery-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/collection-recovery-2026-06-23.md)
 - [archive-analysis-smoke.md](/home/yurizinyakov/projects/hh_collector/docs/ops/archive-analysis-smoke.md)
 - [backup-restore-drill.md](/home/yurizinyakov/projects/hh_collector/docs/ops/backup-restore-drill.md)

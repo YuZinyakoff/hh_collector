@@ -1,6 +1,23 @@
 # Project Status And Roadmap
 
-Дата среза: 2026-06-23.
+Дата исходного среза: 2026-06-23.
+
+## Update - 2026-07-10
+
+Актуальная operational точка входа после полного automatic production cycle:
+
+- `production_weekly_sweep` от `2026-07-07` завершился `succeeded`;
+- automatic detail catch-up погасил `206824` first-detail вакансии до backlog
+  `0`;
+- daily backup прошёл exact S3 verification и автоматически удалил локальный
+  verified `.dump`;
+- daily research archive прошёл local/S3 verify, coverage audit и guarded
+  housekeeping apply;
+- `systemctl --failed` пуст, root filesystem использует `99G/154G` (`64%`).
+
+Следующая цель не новая функциональность, а доказательство устойчивости: несколько
+weekly cycles, weekly restore drill/S3 cleanup и measured capacity growth.
+Подробные цифры: [current-state-2026-07-10.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-07-10.md).
 
 Этот документ является короткой точкой входа после перерывов между сессиями. Детальные runbook-и остаются в соседних ops-документах, но текущий статус и следующий порядок работ фиксируются здесь.
 
@@ -17,7 +34,7 @@
 6. `research-archive-v1.md` - contract для компактного и анализируемого archive layer.
 7. `first-detail-backlog.md` - detail backlog и worker semantics.
 8. `observability.md` - alerts, metrics, Prometheus/Grafana contour.
-9. `current-state-2026-06-23.md` - датированный storage/corpus snapshot.
+9. `current-state-2026-07-10.md` - актуальный датированный storage/corpus snapshot.
 10. `collection-recovery-2026-06-23.md` - текущий runbook восстановления
     search/detail collection после обнаруженного простоя.
 
@@ -667,5 +684,6 @@ search/detail cadence, устойчивость к внешним outage, alert 
 - [research-archive-v1.md](/home/yurizinyakov/projects/hh_collector/docs/ops/research-archive-v1.md)
 - [unattended-operations.md](/home/yurizinyakov/projects/hh_collector/docs/ops/unattended-operations.md)
 - [current-state-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-06-23.md)
+- [current-state-2026-07-10.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-07-10.md)
 - [hh-api-completeness-implementation-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/hh-api-completeness-implementation-plan.md)
 - [testing-plan.md](/home/yurizinyakov/projects/hh_collector/docs/ops/testing-plan.md)

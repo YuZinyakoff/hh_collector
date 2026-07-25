@@ -5,6 +5,19 @@ Runbook для перехода от проверенных manual storage-ко�
 
 ## 1. Текущая Граница
 
+Update on 2026-07-10:
+
+- first automatic `production_weekly_sweep` completed successfully; automatic
+  detail catch-up drained its `206824` first-detail backlog to zero;
+- scheduled daily backup completed exact S3 verification and then successfully
+  ran `prune-local-verified-dumps`, leaving no local `.dump`;
+- scheduled daily research archive completed export, local/S3 verify, coverage
+  audit and guarded housekeeping apply;
+- `systemctl --failed` was empty, no transient `app-run` containers remained,
+  and root filesystem usage was `99G/154G` (`64%`);
+- this proves one whole-platform cycle, not yet an unattended-month capacity
+  guarantee. Continue alert-driven monitoring and weekly checks.
+
 На 2026-06-23:
 
 - `hhru-research-archive.timer` включён на VPS; первый unattended запуск
@@ -112,6 +125,11 @@ Automated drivers are fail-closed:
 - the research archive driver invokes destructive
   `apply-research-archive-housekeeping --apply` only when
   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`;
+- repeated housekeeping catch-up remains bounded per pass and is capped by
+  `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_MAX_APPLY_BATCHES`;
+- local research data chunks are pruned only when
+  `HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS=true` and exact upload
+  plus offsite verification receipts match their retained manifest;
 - research archive housekeeping retention can be narrowed only through explicit
   daily-driver overrides, and still reruns complete verified S3 coverage before
   deleting exact ids;

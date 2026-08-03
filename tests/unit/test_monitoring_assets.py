@@ -403,7 +403,6 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
         "HHRUPlatformMetricsEndpointDown",
         "HHRUPlatformOperationFailures",
         "HHRUPlatformNoRecentReconciliation",
-        "HHRUPlatformSchedulerTickStale",
         "HHRUPlatformSchedulerTriggeredRunStale",
         "HHRUPlatformFailedPartitionsPresent",
         "HHRUPlatformUnresolvedPartitionsStuck",
@@ -415,8 +414,8 @@ def test_prometheus_alert_rules_cover_scheduler_and_recovery_risks() -> None:
         "HHRUPlatformBackupStale",
     }.issubset(alert_names)
 
-    assert "expr: hhru:scheduler_tick_age_seconds > 7200" in rules_text
-    assert "expr: hhru:scheduler_last_triggered_run_age_seconds > 86400" in rules_text
+    assert "HHRUPlatformSchedulerTickStale" not in alert_names
+    assert "expr: hhru:scheduler_last_triggered_run_age_seconds > 691200" in rules_text
     assert "expr: hhru:coverage_failed_partitions_open > 0" in rules_text
     assert "expr: hhru:coverage_unresolved_partitions_open > 0" in rules_text
     assert "expr: hhru:detail_repair_backlog_open > 0" in rules_text

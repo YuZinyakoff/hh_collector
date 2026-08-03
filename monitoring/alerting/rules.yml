@@ -70,24 +70,15 @@ groups:
         annotations:
           summary: reconcile-run has not succeeded recently
           description: No successful reconciliation has been recorded for more than 7 days.
-      - alert: HHRUPlatformSchedulerTickStale
-        expr: hhru:scheduler_tick_age_seconds > 7200
-        for: 15m
-        labels:
-          severity: critical
-        annotations:
-          summary: scheduler tick is stale
-          description: No scheduler tick has been observed for more than 2 hours.
-          action: Check the scheduler-loop process, logs, and Compose/container health before forcing a manual run.
       - alert: HHRUPlatformSchedulerTriggeredRunStale
-        expr: hhru:scheduler_last_triggered_run_age_seconds > 86400
-        for: 30m
+        expr: hhru:scheduler_last_triggered_run_age_seconds > 691200
+        for: 1h
         labels:
           severity: warning
         annotations:
-          summary: scheduler has not triggered a run recently
-          description: No scheduler-admitted run has started for more than 24 hours.
-          action: Verify whether scheduler ticks are only skipping because of an active run or whether admission/start logic is stuck.
+          summary: weekly production search is overdue
+          description: No scheduler-admitted production search has started for more than 8 days.
+          action: Check the production search controller timer, recent admission skips, active runs, backlog, failed units, and free disk before forcing a manual run.
       - alert: HHRUPlatformFailedPartitionsPresent
         expr: hhru:coverage_failed_partitions_open > 0
         for: 15m

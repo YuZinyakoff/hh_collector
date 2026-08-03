@@ -390,7 +390,6 @@ External delivery must be checked separately in logs:
 - `HHRUPlatformMetricsEndpointDown`
 - `HHRUPlatformOperationFailures`
 - `HHRUPlatformNoRecentReconciliation`
-- `HHRUPlatformSchedulerTickStale`
 - `HHRUPlatformSchedulerTriggeredRunStale`
 - `HHRUPlatformFailedPartitionsPresent`
 - `HHRUPlatformUnresolvedPartitionsStuck`
@@ -418,7 +417,7 @@ External delivery must be checked separately in logs:
 - `hhru_first_detail_ready_backlog_size{scope="active"}` не снижается при работающем `detail-worker`
 - `hhru_first_detail_cooldown_backlog_size{scope="active"}` монотонно растёт: это признак repeated retryable failures или слишком агрессивного worker-а
 - рост `hhru_first_detail_drain_failed_total` означает retryable failures; рост `hhru_first_detail_drain_terminal_total` сам по себе нормален для протухших вакансий из search snapshot
-- stale `hhru_scheduler_last_tick_timestamp_seconds` или рост `hhru_scheduler_tick_total{outcome="skipped_overlap"}` / `...{outcome="skipped_active_run"}`
+- возраст `hhru_scheduler_last_triggered_run_timestamp_seconds` больше 8 дней при включённом weekly production search controller
 - sustained `4xx`/`5xx`/`timeout`/`network_error` на dashboard `HH API / Ingest Health`
 - отсутствие свежего `reconcile_run` success timestamp
 - заметное падение `records_written_total` при том, что run-операции продолжают стартовать
@@ -439,10 +438,8 @@ External delivery must be checked separately in logs:
   Открыть `Collector Overview` и `HH API / Ingest Health`, посмотреть какой operation падает и это upstream, schema/problem или execution bug.
 - `HHRUPlatformNoRecentReconciliation`
   Проверить, запускаются ли вообще terminal runs и не застряли ли они до `reconcile_run`; при необходимости вручную пройти `run-once-v2` / scheduler flow.
-- `HHRUPlatformSchedulerTickStale`
-  Проверить `scheduler-loop` process/container, последние structured logs и не остановился ли whole worker; до ручного trigger важно понять причину остановки.
 - `HHRUPlatformSchedulerTriggeredRunStale`
-  Если ticks свежие, но runs давно не стартовали, проверить `Scheduler Active-Run Skips In Range`, active `crawl_run` и admission conflicts; если active run stuck, сначала разбирать его.
+  Проверить `hhru-production-search-controller.timer`, последние admission skips, active `crawl_run`, detail backlog, failed systemd units и свободное место; если active run stuck, сначала разбирать его.
 - `HHRUPlatformFailedPartitionsPresent`
   Не запускать blind retries вслепую. Открыть `Runs With Failed Partitions`, затем CLI/reporting для конкретного run и разбирать planner/list failure root cause.
 - `HHRUPlatformUnresolvedPartitionsStuck`

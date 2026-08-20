@@ -219,12 +219,6 @@ for batch_number in $(seq 1 "$MAX_EXPORT_BATCHES"); do
   fi
 done
 
-if [[ "$export_complete" != yes ]]; then
-  printf 'operation=daily_research_archive status=failed reason=max_export_batches_exhausted max_export_batches=%s\n' \
-    "$MAX_EXPORT_BATCHES" >&2
-  exit 1
-fi
-
 run_step local-verify \
   "${COMPOSE[@]}" verify-research-archive \
   --allow-offsite-only \
@@ -238,6 +232,24 @@ run_step offsite-verify \
   "${COMPOSE[@]}" verify-research-archive-offsite \
   --readback-limit "$READBACK_LIMIT" \
   --triggered-by "${TRIGGER_PREFIX}-offsite-verify"
+
+prune_verified_local_chunks() {
+  if [[ "$PRUNE_VERIFIED_LOCAL_CHUNKS_NORMALIZED" == "yes" ]]; then
+    run_step local-prune \
+      "${COMPOSE[@]}" prune-research-archive-local \
+      --apply \
+      --min-age-hours "$LOCAL_CHUNK_RETENTION_HOURS" \
+      --triggered-by "${TRIGGER_PREFIX}-local-prune"
+  fi
+}
+
+if [[ "$export_complete" != yes ]]; then
+  # Offsite-protect partial progress before reporting that the export backlog remains.
+  prune_verified_local_chunks
+  printf 'operation=daily_research_archive status=failed reason=max_export_batches_exhausted max_export_batches=%s\n' \
+    "$MAX_EXPORT_BATCHES" >&2
+  exit 1
+fi
 
 run_step coverage-audit \
   "${COMPOSE[@]}" audit-research-archive-coverage \
@@ -279,13 +291,7 @@ if [[ "$HOUSEKEEPING_APPLY_NORMALIZED" == "yes" ]]; then
   done
 fi
 
-if [[ "$PRUNE_VERIFIED_LOCAL_CHUNKS_NORMALIZED" == "yes" ]]; then
-  run_step local-prune \
-    "${COMPOSE[@]}" prune-research-archive-local \
-    --apply \
-    --min-age-hours "$LOCAL_CHUNK_RETENTION_HOURS" \
-    --triggered-by "${TRIGGER_PREFIX}-local-prune"
-fi
+prune_verified_local_chunks
 
 printf 'operation=daily_research_archive status=succeeded run_id=%s log_dir=%s\n' \
   "$RUN_ID" "$RUN_LOG_DIR"

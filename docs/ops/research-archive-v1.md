@@ -625,9 +625,13 @@ After the manual production routine is proven, use
 - waits on the shared `.state/locks/heavy-ops.lock` so it does not overlap with
   daily backup or weekly restore drill;
 - runs bounded incremental exports until a zero-row checkpoint is written;
-- fails if the configured maximum number of export batches is exhausted;
-- then runs full local verify, idempotent S3 sync, full offsite verify, coverage
-  audit and read-only housekeeping preview;
+- always runs local verify, idempotent S3 sync and offsite verify for every
+  successfully exported chunk;
+- if the configured export-batch maximum is exhausted, safely prunes eligible
+  local chunks and then fails without coverage audit or housekeeping, preserving
+  a visible archive-backlog signal while protecting partial progress in S3;
+- after a zero-row checkpoint, also runs coverage audit and read-only
+  housekeeping preview;
 - invokes `apply-research-archive-housekeeping --apply` only when
   `HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY=true`; the default path remains
   preview-only.

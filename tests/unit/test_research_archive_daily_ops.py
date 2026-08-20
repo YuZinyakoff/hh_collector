@@ -292,7 +292,7 @@ def test_daily_research_archive_driver_rejects_invalid_housekeeping_retention(
     ) in result.stderr
 
 
-def test_daily_research_archive_driver_fails_before_verification_when_backlog_remains(
+def test_daily_research_archive_driver_syncs_before_reporting_export_backlog(
     tmp_path: Path,
 ) -> None:
     fake_bin = tmp_path / "bin"
@@ -330,4 +330,7 @@ printf 'total_row_count=1\\n'
     assert [call.split()[6] for call in calls] == [
         "export-research-archive",
         "export-research-archive",
+        "verify-research-archive",
+        "sync-research-archive-offsite",
+        "verify-research-archive-offsite",
     ]

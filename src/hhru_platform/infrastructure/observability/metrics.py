@@ -275,6 +275,10 @@ class FileBackedMetricsRegistry:
         }
         try:
             with self._mutating_state() as state:
+                _discard_run_tree_coverage_for_run_type(
+                    state["run_tree_coverage_gauge"],
+                    run_type=run_type,
+                )
                 for metric_name, value in metric_values.items():
                     key = _triple_key(metric_name, run_id, run_type)
                     state["run_tree_coverage_gauge"][key] = value
@@ -1353,6 +1357,18 @@ def _triple_key(left: str, middle: str, right: str) -> str:
 def _split_triple_key(key: str) -> tuple[str, str, str]:
     left, middle, right = key.split("|", maxsplit=2)
     return left, middle, right
+
+
+def _discard_run_tree_coverage_for_run_type(
+    gauges: dict[str, float],
+    *,
+    run_type: str,
+) -> None:
+    """Keep operational coverage gauges limited to the latest run of each type."""
+    for key in tuple(gauges):
+        _, _, recorded_run_type = _split_triple_key(key)
+        if recorded_run_type == run_type:
+            del gauges[key]
 
 
 def _label_value(value: str) -> str:

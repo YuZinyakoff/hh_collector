@@ -206,6 +206,40 @@ def test_file_backed_metrics_registry_recovers_from_zero_filled_state(tmp_path) 
     )
 
 
+def test_file_backed_metrics_registry_replaces_coverage_for_the_same_run_type(tmp_path) -> None:
+    registry = FileBackedMetricsRegistry(tmp_path / "metrics.json")
+    registry.set_run_tree_coverage(
+        run_id="failed-run",
+        run_type="weekly_sweep",
+        coverage_ratio=0.5,
+        total_partitions=2,
+        covered_terminal_partitions=1,
+        pending_terminal_partitions=0,
+        split_partitions=0,
+        unresolved_partitions=0,
+        failed_partitions=1,
+    )
+    registry.set_run_tree_coverage(
+        run_id="recovery-run",
+        run_type="weekly_sweep",
+        coverage_ratio=1.0,
+        total_partitions=2,
+        covered_terminal_partitions=2,
+        pending_terminal_partitions=0,
+        split_partitions=0,
+        unresolved_partitions=0,
+        failed_partitions=0,
+    )
+
+    rendered = registry.render_prometheus()
+
+    assert 'run_id="failed-run"' not in rendered
+    assert (
+        'hhru_run_tree_failed_partitions{run_id="recovery-run",'
+        'run_type="weekly_sweep"} 0.000000' in rendered
+    )
+
+
 def test_file_backed_metrics_registry_normalizes_vacancy_detail_upstream_endpoint(
     tmp_path,
 ) -> None:

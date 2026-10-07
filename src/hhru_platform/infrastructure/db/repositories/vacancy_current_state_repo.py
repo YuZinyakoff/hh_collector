@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
-from sqlalchemy import and_, bindparam, func, not_, or_, select, text, true
+from sqlalchemy import Table, and_, bindparam, func, not_, or_, select, text, true
 from sqlalchemy import update as sqlalchemy_update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -147,6 +148,20 @@ class SqlAlchemyVacancyCurrentStateRepository:
 
     def list_all(self) -> list[VacancyCurrentStateEntity]:
         statement = select(VacancyCurrentStateModel).order_by(VacancyCurrentStateModel.vacancy_id)
+        return [self._to_entity(model) for model in self._session.scalars(statement)]
+
+    def list_reconciliation_batch(
+        self, *, after_vacancy_id: UUID | None, limit: int
+    ) -> list[VacancyCurrentStateEntity]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        statement = (
+            select(VacancyCurrentStateModel)
+            .order_by(VacancyCurrentStateModel.vacancy_id)
+            .limit(limit)
+        )
+        if after_vacancy_id is not None:
+            statement = statement.where(VacancyCurrentStateModel.vacancy_id > after_vacancy_id)
         return [self._to_entity(model) for model in self._session.scalars(statement)]
 
     def list_by_last_seen_run_id(self, crawl_run_id: UUID) -> list[VacancyCurrentStateEntity]:
@@ -308,18 +323,34 @@ class SqlAlchemyVacancyCurrentStateRepository:
         updated_at: datetime,
         updates: Sequence[VacancyCurrentStateReconciliationUpdate],
     ) -> int:
-        for update in updates:
-            model = self._session.get(VacancyCurrentStateModel, update.vacancy_id)
-            if model is None:
-                raise LookupError(f"vacancy_current_state not found: {update.vacancy_id}")
-
-            model.consecutive_missing_runs = update.consecutive_missing_runs
-            model.is_probably_inactive = update.is_probably_inactive
-            model.last_seen_run_id = update.last_seen_run_id
-            model.updated_at = updated_at
-            self._session.add(model)
-
-        self._session.flush()
+        if not updates:
+            return 0
+        # Core executemany avoids retaining millions of dirty ORM objects.
+        table = cast(Table, VacancyCurrentStateModel.__table__)
+        statement = (
+            sqlalchemy_update(table)
+            .where(table.c.vacancy_id == bindparam("target_id"))
+            .values(
+                consecutive_missing_runs=bindparam("missing_runs"),
+                is_probably_inactive=bindparam("inactive"),
+                last_seen_run_id=bindparam("seen_run_id"),
+                updated_at=updated_at,
+            )
+        )
+        result = self._session.connection().execute(
+            statement,
+            [
+                {
+                    "target_id": item.vacancy_id,
+                    "missing_runs": item.consecutive_missing_runs,
+                    "inactive": item.is_probably_inactive,
+                    "seen_run_id": item.last_seen_run_id,
+                }
+                for item in updates
+            ],
+        )
+        if result.rowcount != len(updates):
+            raise LookupError("one or more vacancy_current_state rows not found")
         return len(updates)
 
     @staticmethod

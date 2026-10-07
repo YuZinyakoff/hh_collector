@@ -8,6 +8,7 @@ import pytest
 from hhru_platform.application.commands.reconcile_run import (
     CrawlRunNotFoundError,
     ReconcileRunCommand,
+    ReconcileRunResult,
     reconcile_run,
 )
 from hhru_platform.application.policies.reconciliation import (
@@ -62,8 +63,13 @@ class InMemoryVacancySeenEventRepository:
     def __init__(self, observed_vacancy_ids: list[UUID]) -> None:
         self._observed_vacancy_ids = observed_vacancy_ids
 
-    def list_distinct_vacancy_ids_by_run(self, crawl_run_id: UUID) -> list[UUID]:
-        return list(self._observed_vacancy_ids)
+    def count_distinct_vacancy_ids_by_run(self, crawl_run_id: UUID) -> int:
+        return len(set(self._observed_vacancy_ids))
+
+    def list_observed_vacancy_ids(
+        self, *, crawl_run_id: UUID, vacancy_ids: list[UUID]
+    ) -> list[UUID]:
+        return list(set(vacancy_ids).intersection(self._observed_vacancy_ids))
 
 
 class InMemoryVacancyCurrentStateRepository:
@@ -71,8 +77,14 @@ class InMemoryVacancyCurrentStateRepository:
         self._current_states = {state.vacancy_id: state for state in current_states}
         self.applied_updates: list[VacancyCurrentStateReconciliationUpdate] = []
 
-    def list_all(self) -> list[VacancyCurrentState]:
-        return list(self._current_states.values())
+    def list_reconciliation_batch(
+        self, *, after_vacancy_id: UUID | None, limit: int
+    ) -> list[VacancyCurrentState]:
+        return [
+            self._current_states[key]
+            for key in sorted(self._current_states)
+            if after_vacancy_id is None or key > after_vacancy_id
+        ][:limit]
 
     def apply_reconciliation_updates(
         self,
@@ -243,3 +255,138 @@ def test_reconcile_run_raises_for_missing_crawl_run() -> None:
             vacancy_current_state_repository=InMemoryVacancyCurrentStateRepository([]),
             reconciliation_policy=MissingRunsReconciliationPolicyV1(),
         )
+
+
+def test_reconciliation_pages_are_bounded_and_completed_run_cannot_repeat(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.reconcile_run.RECONCILIATION_BATCH_SIZE", 2
+    )
+    crawl_run = _build_crawl_run()
+    ids = [UUID(int=index) for index in range(1, 6)]
+
+    class BoundedRepository(InMemoryVacancyCurrentStateRepository):
+        batch_lengths: list[int] = []
+
+        def apply_reconciliation_updates(self, *, updated_at, updates):
+            assert len(updates) <= 2
+            self.batch_lengths.append(len(updates))
+            return super().apply_reconciliation_updates(updated_at=updated_at, updates=updates)
+
+    repository = BoundedRepository(
+        [
+            _build_current_state(
+                vacancy_id=key,
+                consecutive_missing_runs=1,
+                is_probably_inactive=False,
+                last_seen_run_id=None,
+            )
+            for key in reversed(ids)
+        ]
+    )
+    kwargs = dict(
+        crawl_run_repository=InMemoryCrawlRunRepository(crawl_run),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository([]),
+        vacancy_seen_event_repository=InMemoryVacancySeenEventRepository([ids[0], ids[4], ids[4]]),
+        vacancy_current_state_repository=repository,
+        reconciliation_policy=MissingRunsReconciliationPolicyV1(),
+    )
+    result = reconcile_run(ReconcileRunCommand(crawl_run_id=crawl_run.id), **kwargs)
+    assert repository.batch_lengths == [2, 2, 1]
+    assert result.observed_in_run_count == 2
+    assert result.missing_updated_count == result.marked_inactive_count == 3
+    assert [repository._current_states[key].consecutive_missing_runs for key in ids] == [
+        0,
+        2,
+        2,
+        2,
+        0,
+    ]
+    with pytest.raises(ValueError, match="already finished"):
+        reconcile_run(ReconcileRunCommand(crawl_run_id=crawl_run.id), **kwargs)
+    assert repository.batch_lengths == [2, 2, 1]
+
+
+def test_reconcile_empty_corpus_completes_run() -> None:
+    crawl_run = _build_crawl_run()
+    result = reconcile_run(
+        ReconcileRunCommand(crawl_run_id=crawl_run.id),
+        crawl_run_repository=InMemoryCrawlRunRepository(crawl_run),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository([]),
+        vacancy_seen_event_repository=InMemoryVacancySeenEventRepository([]),
+        vacancy_current_state_repository=InMemoryVacancyCurrentStateRepository([]),
+        reconciliation_policy=MissingRunsReconciliationPolicyV1(),
+    )
+    assert result.observed_in_run_count == result.missing_updated_count == 0
+    assert crawl_run.finished_at is not None
+
+
+def test_failed_second_batch_rolls_back_and_retry_increments_missing_once(monkeypatch) -> None:
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session, sessionmaker
+
+    from hhru_platform.infrastructure.db.models.vacancy_current_state import (
+        VacancyCurrentState as StateModel,
+    )
+    from hhru_platform.infrastructure.db.repositories.vacancy_current_state_repo import (
+        SqlAlchemyVacancyCurrentStateRepository,
+    )
+    from hhru_platform.infrastructure.db.session import session_scope
+
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.reconcile_run.RECONCILIATION_BATCH_SIZE", 2
+    )
+    engine = create_engine("sqlite://")
+    StateModel.__table__.create(engine)
+    ids = [UUID(f"a0000000-0000-0000-0000-{index:012x}") for index in range(1, 6)]
+    now = datetime.now(UTC)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory.begin() as session:
+        session.add_all(
+            [
+                StateModel(
+                    vacancy_id=key, first_seen_at=now, last_seen_at=now, consecutive_missing_runs=0
+                )
+                for key in ids
+            ]
+        )
+    run = _build_crawl_run()
+
+    class FailingRepository(SqlAlchemyVacancyCurrentStateRepository):
+        calls = 0
+
+        def apply_reconciliation_updates(self, *, updated_at, updates):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("injected batch failure")
+            return super().apply_reconciliation_updates(updated_at=updated_at, updates=updates)
+
+    def execute(session: Session, *, fail: bool) -> ReconcileRunResult:
+        repository = (FailingRepository if fail else SqlAlchemyVacancyCurrentStateRepository)(
+            session
+        )
+        return reconcile_run(
+            ReconcileRunCommand(crawl_run_id=run.id),
+            crawl_run_repository=InMemoryCrawlRunRepository(run),
+            crawl_partition_repository=InMemoryCrawlPartitionRepository([]),
+            vacancy_seen_event_repository=InMemoryVacancySeenEventRepository([ids[0]]),
+            vacancy_current_state_repository=repository,
+            reconciliation_policy=MissingRunsReconciliationPolicyV1(),
+        )
+
+    with pytest.raises(RuntimeError, match="injected batch failure"):
+        with session_scope(factory) as session:
+            execute(session, fail=True)
+    assert run.status == "created"
+    assert run.finished_at is None
+    with factory() as session:
+        assert list(session.scalars(select(StateModel.consecutive_missing_runs))) == [0] * 5
+    with session_scope(factory) as session:
+        result = execute(session, fail=False)
+    assert result.missing_updated_count == 4
+    with factory() as session:
+        assert list(
+            session.scalars(
+                select(StateModel.consecutive_missing_runs).order_by(StateModel.vacancy_id)
+            )
+        ) == [0, 1, 1, 1, 1]
+    engine.dispose()

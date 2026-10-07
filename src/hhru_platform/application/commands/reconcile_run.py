@@ -24,6 +24,7 @@ from hhru_platform.infrastructure.observability.operations import (
 )
 
 LOGGER = logging.getLogger(__name__)
+RECONCILIATION_BATCH_SIZE = 1000
 
 
 class CrawlRunNotFoundError(LookupError):
@@ -78,13 +79,20 @@ class CrawlPartitionRepository(Protocol):
 
 
 class VacancySeenEventRepository(Protocol):
-    def list_distinct_vacancy_ids_by_run(self, crawl_run_id: UUID) -> list[UUID]:
-        """Return distinct vacancy identifiers observed in the run."""
+    def count_distinct_vacancy_ids_by_run(self, crawl_run_id: UUID) -> int:
+        """Count observations without materializing the corpus."""
+
+    def list_observed_vacancy_ids(
+        self, *, crawl_run_id: UUID, vacancy_ids: list[UUID]
+    ) -> list[UUID]:
+        """Return observed identifiers within one bounded batch."""
 
 
 class VacancyCurrentStateRepository(Protocol):
-    def list_all(self) -> list[VacancyCurrentState]:
-        """Return all current vacancy states."""
+    def list_reconciliation_batch(
+        self, *, after_vacancy_id: UUID | None, limit: int
+    ) -> list[VacancyCurrentState]:
+        """Return a keyset page ordered by vacancy id."""
 
     def apply_reconciliation_updates(
         self,
@@ -125,36 +133,51 @@ def reconcile_run(
         if crawl_run is None:
             raise CrawlRunNotFoundError(command.crawl_run_id)
 
-        observed_vacancy_ids = set(
-            vacancy_seen_event_repository.list_distinct_vacancy_ids_by_run(command.crawl_run_id)
+        if crawl_run.finished_at is not None:
+            raise ValueError(f"crawl_run already finished: {crawl_run.id}")
+
+        observed_in_run_count = vacancy_seen_event_repository.count_distinct_vacancy_ids_by_run(
+            command.crawl_run_id
         )
-        current_states = vacancy_current_state_repository.list_all()
         reconciled_at = datetime.now(UTC)
         previous_run_status = crawl_run.status
         previous_finished_at = crawl_run.finished_at
 
-        updates: list[VacancyCurrentStateReconciliationUpdate] = []
         missing_updated_count = 0
         marked_inactive_count = 0
+        states_updated_count = 0
+        after_vacancy_id: UUID | None = None
 
-        for current_state in current_states:
-            seen_in_run = current_state.vacancy_id in observed_vacancy_ids
-            update = reconciliation_policy.decide(
-                vacancy_state=current_state,
-                seen_in_run=seen_in_run,
-                crawl_run_id=command.crawl_run_id,
+        # The caller owns one transaction: do not commit individual pages.
+        while current_states := vacancy_current_state_repository.list_reconciliation_batch(
+            after_vacancy_id=after_vacancy_id, limit=RECONCILIATION_BATCH_SIZE
+        ):
+            observed_vacancy_ids = set(
+                vacancy_seen_event_repository.list_observed_vacancy_ids(
+                    crawl_run_id=command.crawl_run_id,
+                    vacancy_ids=[state.vacancy_id for state in current_states],
+                )
             )
-            updates.append(update)
+            updates: list[VacancyCurrentStateReconciliationUpdate] = []
+            for current_state in current_states:
+                seen_in_run = current_state.vacancy_id in observed_vacancy_ids
+                update = reconciliation_policy.decide(
+                    vacancy_state=current_state,
+                    seen_in_run=seen_in_run,
+                    crawl_run_id=command.crawl_run_id,
+                )
+                updates.append(update)
 
-            if not seen_in_run:
-                missing_updated_count += 1
-            if not current_state.is_probably_inactive and update.is_probably_inactive:
-                marked_inactive_count += 1
+                if not seen_in_run:
+                    missing_updated_count += 1
+                if not current_state.is_probably_inactive and update.is_probably_inactive:
+                    marked_inactive_count += 1
 
-        vacancy_current_state_repository.apply_reconciliation_updates(
-            updated_at=reconciled_at,
-            updates=updates,
-        )
+            vacancy_current_state_repository.apply_reconciliation_updates(
+                updated_at=reconciled_at, updates=updates
+            )
+            states_updated_count += len(updates)
+            after_vacancy_id = current_states[-1].vacancy_id
 
         partitions = crawl_partition_repository.list_by_run_id(command.crawl_run_id)
         completed_run = crawl_run_repository.complete(
@@ -192,7 +215,7 @@ def reconcile_run(
 
     result = ReconcileRunResult(
         crawl_run_id=completed_run.id,
-        observed_in_run_count=len(observed_vacancy_ids),
+        observed_in_run_count=observed_in_run_count,
         missing_updated_count=missing_updated_count,
         marked_inactive_count=marked_inactive_count,
         run_status=completed_run.status,
@@ -209,7 +232,7 @@ def reconcile_run(
         LOGGER,
         operation="reconcile_run",
         started_at=started_at,
-        records_written={"vacancy_current_state": len(updates)},
+        records_written={"vacancy_current_state": states_updated_count},
         run_id=result.crawl_run_id,
         observed_in_run_count=result.observed_in_run_count,
         missing_updated_count=result.missing_updated_count,

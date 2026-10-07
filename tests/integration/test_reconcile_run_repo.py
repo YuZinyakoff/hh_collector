@@ -54,7 +54,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_reconcile_run_updates_current_state_and_completes_run() -> None:
+def test_reconcile_run_updates_current_state_and_completes_run(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.reconcile_run.RECONCILIATION_BATCH_SIZE", 1
+    )
     engine = create_engine_from_settings()
     crawl_run_id = uuid4()
     crawl_partition_id = uuid4()
@@ -386,12 +389,17 @@ class _ScopedVacancyCurrentStateRepository:
         self._vacancy_ids = list(vacancy_ids)
         self._delegate = SqlAlchemyVacancyCurrentStateRepository(session)
 
-    def list_all(self) -> list[VacancyCurrentState]:
+    def list_reconciliation_batch(
+        self, *, after_vacancy_id: UUID | None, limit: int
+    ) -> list[VacancyCurrentState]:
         statement = (
             select(VacancyCurrentStateModel)
             .where(VacancyCurrentStateModel.vacancy_id.in_(tuple(self._vacancy_ids)))
             .order_by(VacancyCurrentStateModel.vacancy_id)
         )
+        if after_vacancy_id is not None:
+            statement = statement.where(VacancyCurrentStateModel.vacancy_id > after_vacancy_id)
+        statement = statement.limit(limit)
         return [
             SqlAlchemyVacancyCurrentStateRepository._to_entity(model)
             for model in self._session.scalars(statement)

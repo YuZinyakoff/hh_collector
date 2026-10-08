@@ -303,6 +303,22 @@ class FileBackedMetricsRegistry:
         except Exception as error:
             LOGGER.warning("metrics run terminal status update failed: %s", error)
 
+    def record_scheduler_run_started(
+        self, *, ticked_at: datetime, run_started_at: datetime
+    ) -> None:
+        try:
+            with self._mutating_state() as state:
+                state["scheduler_gauge"]["hhru_scheduler_last_tick_timestamp_seconds"] = (
+                    ticked_at.timestamp()
+                )
+                for metric_name in (
+                    "hhru_scheduler_last_run_started_timestamp_seconds",
+                    "hhru_scheduler_last_triggered_run_timestamp_seconds",
+                ):
+                    state["scheduler_gauge"][metric_name] = run_started_at.timestamp()
+        except Exception as error:
+            LOGGER.warning("metrics scheduler run start update failed: %s", error)
+
     def record_scheduler_tick(
         self,
         *,

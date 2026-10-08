@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+
 from hhru_platform.application.commands.reconcile_run import ReconcileRunResult
 from hhru_platform.application.commands.run_collection_once_v2 import (
     RunCollectionOnceV2Command,
@@ -15,6 +17,7 @@ from hhru_platform.application.commands.trigger_run_now import (
     trigger_run_now,
 )
 from hhru_platform.domain.entities.crawl_run import CrawlRun
+from hhru_platform.infrastructure.observability.metrics import FileBackedMetricsRegistry
 
 
 class FakeAdmissionLease:
@@ -42,6 +45,10 @@ class FakeAdmissionController:
 class RecordingMetricsRecorder:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
+        self.start_calls: list[dict[str, object]] = []
+
+    def record_scheduler_run_started(self, **kwargs) -> None:
+        self.start_calls.append(kwargs)
 
     def record_scheduler_tick(self, **kwargs) -> None:
         self.calls.append(kwargs)
@@ -61,6 +68,7 @@ def test_trigger_run_now_skips_when_admission_lock_is_unavailable() -> None:
     )
 
     assert result.status == TRIGGER_RUN_NOW_STATUS_SKIPPED_OVERLAP
+    assert metrics_recorder.start_calls == []
     assert result.run_result is None
     assert result.error_message == "collection run admission lock is already held"
     assert metrics_recorder.calls[0]["outcome"] == TRIGGER_RUN_NOW_STATUS_SKIPPED_OVERLAP
@@ -96,6 +104,7 @@ def test_trigger_run_now_skips_when_active_run_exists() -> None:
     )
 
     assert result.status == TRIGGER_RUN_NOW_STATUS_SKIPPED_ACTIVE_RUN
+    assert metrics_recorder.start_calls == []
     assert result.active_run_id == active_run.id
     assert result.active_run_status == "created"
     assert lease.released is True
@@ -131,6 +140,59 @@ def test_trigger_run_now_returns_completed_with_detail_errors() -> None:
     assert metrics_recorder.calls[0]["run_finished_at"] is not None
     assert metrics_recorder.calls[0]["triggered_run_at"] is not None
     assert metrics_recorder.calls[0]["observed_run_status"] == "completed_with_detail_errors"
+    assert len(metrics_recorder.calls) == 1
+    assert len(metrics_recorder.start_calls) == 1
+    assert metrics_recorder.start_calls[0]["run_started_at"] == result.run_started_at
+
+
+def test_trigger_run_now_publishes_start_before_collection_fails() -> None:
+    lease = FakeAdmissionLease(active_run=None)
+    recorder = RecordingMetricsRecorder()
+
+    def collect(command: RunCollectionOnceV2Command) -> RunCollectionOnceV2Result:
+        assert len(recorder.start_calls) == 1
+        assert recorder.calls == []
+        raise RuntimeError("collection failed")
+
+    result = trigger_run_now(
+        TriggerRunNowCommand(run_command=_build_run_command()),
+        admission_controller=FakeAdmissionController(lease),
+        run_collection_once_v2_step=collect,
+        metrics_recorder=recorder,
+    )
+
+    assert result.status == "failed"
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]["outcome"] == "failed"
+    assert lease.released is True
+
+
+def test_trigger_run_now_persists_start_even_without_terminal_result(tmp_path) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    recorder = FileBackedMetricsRegistry(metrics_path)
+    exporter = FileBackedMetricsRegistry(metrics_path)
+    lease = FakeAdmissionLease(active_run=None)
+
+    def collect(command: RunCollectionOnceV2Command) -> RunCollectionOnceV2Result:
+        snapshot = exporter.render_prometheus()
+        assert "\nhhru_scheduler_last_triggered_run_timestamp_seconds " in snapshot
+        assert "\nhhru_scheduler_last_run_started_timestamp_seconds " in snapshot
+        assert "hhru_scheduler_tick_total{" not in snapshot
+        assert "\nhhru_scheduler_last_run_finished_timestamp_seconds " not in snapshot
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        trigger_run_now(
+            TriggerRunNowCommand(run_command=_build_run_command()),
+            admission_controller=FakeAdmissionController(lease),
+            run_collection_once_v2_step=collect,
+            metrics_recorder=recorder,
+        )
+
+    assert "\nhhru_scheduler_last_triggered_run_timestamp_seconds " in (
+        exporter.render_prometheus()
+    )
+    assert lease.released is True
 
 
 def _build_run_command() -> RunCollectionOnceV2Command:

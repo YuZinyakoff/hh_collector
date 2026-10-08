@@ -13,12 +13,19 @@ of scope unless explicitly requested.
 
 ## Current State
 
-Post-reinstall read-only audit on 2026-10-07 confirmed local/GitHub/VPS HEAD
-`afc88e8`. Production search is blocked by an orphaned run after a confirmed
-reconciliation OOM on September 24. Daily archive/S3 verification still works.
-See `docs/ops/reconciliation-recovery-2026-10-07.md` for evidence and the
-pending recovery procedure. The bounded-memory fix is implemented locally;
-production deployment/recovery still requires separate approval.
+Post-reinstall audit on 2026-10-07 found a run orphaned by reconciliation OOM
+on September 24. The bounded-memory fix was committed/pushed as `09cf003`
+and deployed with approval. Recovery of run
+`38280dea-5262-4e92-ac9c-876bc15373e2` succeeded on October 7 at 19:29 UTC:
+full terminal coverage, no failed/unresolved partitions, Python memory about 216 MiB.
+See `docs/ops/reconciliation-recovery-2026-10-07.md` for the original incident procedure.
+On October 8, detail backlog fell from 204,245 to 3,045, backup/archive succeeded,
+no systemd units were failed, and disk had 44G free. A new sweep
+`a6b88bdc-4ce6-4af8-bbf2-a70511d841d5` started automatically at 10:18 UTC.
+The remaining stale-scheduler alert exposed delayed metrics publication until
+sweep completion. The local fix publishes admitted-attempt timing before collection,
+without doubling terminal counters or changing the 8-day alert threshold.
+Deploy this fix only with approval; do not restart the active sweep to clear the alert.
 The restored local `.venv` points to Python 3.14 while its packages were installed
 for 3.12. Tests for the fix use an isolated Python 3.12 environment under `/tmp`.
 
@@ -53,8 +60,8 @@ Last production state verified in the Codex session, on 2026-08-27 UTC:
 The 2026-08-27 research archive run safely exported, locally verified, uploaded, and remotely
 verified 75 batches, then reported `max_export_batches_exhausted`. The production setting
 `HHRU_RESEARCH_ARCHIVE_DAILY_MAX_EXPORT_BATCHES` was subsequently raised from `75` to `300`.
-No later production check is present in this repository or chat handoff. After migration,
-verify that later archive runs completed coverage audit and housekeeping successfully.
+Later checks confirmed archive coverage audit/housekeeping success on October 7
+and overall archive success on October 8.
 
 The laptop is not the production data authority. Production PostgreSQL runs on the VPS, while
 Timeweb S3 is the canonical cold store for the research archive and verified DB backups.

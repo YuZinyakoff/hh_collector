@@ -306,6 +306,13 @@ Local caveat:
   `hhru_scheduler_last_run_started_timestamp_seconds`,
   `hhru_scheduler_last_run_finished_timestamp_seconds`,
   `hhru_scheduler_last_observed_run_status{status}` для liveness/timing и outcome visibility.
+- Timing запуска публикуется сразу после успешного admission (lock получен,
+  active run отсутствует), до синхронного сбора. Это время принятой попытки, не
+  подтверждение создания `crawl_run` или успешного завершения. Пропуски admission
+  не обновляют Last Triggered Run. Terminal outcome и tick counter записываются
+  отдельно, один раз после завершения; старт не меняет предыдущий terminal status.
+  Уже работающий процесс со старым кодом не получит исправление: не перезапускайте
+  sweep ради сброса alert, дождитесь завершения. Порог stale остаётся 8 дней.
 - `hhru_detail_repair_backlog_size` теперь показывает текущий remaining backlog по run; `hhru_detail_repair_attempt_total`, `hhru_detail_repair_repaired_total` и `hhru_detail_repair_still_failing_total` показывают repair activity без ручного CLI refresh.
 - `hhru_first_detail_backlog_size{scope="active"}` показывает глобальный first-detail backlog для активных вакансий. `scope="all"` используется только если drain запущен с `--include-inactive yes`.
 - `hhru_first_detail_ready_backlog_size{scope="active"}` показывает часть backlog, которую worker может брать прямо сейчас: без active lease и без retry cooldown.

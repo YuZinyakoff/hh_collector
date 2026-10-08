@@ -60,6 +60,11 @@ class SchedulerAdmissionController(Protocol):
 
 
 class SchedulerMetricsRecorder(Protocol):
+    def record_scheduler_run_started(
+        self, *, ticked_at: datetime, run_started_at: datetime
+    ) -> None:
+        """Publish admitted-run timing before synchronous collection begins."""
+
     def record_scheduler_tick(
         self,
         *,
@@ -149,6 +154,10 @@ def trigger_run_now(
             return result
 
         run_started_at = datetime.now(UTC)
+        if metrics_recorder is not None:
+            metrics_recorder.record_scheduler_run_started(
+                ticked_at=ticked_at, run_started_at=run_started_at
+            )
         try:
             run_result = run_collection_once_v2_step(command.run_command)
         except Exception as error:

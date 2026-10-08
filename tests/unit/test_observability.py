@@ -14,6 +14,39 @@ from hhru_platform.infrastructure.observability.logging import (
 from hhru_platform.infrastructure.observability.metrics import FileBackedMetricsRegistry
 
 
+def test_scheduler_start_updates_only_timing_and_is_visible_to_exporter(tmp_path) -> None:
+    path = tmp_path / "metrics.json"
+    registry = FileBackedMetricsRegistry(path)
+    exporter = FileBackedMetricsRegistry(path)
+    previous_finished_at = datetime(2026, 10, 7, 19, 29, tzinfo=UTC)
+    registry.record_scheduler_tick(
+        outcome="succeeded",
+        ticked_at=previous_finished_at,
+        run_finished_at=previous_finished_at,
+        observed_run_status="succeeded",
+    )
+    ticked_at = datetime(2026, 10, 8, 10, 18, tzinfo=UTC)
+    started_at = datetime(2026, 10, 8, 10, 19, tzinfo=UTC)
+    registry.record_scheduler_run_started(ticked_at=ticked_at, run_started_at=started_at)
+
+    snapshot = exporter.render_prometheus()
+    assert f"hhru_scheduler_last_tick_timestamp_seconds {ticked_at.timestamp()}" in snapshot
+    assert (
+        f"hhru_scheduler_last_triggered_run_timestamp_seconds {started_at.timestamp()}"
+        in snapshot
+    )
+    assert (
+        f"hhru_scheduler_last_run_started_timestamp_seconds {started_at.timestamp()}"
+        in snapshot
+    )
+    assert (
+        f"hhru_scheduler_last_run_finished_timestamp_seconds {previous_finished_at.timestamp()}"
+        in snapshot
+    )
+    assert 'hhru_scheduler_tick_total{outcome="succeeded"} 1' in snapshot
+    assert 'hhru_scheduler_last_observed_run_status{status="succeeded"} 1' in snapshot
+
+
 def test_file_backed_metrics_registry_renders_prometheus_snapshot(tmp_path) -> None:
     registry = FileBackedMetricsRegistry(tmp_path / "metrics.json")
     registry.record_operation(

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, delete, exists, func, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import Select
@@ -13,6 +13,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import Exists
 
 from hhru_platform.domain.value_objects.enums import CrawlRunStatus
+from hhru_platform.infrastructure.db.locks import COLLECTION_RUN_ADVISORY_LOCK_KEY
 from hhru_platform.infrastructure.db.models.api_request_log import ApiRequestLog
 from hhru_platform.infrastructure.db.models.crawl_partition import (
     CrawlPartition as CrawlPartitionModel,
@@ -37,6 +38,20 @@ ACTIVE_RUN_STATUS = CrawlRunStatus.CREATED.value
 class SqlAlchemyHousekeepingRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def reserve_idle_collection_for_run_tree_retention(self) -> bool:
+        self._session.execute(text("SET LOCAL lock_timeout = '5s'"))
+        self._session.execute(text("SET LOCAL statement_timeout = '5min'"))
+        acquired = self._session.scalar(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": COLLECTION_RUN_ADVISORY_LOCK_KEY},
+        )
+        if not acquired:
+            return False
+        active_run_exists = self._session.scalar(
+            select(exists().where(CrawlRunModel.status == ACTIVE_RUN_STATUS))
+        )
+        return not active_run_exists
 
     def count_raw_api_payload_candidates(
         self,
@@ -142,7 +157,7 @@ class SqlAlchemyHousekeepingRepository:
                 CrawlRunModel.id.is_(None),
                 CrawlRunModel.status != ACTIVE_RUN_STATUS,
             ),
-            ~self._newer_vacancy_snapshot_exists(),
+            self._newer_vacancy_snapshot_exists(),
         ]
         if max_source_id is not None:
             filters.append(VacancySnapshotModel.id <= max_source_id)
@@ -167,7 +182,7 @@ class SqlAlchemyHousekeepingRepository:
                 CrawlRunModel.id.is_(None),
                 CrawlRunModel.status != ACTIVE_RUN_STATUS,
             ),
-            ~self._newer_vacancy_snapshot_exists(),
+            self._newer_vacancy_snapshot_exists(),
         ]
         if max_source_id is not None:
             filters.append(VacancySnapshotModel.id <= max_source_id)

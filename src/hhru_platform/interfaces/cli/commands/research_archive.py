@@ -390,6 +390,18 @@ def register_research_archive_commands(
         help="Override HHRU_HOUSEKEEPING_DELETE_LIMIT_PER_TARGET.",
     )
     housekeeping_apply_parser.add_argument(
+        "--run-tree-delete-limit",
+        type=_positive_int,
+        default=1,
+        help="Maximum run roots per transaction, separate from row targets. Defaults to 1.",
+    )
+    housekeeping_apply_parser.add_argument(
+        "--max-run-tree-cascade-rows",
+        type=_positive_int,
+        default=100_000,
+        help="Reject run-tree deletion above this partition + observation budget (100000).",
+    )
+    housekeeping_apply_parser.add_argument(
         "--apply",
         action="store_true",
         help="Required confirmation for destructive production housekeeping.",
@@ -684,6 +696,8 @@ def handle_apply_research_archive_housekeeping(args: argparse.Namespace) -> int:
                 else settings.housekeeping_delete_limit_per_target
             ),
             confirmed_apply=bool(args.apply),
+            run_tree_delete_limit=args.run_tree_delete_limit,
+            max_run_tree_cascade_rows=args.max_run_tree_cascade_rows,
             triggered_by=str(args.triggered_by),
         )
         with session_scope() as session:

@@ -50,6 +50,8 @@ class ApplyResearchArchiveHousekeepingCommand:
     detail_fetch_attempt_retention_days: int = 180
     finished_crawl_run_retention_days: int = 90
     delete_limit_per_target: int = 10_000
+    run_tree_delete_limit: int = 1
+    max_run_tree_cascade_rows: int = 100_000
     confirmed_apply: bool = False
     triggered_by: str = "apply-research-archive-housekeeping"
     evaluated_at: datetime | None = None
@@ -69,6 +71,10 @@ class ApplyResearchArchiveHousekeepingCommand:
             raise ValueError("--apply confirmation is required for destructive housekeeping")
         if not normalized_triggered_by:
             raise ValueError("triggered_by must not be empty")
+        if self.run_tree_delete_limit < 1:
+            raise ValueError("run_tree_delete_limit must be greater than zero")
+        if self.max_run_tree_cascade_rows < 1:
+            raise ValueError("max_run_tree_cascade_rows must be greater than zero")
         object.__setattr__(self, "archive_dir", Path(self.archive_dir))
         object.__setattr__(self, "archive_kind", normalized_archive_kind)
         object.__setattr__(self, "offsite_root", normalized_offsite_root)
@@ -142,6 +148,9 @@ class ResearchArchiveHousekeepingApplyRepository(
     ResearchArchiveHousekeepingPreviewRepository,
     Protocol,
 ):
+    def reserve_idle_collection_for_run_tree_retention(self) -> bool:
+        """Reserve collection admission until transaction end; reject active runs."""
+
     def delete_raw_api_payloads(self, payload_ids: Sequence[int]) -> int:
         """Delete exact verified raw payload ids."""
 
@@ -191,6 +200,10 @@ def apply_research_archive_housekeeping(
         triggered_by=command.triggered_by,
     )
     try:
+        if command.finished_crawl_run_retention_days > 0 and not (
+            housekeeping_repository.reserve_idle_collection_for_run_tree_retention()
+        ):
+            raise RuntimeError("run-tree retention requires idle collection admission")
         preview = preview_research_archive_housekeeping(
             command.to_preview_command(),
             housekeeping_repository=housekeeping_repository,
@@ -212,7 +225,7 @@ def apply_research_archive_housekeeping(
         run_ids = _list_run_tree_ids(
             preview=preview,
             housekeeping_repository=housekeeping_repository,
-            delete_limit=command.delete_limit_per_target,
+            delete_limit=min(command.delete_limit_per_target, command.run_tree_delete_limit),
         )
         locked_run_ids = _lock_run_tree_ids(
             preview=preview,
@@ -225,6 +238,13 @@ def apply_research_archive_housekeeping(
         cascade_seen_event_count = housekeeping_repository.count_vacancy_seen_events_for_run_ids(
             locked_run_ids
         )
+        cascade_rows = cascade_partition_count + cascade_seen_event_count
+        if cascade_rows > command.max_run_tree_cascade_rows:
+            raise RuntimeError(
+                "run-tree cascade row budget exceeded: "
+                f"{cascade_rows} > {command.max_run_tree_cascade_rows}; "
+                "review the preview before explicitly raising --max-run-tree-cascade-rows"
+            )
 
         summaries = tuple(
             _apply_target_plan(plan, housekeeping_repository=housekeeping_repository)

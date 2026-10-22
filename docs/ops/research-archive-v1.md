@@ -586,6 +586,11 @@ archive foundation.
   preview inside the delete transaction, replans exact bounded ids and locks
   selected run-tree roots before cascade deletion. Isolated smoke bundles cannot
   authorize apply.
+- Run-tree safety audit and prerequisites before enabling retention:
+  [2026-10-22 audit](retention-safety-audit-2026-10-22.md). Apply uses an idle
+  collection admission guard, a separate run-root limit (default 1), and a
+  partition/observation cascade budget (default 100000). Verified observation
+  coverage does not establish preservation of complete run/partition metadata.
 - Add operator runbook for archive-before-delete.
 
 Initial operator cadence:

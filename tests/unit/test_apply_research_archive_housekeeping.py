@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,10 +38,18 @@ class FakeApplyHousekeepingRepository:
         *,
         lock_matches: bool = True,
         raw_deleted_count: int | None = None,
+        idle: bool = True,
+        seen_event_count: int = 11,
     ) -> None:
         self.calls: list[tuple[object, ...]] = []
         self.lock_matches = lock_matches
         self.raw_deleted_count = raw_deleted_count
+        self.idle = idle
+        self.seen_event_count = seen_event_count
+
+    def reserve_idle_collection_for_run_tree_retention(self) -> bool:
+        self.calls.append(("reserve_idle",))
+        return self.idle
 
     def list_raw_api_payload_ids_for_retention(
         self,
@@ -98,7 +107,7 @@ class FakeApplyHousekeepingRepository:
 
     def count_vacancy_seen_events_for_run_ids(self, run_ids) -> int:
         self.calls.append(("count_seen_event", tuple(run_ids)))
-        return 11
+        return self.seen_event_count
 
     def delete_raw_api_payloads(self, payload_ids) -> int:
         self.calls.append(("delete_raw", tuple(payload_ids)))
@@ -151,7 +160,7 @@ def test_apply_research_archive_housekeeping_deletes_nothing_if_coverage_is_inco
             checkpoint_receipt_store=cast(Any, object()),
         )
 
-    assert repository.calls == []
+    assert repository.calls == [("reserve_idle",)]
 
 
 def test_apply_research_archive_housekeeping_deletes_only_replanned_verified_ids(
@@ -177,10 +186,11 @@ def test_apply_research_archive_housekeeping_deletes_only_replanned_verified_ids
     assert result.run_tree_summary.cascade_partition_count == 7
     assert result.run_tree_summary.cascade_vacancy_seen_event_count == 11
     assert repository.calls == [
+        ("reserve_idle",),
         ("list_raw", CUTOFF, 10, 81),
         ("list_snapshot", CUTOFF, 10, 1240),
         ("list_detail_attempt", CUTOFF, 10, 403),
-        ("list_safe_run", CUTOFF, 10, 1240),
+        ("list_safe_run", CUTOFF, 1, 1240),
         ("lock_safe_run", (RUN_ID,), CUTOFF, 1240),
         ("count_partition", (RUN_ID,)),
         ("count_seen_event", (RUN_ID,)),
@@ -231,6 +241,87 @@ def test_apply_research_archive_housekeeping_raises_on_delete_count_mismatch(
             receipt_store=cast(Any, object()),
             checkpoint_receipt_store=cast(Any, object()),
         )
+
+
+@pytest.mark.parametrize("field", ["run_tree_delete_limit", "max_run_tree_cascade_rows"])
+def test_run_tree_budgets_must_be_positive(field) -> None:
+    with pytest.raises(ValueError, match="must be greater than zero"):
+        replace(_command(), **{field: 0})
+
+
+def test_run_tree_retention_rejects_busy_collection_before_preview(monkeypatch) -> None:
+    repository = FakeApplyHousekeepingRepository(idle=False)
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.apply_research_archive_housekeeping."
+        "preview_research_archive_housekeeping",
+        lambda *args, **kwargs: pytest.fail("preview must not start while collection is busy"),
+    )
+    with pytest.raises(RuntimeError, match="requires idle collection admission"):
+        apply_research_archive_housekeeping(
+            _command(),
+            housekeeping_repository=cast(Any, repository),
+            checkpoint_store=cast(Any, object()),
+            receipt_store=cast(Any, object()),
+            checkpoint_receipt_store=cast(Any, object()),
+        )
+    assert repository.calls == [("reserve_idle",)]
+
+
+def test_run_tree_retention_rejects_large_cascade_before_any_delete(monkeypatch) -> None:
+    repository = FakeApplyHousekeepingRepository(seen_event_count=2_309_443)
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.apply_research_archive_housekeeping."
+        "preview_research_archive_housekeeping",
+        lambda *args, **kwargs: _preview_result(),
+    )
+    with pytest.raises(RuntimeError, match="cascade row budget exceeded"):
+        apply_research_archive_housekeeping(
+            _command(),
+            housekeeping_repository=cast(Any, repository),
+            checkpoint_store=cast(Any, object()),
+            receipt_store=cast(Any, object()),
+            checkpoint_receipt_store=cast(Any, object()),
+        )
+    assert not [call for call in repository.calls if str(call[0]).startswith("delete_")]
+
+
+def test_explicit_cascade_budget_allows_reviewed_batch(monkeypatch) -> None:
+    repository = FakeApplyHousekeepingRepository(seen_event_count=100_000)
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.apply_research_archive_housekeeping."
+        "preview_research_archive_housekeeping",
+        lambda *args, **kwargs: _preview_result(),
+    )
+    result = apply_research_archive_housekeeping(
+        replace(_command(), max_run_tree_cascade_rows=100_007, run_tree_delete_limit=2),
+        housekeeping_repository=cast(Any, repository),
+        checkpoint_store=cast(Any, object()),
+        receipt_store=cast(Any, object()),
+        checkpoint_receipt_store=cast(Any, object()),
+    )
+    assert result.run_tree_summary.cascade_vacancy_seen_event_count == 100_000
+    assert ("list_safe_run", CUTOFF, 2, 1240) in repository.calls
+
+
+def test_disabled_run_tree_retention_does_not_reserve_collection(monkeypatch) -> None:
+    repository = FakeApplyHousekeepingRepository(idle=False)
+    preview = _preview_result()
+    preview = replace(preview, run_tree_summary=replace(preview.run_tree_summary, enabled=False))
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.apply_research_archive_housekeeping."
+        "preview_research_archive_housekeeping",
+        lambda *args, **kwargs: preview,
+    )
+    result = apply_research_archive_housekeeping(
+        replace(_command(), finished_crawl_run_retention_days=0),
+        housekeeping_repository=cast(Any, repository),
+        checkpoint_store=cast(Any, object()),
+        receipt_store=cast(Any, object()),
+        checkpoint_receipt_store=cast(Any, object()),
+    )
+    assert result.run_tree_summary.deleted_run_count == 0
+    assert ("reserve_idle",) not in repository.calls
+    assert not [call for call in repository.calls if call[0] == "list_safe_run"]
 
 
 def _command(

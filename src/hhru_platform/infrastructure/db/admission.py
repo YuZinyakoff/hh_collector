@@ -7,12 +7,13 @@ from sqlalchemy.orm import Session
 
 from hhru_platform.domain.entities.crawl_run import CrawlRun
 from hhru_platform.domain.value_objects.enums import CrawlRunStatus
+from hhru_platform.infrastructure.db.locks import (
+    COLLECTION_RUN_ADVISORY_LOCK_KEY as COLLECTION_RUN_ADVISORY_LOCK_KEY,
+)
 from hhru_platform.infrastructure.db.repositories.crawl_run_repo import (
     SqlAlchemyCrawlRunRepository,
 )
 from hhru_platform.infrastructure.db.session import SessionLocal
-
-COLLECTION_RUN_ADVISORY_LOCK_KEY = 4_204_424_204
 
 
 class PostgresCollectionRunAdmissionLease:

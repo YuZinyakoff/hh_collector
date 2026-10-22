@@ -13,6 +13,15 @@ of scope unless explicitly requested.
 
 ## Current State
 
+October 22 disk/retention audit: see
+`docs/ops/retention-safety-audit-2026-10-22.md`. Nightly ~18 GiB dumps explain
+the filesystem warnings; PostgreSQL is 96 GB. Run-tree retention remains disabled
+on production. Local audit fixes inverted latest-snapshot retention selection
+and adds idle-admission/cascade-budget guards. Full run/partition metadata is
+NOT archived by Archive v1: do not enable destructive run-tree retention until
+the metadata-preservation decision/export and supervised procedure are complete.
+Disk expansion is a fallback, not the preferred solution. No VPS cleanup was run.
+
 Post-reinstall audit on 2026-10-07 found a run orphaned by reconciliation OOM
 on September 24. The bounded-memory fix was committed/pushed as `09cf003`
 and deployed with approval. Recovery of run

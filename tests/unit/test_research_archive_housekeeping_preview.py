@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
+import pytest
 from sqlalchemy.dialects import postgresql
 
 from hhru_platform.application.commands.audit_research_archive_coverage import (
@@ -211,7 +212,8 @@ def test_housekeeping_repository_applies_verified_source_id_bounds() -> None:
     assert "vacancy_snapshot_2.detail_payload_ref_id = raw_api_payload.id" in raw_sql
     assert "jsonb_extract_path_text" in raw_sql
     assert "vacancy_snapshot.id <= 1240" in snapshot_sql
-    assert "NOT (EXISTS (SELECT 1" in snapshot_sql
+    assert "EXISTS (SELECT 1" in snapshot_sql
+    assert "NOT (EXISTS (SELECT 1" not in snapshot_sql
     assert "vacancy_snapshot_1.vacancy_id = vacancy_snapshot.vacancy_id" in snapshot_sql
     assert "detail_fetch_attempt.id <= 403" in detail_attempt_sql
 
@@ -239,6 +241,25 @@ def test_housekeeping_repository_applies_verified_source_id_bounds() -> None:
     assert "crawl_run.id IN ('00000000-0000-0000-0000-000000000001')" in locked_safe_run_sql
     assert "NOT (EXISTS (SELECT 1" in locked_safe_run_sql
     assert "FOR UPDATE" in locked_safe_run_sql
+
+
+@pytest.mark.parametrize("method", [
+    "count_vacancy_snapshot_candidates",
+    "list_vacancy_snapshot_ids_for_retention",
+])
+def test_snapshot_retention_requires_a_newer_snapshot(method) -> None:
+    session = RecordingSession()
+    repository = SqlAlchemyHousekeepingRepository(cast(Any, session))
+    kwargs = {"cutoff": datetime(2026, 10, 8, tzinfo=UTC)}
+    if method.startswith("list_"):
+        kwargs["limit"] = 10
+    getattr(repository, method)(**kwargs)
+    statement = _sql(session.statement)
+    assert "EXISTS (SELECT 1" in statement
+    assert "NOT (EXISTS (SELECT 1" not in statement
+    assert "vacancy_snapshot_1.snapshot_type = vacancy_snapshot.snapshot_type" in statement
+    assert "vacancy_snapshot_1.captured_at > vacancy_snapshot.captured_at" in statement
+    assert "vacancy_snapshot_1.id > vacancy_snapshot.id" in statement
 
 
 class RecordingSession:

@@ -22,6 +22,15 @@ NOT archived by Archive v1: do not enable destructive run-tree retention until
 the metadata-preservation decision/export and supervised procedure are complete.
 Disk expansion is a fallback, not the preferred solution. No VPS cleanup was run.
 
+Follow-up code adds separate full run/partition metadata bundles, S3 full readback
+and exact-bundle/digest gating before run-tree deletion. See
+`docs/ops/run-tree-metadata.md`; real production export/readback/offline restore
+drill is still pending, and production run-tree retention must remain 0.
+The user applied `docs/ops/zabbix-timeweb-firewall.md`: 10050/TCP is restricted
+to the three configured Timeweb IPv4 addresses, general IPv4/IPv6 agent rules
+removed, OpenSSH unchanged. Fresh Timeweb polling and a second SSH login remain
+to be confirmed.
+
 Post-reinstall audit on 2026-10-07 found a run orphaned by reconciliation OOM
 on September 24. The bounded-memory fix was committed/pushed as `09cf003`
 and deployed with approval. Recovery of run

@@ -591,6 +591,11 @@ archive foundation.
   collection admission guard, a separate run-root limit (default 1), and a
   partition/observation cascade budget (default 100000). Verified observation
   coverage does not establish preservation of complete run/partition metadata.
+- Separate [run-tree metadata bundles](run-tree-metadata.md) now preserve the
+  technical tree without changing the append-only dataset/checkpoint contract.
+  Run-tree apply requires a full-readback receipt for that exact bundle and a
+  matching live-metadata digest. Finished-run retention remains disabled until
+  production validation and a separate supervised cleanup approval.
 - Add operator runbook for archive-before-delete.
 
 Initial operator cadence:

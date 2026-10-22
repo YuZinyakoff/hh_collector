@@ -402,6 +402,11 @@ def register_research_archive_commands(
         help="Reject run-tree deletion above this partition + observation budget (100000).",
     )
     housekeeping_apply_parser.add_argument(
+        "--run-tree-metadata-dir",
+        type=Path,
+        help="Verified S3 metadata bundle; its exact run id is the run-tree deletion allowlist.",
+    )
+    housekeeping_apply_parser.add_argument(
         "--apply",
         action="store_true",
         help="Required confirmation for destructive production housekeeping.",
@@ -698,6 +703,7 @@ def handle_apply_research_archive_housekeeping(args: argparse.Namespace) -> int:
             confirmed_apply=bool(args.apply),
             run_tree_delete_limit=args.run_tree_delete_limit,
             max_run_tree_cascade_rows=args.max_run_tree_cascade_rows,
+            run_tree_metadata_dir=args.run_tree_metadata_dir,
             triggered_by=str(args.triggered_by),
         )
         with session_scope() as session:

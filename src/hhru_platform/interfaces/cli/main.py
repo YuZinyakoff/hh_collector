@@ -22,6 +22,9 @@ from hhru_platform.interfaces.cli.commands.research_archive import (
 )
 from hhru_platform.interfaces.cli.commands.run import register_run_commands
 from hhru_platform.interfaces.cli.commands.run_once import register_run_once_commands
+from hhru_platform.interfaces.cli.commands.run_tree_metadata import (
+    register_run_tree_metadata_commands,
+)
 from hhru_platform.interfaces.cli.commands.scheduler import register_scheduler_commands
 
 
@@ -43,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_reconcile_commands(subparsers)
     register_research_commands(subparsers)
     register_research_archive_commands(subparsers)
+    register_run_tree_metadata_commands(subparsers)
     register_observability_commands(subparsers)
     return parser
 

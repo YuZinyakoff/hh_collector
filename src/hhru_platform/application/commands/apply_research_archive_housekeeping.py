@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 from uuid import UUID
 
 from hhru_platform.application.commands.audit_research_archive_coverage import (
@@ -30,6 +30,10 @@ from hhru_platform.infrastructure.observability.operations import (
     record_operation_failed,
     record_operation_succeeded,
 )
+from hhru_platform.infrastructure.research_archive.run_tree_metadata import (
+    records_digest,
+    verify_offsite_receipt,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +56,7 @@ class ApplyResearchArchiveHousekeepingCommand:
     delete_limit_per_target: int = 10_000
     run_tree_delete_limit: int = 1
     max_run_tree_cascade_rows: int = 100_000
+    run_tree_metadata_dir: Path | None = None
     confirmed_apply: bool = False
     triggered_by: str = "apply-research-archive-housekeeping"
     evaluated_at: datetime | None = None
@@ -64,8 +69,7 @@ class ApplyResearchArchiveHousekeepingCommand:
             raise ValueError("archive_kind must be production for destructive housekeeping")
         if normalized_offsite_root != RESEARCH_ARCHIVE_HOUSEKEEPING_PRODUCTION_OFFSITE_ROOT:
             raise ValueError(
-                "offsite_root must be /hhru-platform/research-archive "
-                "for destructive housekeeping"
+                "offsite_root must be /hhru-platform/research-archive for destructive housekeeping"
             )
         if not self.confirmed_apply:
             raise ValueError("--apply confirmation is required for destructive housekeeping")
@@ -151,6 +155,9 @@ class ResearchArchiveHousekeepingApplyRepository(
     def reserve_idle_collection_for_run_tree_retention(self) -> bool:
         """Reserve collection admission until transaction end; reject active runs."""
 
+    def iter_run_tree_metadata_records(self, run_id: UUID) -> Iterable[Mapping[str, Any]]:
+        """Stream exact locked root and partition metadata in deterministic order."""
+
     def delete_raw_api_payloads(self, payload_ids: Sequence[int]) -> int:
         """Delete exact verified raw payload ids."""
 
@@ -222,11 +229,17 @@ def apply_research_archive_housekeeping(
             )
             for summary in preview.summaries
         )
-        run_ids = _list_run_tree_ids(
-            preview=preview,
-            housekeeping_repository=housekeeping_repository,
-            delete_limit=min(command.delete_limit_per_target, command.run_tree_delete_limit),
-        )
+        metadata = None
+        if preview.run_tree_summary.enabled:
+            if command.run_tree_metadata_dir is None:
+                raise RuntimeError("run-tree retention requires --run-tree-metadata-dir")
+            metadata = verify_offsite_receipt(
+                command.run_tree_metadata_dir,
+                offsite_url=command.offsite_url,
+                offsite_root=command.offsite_root,
+            )
+        # The verified bundle is the explicit allowlist, not a fresh oldest-run selection.
+        run_ids = (metadata.run_id,) if metadata is not None else ()
         locked_run_ids = _lock_run_tree_ids(
             preview=preview,
             housekeeping_repository=housekeeping_repository,
@@ -245,6 +258,14 @@ def apply_research_archive_housekeeping(
                 f"{cascade_rows} > {command.max_run_tree_cascade_rows}; "
                 "review the preview before explicitly raising --max-run-tree-cascade-rows"
             )
+        if (
+            metadata is not None
+            and records_digest(
+                housekeeping_repository.iter_run_tree_metadata_records(metadata.run_id)
+            )
+            != metadata.content_sha256
+        ):
+            raise RuntimeError("run-tree metadata changed since verified export")
 
         summaries = tuple(
             _apply_target_plan(plan, housekeeping_repository=housekeeping_repository)
@@ -339,26 +360,6 @@ def _build_target_plan(
         source_id_covered=summary.source_id_covered,
         identifiers=identifiers,
         enabled=True,
-    )
-
-
-def _list_run_tree_ids(
-    *,
-    preview: PreviewResearchArchiveHousekeepingResult,
-    housekeeping_repository: ResearchArchiveHousekeepingApplyRepository,
-    delete_limit: int,
-) -> tuple[UUID, ...]:
-    summary = preview.run_tree_summary
-    if not summary.enabled:
-        return ()
-    if summary.cutoff is None:
-        raise RuntimeError("enabled crawl_run target has no cutoff")
-    return tuple(
-        housekeeping_repository.list_finished_crawl_run_ids_for_retention_bounded_by_seen_event_coverage(
-            cutoff=summary.cutoff,
-            limit=delete_limit,
-            max_seen_event_source_id=summary.seen_event_source_id_covered,
-        )
     )
 
 

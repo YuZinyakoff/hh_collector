@@ -22,10 +22,18 @@ from hhru_platform.infrastructure.db.models import (
 from hhru_platform.infrastructure.db.repositories.housekeeping_repo import (
     SqlAlchemyHousekeepingRepository,
 )
+from hhru_platform.infrastructure.db.repositories.run_tree_metadata_repo import (
+    SqlAlchemyRunTreeMetadataRepository,
+)
 from hhru_platform.infrastructure.db.repositories.vacancy_current_state_repo import (
     SqlAlchemyVacancyCurrentStateRepository,
 )
 from hhru_platform.infrastructure.db.session import create_engine_from_settings
+from hhru_platform.infrastructure.research_archive.run_tree_metadata import (
+    iter_bundle_records,
+    records_digest,
+    write_bundle,
+)
 
 
 @pytest.fixture
@@ -294,3 +302,22 @@ def test_snapshot_retention_preserves_latest_per_type_and_breaks_timestamp_ties(
             select(VacancySnapshot.snapshot_type).order_by(VacancySnapshot.snapshot_type)
         )
     ) == ["detail", "short"]
+
+
+def test_metadata_bundle_restores_exact_tree_into_isolated_empty_schema(retention_db, tmp_path):
+    session, _, old_id, _, _ = retention_db
+    repository = SqlAlchemyRunTreeMetadataRepository(session)
+    bundle = write_bundle(
+        output_dir=tmp_path, run_id=old_id, records=repository.iter_records(old_id)
+    )
+    schema = f"metadata_restore_{uuid4().hex}"
+    session.execute(text(f'CREATE SCHEMA "{schema}"'))
+    session.execute(text(f'SET LOCAL search_path TO "{schema}", pg_catalog'))
+    CrawlRun.__table__.create(session.connection())
+    CrawlPartition.__table__.create(session.connection())
+    repository.restore_into_empty_tables(iter_bundle_records(bundle.directory))
+    assert records_digest(repository.iter_records(old_id)) == bundle.content_sha256
+    assert list(session.scalars(select(CrawlPartition.parent_partition_id))).count(None) == 1
+    with pytest.raises(ValueError, match="requires empty"):
+        repository.restore_into_empty_tables(iter_bundle_records(bundle.directory))
+    # Fixture rollback removes this schema and all restored rows; no production restore CLI.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
@@ -31,6 +31,9 @@ from hhru_platform.infrastructure.db.models.vacancy_seen_event import (
 from hhru_platform.infrastructure.db.models.vacancy_snapshot import (
     VacancySnapshot as VacancySnapshotModel,
 )
+from hhru_platform.infrastructure.db.repositories.run_tree_metadata_repo import (
+    SqlAlchemyRunTreeMetadataRepository,
+)
 
 ACTIVE_RUN_STATUS = CrawlRunStatus.CREATED.value
 
@@ -38,6 +41,9 @@ ACTIVE_RUN_STATUS = CrawlRunStatus.CREATED.value
 class SqlAlchemyHousekeepingRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def iter_run_tree_metadata_records(self, run_id: UUID) -> Iterable[Mapping[str, Any]]:
+        return SqlAlchemyRunTreeMetadataRepository(self._session).iter_records(run_id)
 
     def reserve_idle_collection_for_run_tree_retention(self) -> bool:
         self._session.execute(text("SET LOCAL lock_timeout = '5s'"))

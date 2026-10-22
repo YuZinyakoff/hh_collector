@@ -26,10 +26,23 @@ from hhru_platform.application.commands.run_housekeeping import (
     TARGET_RAW_API_PAYLOAD,
     TARGET_VACANCY_SNAPSHOT,
 )
+from hhru_platform.infrastructure.research_archive.run_tree_metadata import records_digest
 
 EVALUATED_AT = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 CUTOFF = datetime(2026, 5, 31, 12, 0, tzinfo=UTC)
 RUN_ID = UUID("00000000-0000-0000-0000-000000000001")
+METADATA_RECORDS = [{"table": "crawl_run", "row": {"id": str(RUN_ID)}}]
+
+
+@pytest.fixture(autouse=True)
+def verified_metadata(monkeypatch):
+    bundle = SimpleNamespace(run_id=RUN_ID, content_sha256=records_digest(METADATA_RECORDS))
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.apply_research_archive_housekeeping."
+        "verify_offsite_receipt",
+        lambda *args, **kwargs: bundle,
+    )
+    return bundle
 
 
 class FakeApplyHousekeepingRepository:
@@ -50,6 +63,10 @@ class FakeApplyHousekeepingRepository:
     def reserve_idle_collection_for_run_tree_retention(self) -> bool:
         self.calls.append(("reserve_idle",))
         return self.idle
+
+    def iter_run_tree_metadata_records(self, run_id):
+        self.calls.append(("read_metadata", run_id))
+        return METADATA_RECORDS
 
     def list_raw_api_payload_ids_for_retention(
         self,
@@ -190,10 +207,10 @@ def test_apply_research_archive_housekeeping_deletes_only_replanned_verified_ids
         ("list_raw", CUTOFF, 10, 81),
         ("list_snapshot", CUTOFF, 10, 1240),
         ("list_detail_attempt", CUTOFF, 10, 403),
-        ("list_safe_run", CUTOFF, 1, 1240),
         ("lock_safe_run", (RUN_ID,), CUTOFF, 1240),
         ("count_partition", (RUN_ID,)),
         ("count_seen_event", (RUN_ID,)),
+        ("read_metadata", RUN_ID),
         ("delete_raw", (3, 5)),
         ("delete_snapshot", (11,)),
         ("delete_detail_attempt", (21, 22)),
@@ -300,7 +317,7 @@ def test_explicit_cascade_budget_allows_reviewed_batch(monkeypatch) -> None:
         checkpoint_receipt_store=cast(Any, object()),
     )
     assert result.run_tree_summary.cascade_vacancy_seen_event_count == 100_000
-    assert ("list_safe_run", CUTOFF, 2, 1240) in repository.calls
+    assert result.run_tree_summary.deleted_run_count == 1
 
 
 def test_disabled_run_tree_retention_does_not_reserve_collection(monkeypatch) -> None:
@@ -324,6 +341,43 @@ def test_disabled_run_tree_retention_does_not_reserve_collection(monkeypatch) ->
     assert not [call for call in repository.calls if call[0] == "list_safe_run"]
 
 
+def test_run_tree_retention_requires_verified_metadata_bundle(monkeypatch) -> None:
+    repository = FakeApplyHousekeepingRepository()
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.apply_research_archive_housekeeping."
+        "preview_research_archive_housekeeping",
+        lambda *args, **kwargs: _preview_result(),
+    )
+    with pytest.raises(RuntimeError, match="requires --run-tree-metadata-dir"):
+        apply_research_archive_housekeeping(
+            replace(_command(), run_tree_metadata_dir=None),
+            housekeeping_repository=cast(Any, repository),
+            checkpoint_store=cast(Any, object()),
+            receipt_store=cast(Any, object()),
+            checkpoint_receipt_store=cast(Any, object()),
+        )
+    assert not [call for call in repository.calls if str(call[0]).startswith("delete_")]
+
+
+def test_run_tree_retention_rejects_metadata_changed_since_export(monkeypatch, verified_metadata):
+    repository = FakeApplyHousekeepingRepository()
+    verified_metadata.content_sha256 = "changed"
+    monkeypatch.setattr(
+        "hhru_platform.application.commands.apply_research_archive_housekeeping."
+        "preview_research_archive_housekeeping",
+        lambda *args, **kwargs: _preview_result(),
+    )
+    with pytest.raises(RuntimeError, match="metadata changed since verified export"):
+        apply_research_archive_housekeeping(
+            _command(),
+            housekeeping_repository=cast(Any, repository),
+            checkpoint_store=cast(Any, object()),
+            receipt_store=cast(Any, object()),
+            checkpoint_receipt_store=cast(Any, object()),
+        )
+    assert not [call for call in repository.calls if str(call[0]).startswith("delete_")]
+
+
 def _command(
     *,
     archive_kind: str = "production",
@@ -340,6 +394,7 @@ def _command(
         detail_fetch_attempt_retention_days=1,
         finished_crawl_run_retention_days=1,
         delete_limit_per_target=10,
+        run_tree_metadata_dir=Path("verified-test-bundle"),
         confirmed_apply=confirmed_apply,
         triggered_by="unit-test",
         evaluated_at=EVALUATED_AT,

@@ -1,5 +1,13 @@
 # Retention safety audit (2026-10-22)
 
+Follow-up implementation: [metadata bundles](run-tree-metadata.md) now preserve
+the full technical tree separately from Archive v1, with full S3 readback and
+an exact-id/digest gate on apply. Synthetic isolated restore tests pass; a
+production-bundle export/readback/offline restore drill is still pending.
+Production finished-run retention stays disabled. See also
+[Zabbix firewall procedure](zabbix-timeweb-firewall.md); the user applied the
+scoped rules and confirmed OpenSSH was unchanged. Fresh polling remains to check.
+
 ## Production evidence
 
 The VPS has a 154G root filesystem, 117G used and 38G available after cleanup.
@@ -83,7 +91,8 @@ not a permanent archive of that metadata. Daily archive is not a full DB restore
 2. Decide whether all technical metadata must remain recoverable. If yes, add a
    durable export of exact selected run/partition records, with matching S3
    verification/readback and a documented reconstruction test, before deletion.
-   This export/reconstruction is not implemented by this change.
+   Export/reconstruction is implemented in the follow-up metadata-bundle feature;
+   its production validation remains pending.
 3. Confirm approved retention, fresh verified DB backup and relevant archive
    readback. Read-only preview must remain coverage-complete with no issues.
 4. Wait for the current sweep/reconciliation to finish. Do not disable or restart
@@ -91,9 +100,8 @@ not a permanent archive of that metadata. Daily archive is not a full DB restore
    free space. Do not run manual producers/resume commands concurrently.
 5. Review one exact root, its SET NULL references and cascade counts; use a
    supervised operation with explicit budgets/timeouts, not the daily generic
-   50000-root allowance. An explicit id allowlist/durable execution plan is not
-   implemented: apply replans oldest eligible roots, so preview is not approval
-   of an immutable root selection.
+   50000-root allowance. Follow-up apply requires the verified metadata bundle
+   for one exact root; preview alone is not approval of a destructive operation.
 6. Compare vacancy/current-state invariants, latest sweep, detail backlog, errors,
    WAL and free space afterward. Do not promise OS-visible disk reclamation from
    DELETE. A separate space-reclamation plan needs measurements and downtime/
@@ -118,5 +126,6 @@ WAL, blocking time or throughput. No production S3 contents were fetched here.
 
 Timeweb Zabbix agent was already installed. Its installer opened 10050/TCP to
 all IPv4/IPv6 sources; agent `Server` lists three provider IPv4 addresses.
-Restricting UFW to those sources is a separate pending host change; preserve
-OpenSSH access. Do not rerun an HTTP-downloaded root shell installer.
+The user subsequently restricted UFW to those sources and removed both general
+agent rules, preserving OpenSSH. Verify fresh Timeweb polling and a second SSH
+login. Do not rerun an HTTP-downloaded root shell installer.

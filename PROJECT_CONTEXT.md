@@ -13,6 +13,14 @@ of scope unless explicitly requested.
 
 ## Current State
 
+October 27 archive sync investigation and local fix:
+`docs/ops/archive-sync-recovery-2026-10-27.md`. Morning sync failed on S3
+connection; a supervised retry started at 19:02 UTC and was still active at
+20:22 (final result not yet reported). Local code now caches unchanged control
+uploads, logs progress and bounds research S3 socket/retry/transfer settings.
+Do not restart/pull into the active pipeline without a state check and approval.
+Disk was 122G used / 33G free; backups succeeded and finished-run retention is 0.
+
 October 22 disk/retention audit: see
 `docs/ops/retention-safety-audit-2026-10-22.md`. Nightly ~18 GiB dumps explain
 the filesystem warnings; PostgreSQL is 96 GB. Run-tree retention remains disabled
@@ -24,8 +32,11 @@ Disk expansion is a fallback, not the preferred solution. No VPS cleanup was run
 
 Follow-up code adds separate full run/partition metadata bundles, S3 full readback
 and exact-bundle/digest gating before run-tree deletion. See
-`docs/ops/run-tree-metadata.md`; real production export/readback/offline restore
-drill is still pending, and production run-tree retention must remain 0.
+`docs/ops/run-tree-metadata.md`. The user exported and S3-readback-verified run
+`c7e7d8c6-6813-454c-845e-ca44539da1e8` on October 22: 18304 partitions, 2.3M
+bundle at `.state/archive/run-tree-metadata/c7e7d8c6-6813-454c-845e-ca44539da1e8-9ud_8za0`
+on the VPS. The real-bundle offline restore drill is still pending; production
+run-tree retention must remain 0.
 The user applied `docs/ops/zabbix-timeweb-firewall.md`: 10050/TCP is restricted
 to the three configured Timeweb IPv4 addresses, general IPv4/IPv6 agent rules
 removed, OpenSSH unchanged. Fresh Timeweb polling and a second SSH login remain

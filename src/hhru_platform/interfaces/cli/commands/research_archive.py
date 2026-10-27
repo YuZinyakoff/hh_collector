@@ -820,6 +820,7 @@ def _build_research_archive_offsite_command_and_store(
         region_name=region_name,
         access_key_id=access_key_id,
         secret_access_key=secret_access_key,
+        serial_transfers=True,
     )
     return command, uploader
 
@@ -852,6 +853,7 @@ def _build_verify_research_archive_offsite_command_and_store(
         region_name=region_name,
         access_key_id=access_key_id,
         secret_access_key=secret_access_key,
+        serial_transfers=True,
     )
     return command, remote_store
 
@@ -935,6 +937,8 @@ def _print_sync_offsite_result(result: SyncResearchArchiveOffsiteResult) -> None
     print(f"remote_inventory_path={result.remote_inventory_path or '-'}")
     print(f"inventory_uploaded={'yes' if result.inventory_uploaded else 'no'}")
     print(f"checkpoint_uploaded_count={result.checkpoint_uploaded_count}")
+    print(f"checkpoint_scanned_count={result.checkpoint_scanned_count}")
+    print(f"checkpoint_skipped_count={result.checkpoint_skipped_count}")
     for checkpoint_file, remote_checkpoint_path in zip(
         result.checkpoint_files,
         result.remote_checkpoint_paths,

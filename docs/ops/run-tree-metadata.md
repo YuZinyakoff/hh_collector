@@ -24,7 +24,11 @@ reconciliation, restore live current state, or recreate a whole historical DB.
 ## Non-destructive production validation after code deployment
 
 First obtain/review an exact finished run id (not the currently active sweep).
-No export/upload has been run against production by this local session.
+The user validated production export and S3 full readback on October 22 for
+`c7e7d8c6-6813-454c-845e-ca44539da1e8`: 18304 partitions, 2.3M, local bundle
+`.state/archive/run-tree-metadata/c7e7d8c6-6813-454c-845e-ca44539da1e8-9ud_8za0`.
+The actual production-bundle offline restore drill remains pending. The commands
+below are the procedure, not a request to repeat this completed export.
 
 ```bash
 cd /opt/hh_collector

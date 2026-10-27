@@ -66,6 +66,77 @@ class FakeS3Client:
         return {}
 
 
+def test_research_s3_profile_has_explicit_socket_timeouts_and_finite_retries(monkeypatch):
+    import boto3
+
+    captured = []
+    client = FakeS3Client()
+
+    def create_client(*args, **kwargs):
+        captured.append(kwargs)
+        return client
+
+    monkeypatch.setattr(boto3, "client", create_client)
+    uploader = S3BackupOffsiteUploader.with_credentials(
+        endpoint_url="https://s3.example.test",
+        bucket="test",
+        key_prefix="archive",
+        region_name="ru-1",
+        access_key_id="test-key",
+        secret_access_key="test-secret",
+        serial_transfers=True,
+    )
+    config = captured[-1]["config"]
+    assert uploader.serial_transfers
+    assert config.connect_timeout == 10
+    assert config.read_timeout == 60
+    assert config.retries == {"mode": "standard", "total_max_attempts": 3}
+    S3BackupOffsiteUploader.with_credentials(
+        endpoint_url="https://s3.example.test",
+        bucket="test",
+        key_prefix="backup",
+        region_name="ru-1",
+        access_key_id="test-key",
+        secret_access_key="test-secret",
+    )
+    assert captured[-1]["config"].retries is None
+
+
+def test_serial_s3_transfers_do_not_start_worker_threads(tmp_path):
+    class Client(FakeS3Client):
+        def __init__(self):
+            super().__init__()
+            self.configs = []
+
+        def upload_file(self, Filename, Bucket, Key, Config=None):
+            self.configs.append(Config)
+            super().upload_file(Filename, Bucket, Key)
+
+        def download_file(self, Bucket, Key, Filename, Config=None):
+            self.configs.append(Config)
+            super().download_file(Bucket, Key, Filename)
+
+    client = Client()
+    uploader = S3BackupOffsiteUploader(
+        endpoint_url="https://s3.example.test",
+        bucket="test",
+        key_prefix="",
+        client=client,
+        serial_transfers=True,
+    )
+    source = tmp_path / "source"
+    source.write_bytes(b"preserved")
+    uploader.upload_file(local_file=source, remote_path="object")
+    target = tmp_path / "target"
+    uploader.download_file(local_file=target, remote_path="object")
+    assert target.read_bytes() == source.read_bytes()
+    assert len(client.configs) == 2
+    for config in client.configs:
+        assert config.use_threads is False
+        assert config.max_concurrency == 1
+        assert config.num_download_attempts == 3
+
+
 def test_s3_backup_offsite_uploader_maps_remote_path_to_object_key(
     tmp_path: Path,
 ) -> None:
@@ -253,8 +324,7 @@ def test_sync_backup_offsite_uploads_latest_backup_and_manifest_once(
     assert manifest_payload["chunk_size_bytes"] == 6
     assert [part["size_bytes"] for part in manifest_payload["parts"]] == [6, 6, 1]
     assert result.summaries[0].remote_backup_path == (
-        "/hhru-platform/backups/"
-        "hhru-platform_hhru_platform_20260516T084422Z.dump.parts"
+        "/hhru-platform/backups/hhru-platform_hhru_platform_20260516T084422Z.dump.parts"
     )
     assert result.summaries[0].part_count == 3
     assert Path(f"{latest_backup.resolve()}.offsite.json").exists()
@@ -359,9 +429,7 @@ def test_sync_backup_offsite_resumes_uploaded_parts(
     backup = backup_dir / "hhru-platform_hhru_platform_20260516T084422Z.dump"
     backup.write_bytes(b"latest-backup")
     first_uploader = FailingPartOffsiteUploader(
-        failing_remote_path=(
-            "hhru-platform_hhru_platform_20260516T084422Z.dump.parts/000002.part"
-        )
+        failing_remote_path=("hhru-platform_hhru_platform_20260516T084422Z.dump.parts/000002.part")
     )
     receipt_store = LocalBackupOffsiteUploadReceiptStore()
     command = SyncBackupOffsiteCommand(

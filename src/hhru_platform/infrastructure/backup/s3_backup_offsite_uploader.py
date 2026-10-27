@@ -11,10 +11,10 @@ class S3HeadObjectResponse(TypedDict):
 
 
 class S3UploadClient(Protocol):
-    def upload_file(self, Filename: str, Bucket: str, Key: str) -> None:
+    def upload_file(self, Filename: str, Bucket: str, Key: str, Config: Any = None) -> None:
         """Upload one local file to an S3-compatible object key."""
 
-    def download_file(self, Bucket: str, Key: str, Filename: str) -> None:
+    def download_file(self, Bucket: str, Key: str, Filename: str, Config: Any = None) -> None:
         """Download one S3-compatible object key into a local file."""
 
     def head_object(self, *, Bucket: str, Key: str) -> S3HeadObjectResponse:
@@ -30,6 +30,7 @@ class S3BackupOffsiteUploader:
     bucket: str
     key_prefix: str
     client: S3UploadClient
+    serial_transfers: bool = False
 
     def __post_init__(self) -> None:
         normalized_endpoint_url = self.endpoint_url.strip().rstrip("/")
@@ -53,6 +54,7 @@ class S3BackupOffsiteUploader:
         region_name: str,
         access_key_id: str,
         secret_access_key: str,
+        serial_transfers: bool = False,
     ) -> S3BackupOffsiteUploader:
         return cls(
             endpoint_url=endpoint_url,
@@ -63,17 +65,29 @@ class S3BackupOffsiteUploader:
                 region_name=region_name,
                 access_key_id=access_key_id,
                 secret_access_key=secret_access_key,
+                bounded_requests=serial_transfers,
             ),
+            serial_transfers=serial_transfers,
         )
 
     def upload_file(self, *, local_file: Path, remote_path: str) -> None:
         key = _join_object_key(self.key_prefix, remote_path)
-        self.client.upload_file(str(local_file), self.bucket, key)
+        if self.serial_transfers:
+            self.client.upload_file(
+                str(local_file), self.bucket, key, Config=_serial_transfer_config()
+            )
+        else:
+            self.client.upload_file(str(local_file), self.bucket, key)
 
     def download_file(self, *, local_file: Path, remote_path: str) -> None:
         key = _join_object_key(self.key_prefix, remote_path)
         local_file.parent.mkdir(parents=True, exist_ok=True)
-        self.client.download_file(self.bucket, key, str(local_file))
+        if self.serial_transfers:
+            self.client.download_file(
+                self.bucket, key, str(local_file), Config=_serial_transfer_config()
+            )
+        else:
+            self.client.download_file(self.bucket, key, str(local_file))
 
     def get_file_size(self, *, remote_path: str) -> int:
         key = _join_object_key(self.key_prefix, remote_path)
@@ -91,11 +105,22 @@ def _create_s3_client(
     region_name: str,
     access_key_id: str,
     secret_access_key: str,
+    bounded_requests: bool = False,
 ) -> S3UploadClient:
     boto3_module = import_module("boto3")
     botocore_config_module = import_module("botocore.config")
     client_factory = cast(Any, boto3_module.__dict__["client"])
     config_cls = cast(Any, botocore_config_module.__dict__["Config"])
+    config_options: dict[str, Any] = {
+        "signature_version": "s3v4",
+        "s3": {"addressing_style": "path"},
+    }
+    if bounded_requests:
+        config_options.update(
+            connect_timeout=10,
+            read_timeout=60,
+            retries={"mode": "standard", "total_max_attempts": 3},
+        )
     return cast(
         S3UploadClient,
         client_factory(
@@ -104,9 +129,15 @@ def _create_s3_client(
             region_name=region_name.strip() or "ru-1",
             aws_access_key_id=access_key_id,
             aws_secret_access_key=secret_access_key,
-            config=config_cls(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=config_cls(**config_options),
         ),
     )
+
+
+def _serial_transfer_config() -> Any:
+    transfer_module = import_module("boto3.s3.transfer")
+    config_cls = cast(Any, transfer_module.__dict__["TransferConfig"])
+    return config_cls(use_threads=False, max_concurrency=1, num_download_attempts=3)
 
 
 def _normalize_key_prefix(key_prefix: str) -> str:

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Protocol
 
 from hhru_platform.infrastructure.observability.logging import log_event
@@ -15,6 +16,12 @@ from hhru_platform.infrastructure.observability.operations import (
     record_operation_succeeded,
 )
 from hhru_platform.infrastructure.research_archive import ResearchArchiveOffsiteUploadReceipt
+from hhru_platform.infrastructure.research_archive.checkpoint_verification_receipt_store import (
+    LocalResearchArchiveCheckpointVerificationReceiptStore,
+)
+from hhru_platform.infrastructure.research_archive.control_upload_receipt_store import (
+    LocalControlUploadReceiptStore,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -84,6 +91,8 @@ class SyncResearchArchiveOffsiteResult:
     checkpoint_files: tuple[Path, ...]
     remote_checkpoint_paths: tuple[str, ...]
     summaries: tuple[ResearchArchiveOffsiteSummary, ...]
+    checkpoint_scanned_count: int = 0
+    checkpoint_skipped_count: int = 0
 
     @property
     def scanned_manifest_count(self) -> int:
@@ -151,8 +160,12 @@ def sync_research_archive_offsite(
             manifest_files=command.manifest_files,
             limit=command.limit,
         )
-        summaries = tuple(
-            _sync_one_manifest(
+        _progress(phase="manifests", completed=0, total=len(manifest_files), uploaded=0, skipped=0)
+        collected: list[ResearchArchiveOffsiteSummary] = []
+        uploaded = skipped = 0
+        last_progress = monotonic()
+        for index, manifest_file in enumerate(manifest_files, 1):
+            summary = _sync_one_manifest(
                 command=command,
                 archive_root=archive_root,
                 manifest_file=manifest_file,
@@ -160,15 +173,32 @@ def sync_research_archive_offsite(
                 offsite_uploader=offsite_uploader,
                 receipt_store=receipt_store,
             )
-            for manifest_file in manifest_files
+            collected.append(summary)
+            uploaded += int(summary.uploaded)
+            skipped += int(summary.skipped)
+            if index % 100 == 0 or monotonic() - last_progress >= 10:
+                _progress(
+                    phase="manifests",
+                    completed=index,
+                    total=len(manifest_files),
+                    uploaded=uploaded,
+                    skipped=skipped,
+                )
+                last_progress = monotonic()
+        summaries = tuple(collected)
+        _progress(
+            phase="manifests",
+            completed=len(summaries),
+            total=len(manifest_files),
+            uploaded=uploaded,
+            skipped=skipped,
         )
         inventory_file, remote_inventory_path, inventory_uploaded = _sync_inventory(
             command=command,
             archive_root=archive_root,
-            synced_summaries=summaries,
             offsite_uploader=offsite_uploader,
         )
-        checkpoint_files, remote_checkpoint_paths = _sync_checkpoints(
+        checkpoint_files, remote_checkpoint_paths, checkpoint_scanned_count = _sync_checkpoints(
             command=command,
             archive_root=archive_root,
             offsite_uploader=offsite_uploader,
@@ -201,6 +231,8 @@ def sync_research_archive_offsite(
         checkpoint_files=checkpoint_files,
         remote_checkpoint_paths=remote_checkpoint_paths,
         summaries=summaries,
+        checkpoint_scanned_count=checkpoint_scanned_count,
+        checkpoint_skipped_count=checkpoint_scanned_count - len(checkpoint_files),
     )
     record_operation_succeeded(
         LOGGER,
@@ -216,6 +248,8 @@ def sync_research_archive_offsite(
         skipped_manifest_count=result.skipped_manifest_count,
         inventory_uploaded=result.inventory_uploaded,
         checkpoint_uploaded_count=result.checkpoint_uploaded_count,
+        checkpoint_scanned_count=result.checkpoint_scanned_count,
+        checkpoint_skipped_count=result.checkpoint_skipped_count,
     )
     return result
 
@@ -344,7 +378,6 @@ def _sync_inventory(
     *,
     command: SyncResearchArchiveOffsiteCommand,
     archive_root: Path,
-    synced_summaries: tuple[ResearchArchiveOffsiteSummary, ...],
     offsite_uploader: ResearchArchiveOffsiteUploader,
 ) -> tuple[Path | None, str | None, bool]:
     inventory_file = archive_root / "v1" / "inventory" / "archive-inventory.jsonl"
@@ -355,8 +388,17 @@ def _sync_inventory(
     is_partial_sync = bool(command.manifest_files) or command.limit is not None
     if is_partial_sync:
         return inventory_file, remote_path, False
-    offsite_uploader.upload_file(local_file=inventory_file, remote_path=remote_relative_path)
-    return inventory_file, remote_path, True
+    uploaded = _sync_control_file(
+        command=command,
+        local_file=inventory_file,
+        remote_relative_path=remote_relative_path,
+        offsite_uploader=offsite_uploader,
+        kind="inventory",
+    )
+    _progress(
+        phase="inventory", completed=1, total=1, uploaded=int(uploaded), skipped=int(not uploaded)
+    )
+    return inventory_file, remote_path, uploaded
 
 
 def _sync_checkpoints(
@@ -364,23 +406,137 @@ def _sync_checkpoints(
     command: SyncResearchArchiveOffsiteCommand,
     archive_root: Path,
     offsite_uploader: ResearchArchiveOffsiteUploader,
-) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+) -> tuple[tuple[Path, ...], tuple[str, ...], int]:
     is_partial_sync = bool(command.manifest_files) or command.limit is not None
     if is_partial_sync:
-        return (), ()
+        return (), (), 0
     checkpoint_root = archive_root / "v1" / "checkpoints"
     checkpoint_files = tuple(sorted(checkpoint_root.rglob("*.checkpoint.json")))
     remote_checkpoint_paths: list[str] = []
-    for checkpoint_file in checkpoint_files:
+    uploaded_files: list[Path] = []
+    skipped = 0
+    last_progress = monotonic()
+    _progress(phase="checkpoints", completed=0, total=len(checkpoint_files), uploaded=0, skipped=0)
+    for index, checkpoint_file in enumerate(checkpoint_files, 1):
         remote_relative_path = checkpoint_file.relative_to(archive_root).as_posix()
-        offsite_uploader.upload_file(
+        uploaded = _sync_control_file(
+            command=command,
             local_file=checkpoint_file,
-            remote_path=remote_relative_path,
+            remote_relative_path=remote_relative_path,
+            offsite_uploader=offsite_uploader,
+            kind="checkpoint",
         )
-        remote_checkpoint_paths.append(
-            _join_remote_path(command.offsite_root, remote_relative_path)
+        if uploaded:
+            uploaded_files.append(checkpoint_file)
+            remote_checkpoint_paths.append(
+                _join_remote_path(command.offsite_root, remote_relative_path)
+            )
+        else:
+            skipped += 1
+        if index % 100 == 0 or monotonic() - last_progress >= 10:
+            _progress(
+                phase="checkpoints",
+                completed=index,
+                total=len(checkpoint_files),
+                uploaded=len(uploaded_files),
+                skipped=skipped,
+            )
+            last_progress = monotonic()
+    _progress(
+        phase="checkpoints",
+        completed=len(checkpoint_files),
+        total=len(checkpoint_files),
+        uploaded=len(uploaded_files),
+        skipped=skipped,
+    )
+    return tuple(uploaded_files), tuple(remote_checkpoint_paths), len(checkpoint_files)
+
+
+def _progress(*, phase: str, completed: int, total: int, uploaded: int, skipped: int) -> None:
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "sync_research_archive_offsite.progress",
+        operation="sync_research_archive_offsite",
+        status="running",
+        phase=phase,
+        completed=completed,
+        total=total,
+        uploaded=uploaded,
+        skipped=skipped,
+    )
+
+
+def _sync_control_file(
+    *,
+    command: SyncResearchArchiveOffsiteCommand,
+    local_file: Path,
+    remote_relative_path: str,
+    offsite_uploader: ResearchArchiveOffsiteUploader,
+    kind: str,
+) -> bool:
+    fingerprint: dict[str, object] = {
+        "schema_version": "research-control-upload-v1",
+        "offsite_url": command.offsite_url,
+        "offsite_root": command.offsite_root,
+        "remote_path": _join_remote_path(command.offsite_root, remote_relative_path),
+        "size_bytes": local_file.stat().st_size,
+        "sha256": _sha256_file(local_file),
+        "kind": kind,
+    }
+    receipts = LocalControlUploadReceiptStore()
+    if receipts.matches(local_file=local_file, fingerprint=fingerprint):
+        return False
+    if kind == "checkpoint" and _has_matching_checkpoint_verification(local_file, fingerprint):
+        return False
+    started = monotonic()
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "sync_research_archive_offsite.control_upload.started",
+        operation="sync_research_archive_offsite",
+        status="started",
+        kind=kind,
+        local_file=local_file,
+        remote_relative_path=remote_relative_path,
+        size_bytes=fingerprint["size_bytes"],
+    )
+    offsite_uploader.upload_file(local_file=local_file, remote_path=remote_relative_path)
+    if (
+        local_file.stat().st_size != fingerprint["size_bytes"]
+        or _sha256_file(local_file) != fingerprint["sha256"]
+    ):
+        raise RuntimeError("research archive control file changed during upload")
+    # Persist only after upload success. This cache is NOT a verification receipt.
+    receipts.write_receipt(local_file=local_file, fingerprint=fingerprint)
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "sync_research_archive_offsite.control_upload.succeeded",
+        operation="sync_research_archive_offsite",
+        status="succeeded",
+        kind=kind,
+        local_file=local_file,
+        duration_ms=int((monotonic() - started) * 1000),
+    )
+    return True
+
+
+def _has_matching_checkpoint_verification(local_file: Path, fingerprint: dict[str, object]) -> bool:
+    try:
+        receipt = LocalResearchArchiveCheckpointVerificationReceiptStore().load_receipt(
+            checkpoint_file=local_file
         )
-    return checkpoint_files, tuple(remote_checkpoint_paths)
+    except (ValueError, KeyError, TypeError):
+        LOGGER.warning("ignoring malformed checkpoint verification receipt: %s", local_file)
+        return False
+    return receipt is not None and (
+        receipt.offsite_url == fingerprint["offsite_url"]
+        and receipt.offsite_root == fingerprint["offsite_root"]
+        and receipt.remote_checkpoint_path == fingerprint["remote_path"]
+        and receipt.checkpoint_size_bytes == fingerprint["size_bytes"]
+        and receipt.checkpoint_sha256 == fingerprint["sha256"]
+    )
 
 
 def _load_bundle(

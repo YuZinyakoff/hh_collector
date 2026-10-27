@@ -91,6 +91,7 @@ def handle_sync(args: argparse.Namespace) -> int:
             region_name=_research_archive_s3_region(settings),
             access_key_id=_research_archive_s3_access_key_id(settings),
             secret_access_key=_research_archive_s3_secret_access_key(settings),
+            serial_transfers=True,
         )
         bundle = sync_and_verify_bundle(
             args.bundle_dir,

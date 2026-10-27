@@ -597,6 +597,9 @@ archive foundation.
   matching live-metadata digest. Finished-run retention remains disabled until
   production validation and a separate supervised cleanup approval.
 - Add operator runbook for archive-before-delete.
+- [October 27 sync recovery](archive-sync-recovery-2026-10-27.md): unchanged
+  control-file upload caching, progress events and research S3 timeout/retry
+  limits. Upload-cache receipts do not replace remote verification/coverage proof.
 
 Initial operator cadence:
 

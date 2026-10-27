@@ -79,10 +79,7 @@ class FakeResearchArchiveRepository:
             yield record
         elif dataset == "silver/detail_fetch_attempt":
             record = _detail_fetch_attempt_record(401)
-            if (
-                after_source_id is not None
-                and record["detail_fetch_attempt_id"] <= after_source_id
-            ):
+            if after_source_id is not None and record["detail_fetch_attempt_id"] <= after_source_id:
                 return
             if settled_before is not None and record["requested_at"] > settled_before:
                 return
@@ -364,8 +361,7 @@ def test_research_archive_store_flushes_chunk_when_byte_buffer_limit_is_reached(
 
     assert [summary.row_count for summary in summaries] == [1, 1]
     manifests = [
-        json.loads(summary.manifest_file.read_text(encoding="utf-8"))
-        for summary in summaries
+        json.loads(summary.manifest_file.read_text(encoding="utf-8")) for summary in summaries
     ]
     assert [manifest["max_buffer_size_bytes"] for manifest in manifests] == [1, 1]
 
@@ -410,9 +406,7 @@ def test_detail_fetch_attempt_is_an_incremental_archive_dataset(tmp_path: Path) 
         triggered_by="unit-test",
     )[0]
 
-    assert "silver/detail_fetch_attempt/year=2026/month=05/day=26" in str(
-        summary.data_file
-    )
+    assert "silver/detail_fetch_attempt/year=2026/month=05/day=26" in str(summary.data_file)
     manifest = json.loads(summary.manifest_file.read_text(encoding="utf-8"))
     assert manifest["dataset_key"] == "silver/detail_fetch_attempt"
     assert manifest["source_min_id"] == "401"
@@ -587,7 +581,7 @@ def test_sync_and_verify_research_archive_offsite(
 
     assert second_result.uploaded_manifest_count == 0
     assert second_result.skipped_manifest_count == 2
-    assert second_result.inventory_uploaded is True
+    assert second_result.inventory_uploaded is False
 
     verify_result = verify_research_archive_offsite(
         VerifyResearchArchiveOffsiteCommand(
@@ -620,9 +614,9 @@ def test_sync_and_verify_research_archive_offsite(
         for summary in verify_result.verified_manifests
     ]
     assert all(receipt is not None for receipt in verification_receipts)
-    assert {
-        receipt.verified_at for receipt in verification_receipts if receipt is not None
-    } == {datetime(2026, 5, 28, 12, 0, tzinfo=UTC)}
+    assert {receipt.verified_at for receipt in verification_receipts if receipt is not None} == {
+        datetime(2026, 5, 28, 12, 0, tzinfo=UTC)
+    }
     assert [
         receipt.readback_verified for receipt in verification_receipts if receipt is not None
     ] == [True, False]
@@ -864,6 +858,18 @@ def test_audit_research_archive_coverage_requires_verified_checkpoint_chain(
         offsite_uploader=remote_store,
         receipt_store=LocalResearchArchiveOffsiteUploadReceiptStore(),
     )
+    upload_only_coverage = audit_research_archive_coverage(
+        AuditResearchArchiveCoverageCommand(
+            archive_dir=archive_dir,
+            datasets=("bronze/raw_api_payload",),
+            offsite_url="https://s3.example.test/bucket-id",
+            triggered_by="unit-test",
+        ),
+        checkpoint_store=checkpoint_store,
+        receipt_store=verification_receipt_store,
+        checkpoint_receipt_store=checkpoint_receipt_store,
+    )
+    assert upload_only_coverage.status == "incomplete"
     verify_result = verify_research_archive_offsite(
         VerifyResearchArchiveOffsiteCommand(
             archive_dir=archive_dir,

@@ -17,6 +17,7 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from hhru_platform.infrastructure.observability.search_quality_audit import (  # noqa: E402
+    build_address_city_index,
     inspect_derivatives,
     inspect_search_response,
     partition_stratum,
@@ -68,6 +69,7 @@ class AuditReport:
         self.events = (directory / "evidence.jsonl").open("x", encoding="utf-8")
         self.responses: list[dict[str, Any]] = []
         self.metadata: dict[str, Any] = {
+            "report_schema": "search-quality-audit-v2",
             "started_at": datetime.now(UTC).isoformat(),
             "read_only": True,
             "live_http_requests": 0,
@@ -75,6 +77,7 @@ class AuditReport:
             "limitations": [
                 "Not a full-corpus or semantic truth certificate; sampling can miss defects.",
                 "Current area hierarchy may differ from historical hierarchy.",
+                "Matching address.city supports geography but does not certify a search filter.",
                 "Exact-window deviations are evidence, not a claim about API time precision.",
                 "Empty pages and missing raw cannot certify filter correctness.",
                 "No inactivity repair, detail-body audit, or coverage recomputation is performed.",
@@ -87,8 +90,13 @@ class AuditReport:
         )
         self.events.flush()
 
-    def inspect(self, row: dict[str, Any], parents: dict[str, str | None]) -> None:
-        evidence = inspect_search_response(row, parents)
+    def inspect(
+        self,
+        row: dict[str, Any],
+        parents: dict[str, str | None],
+        city_index: dict[str, tuple[str, ...]] | None = None,
+    ) -> None:
+        evidence = inspect_search_response(row, parents, city_index)
         self.responses.append(evidence)
         self.event("response", **evidence)
 
@@ -115,6 +123,7 @@ def collect_database(args: argparse.Namespace, report: AuditReport) -> None:
     try:
         areas = reader.areas()
         parents = {row["hh_area_id"]: row["parent_hh_area_id"] for row in areas}
+        city_index = build_address_city_index(areas)
         (report.directory / "area-reference.json").write_text(
             json.dumps(
                 {"captured_at": datetime.now(UTC).isoformat(), "areas": areas},
@@ -186,7 +195,7 @@ def collect_database(args: argparse.Namespace, report: AuditReport) -> None:
                 row["partition_search_params"] = planned.get("params", planned)
                 row["partition_expected_run_id"] = partition["crawl_run_id"]
                 row["partition_expected_id"] = partition["id"]
-                report.inspect(row, parents)
+                report.inspect(row, parents, city_index)
                 if (
                     row.get("raw_api_payload_id")
                     and not row.get("payload_omitted")
@@ -218,6 +227,7 @@ def collect_archive(args: argparse.Namespace, report: AuditReport) -> None:
     deadline = monotonic() + args.max_seconds
     reference = json.loads(args.area_reference.read_text(encoding="utf-8"))
     parents = {row["hh_area_id"]: row["parent_hh_area_id"] for row in reference["areas"]}
+    city_index = build_address_city_index(reference["areas"])
     report.metadata["area_reference_captured_at"] = reference["captured_at"]
     root = args.archive_dir.resolve()
     manifests = list((root / "v1" / "bronze" / "raw_api_payload").rglob("*.manifest.json"))
@@ -291,7 +301,7 @@ def collect_archive(args: argparse.Namespace, report: AuditReport) -> None:
                     )
                     continue
                 seen[str(raw_id)] = digest
-                report.inspect(row, parents)
+                report.inspect(row, parents, city_index)
         print(
             f"archive_rows_read={counters['rows_read']} chunks={counters['chunks_verified']}",
             flush=True,

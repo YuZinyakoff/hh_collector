@@ -30,8 +30,8 @@ def write_reference(tmp_path: Path) -> Path:
             {
                 "captured_at": "2026-11-07T00:00:00Z",
                 "areas": [
-                    {"hh_area_id": "144", "parent_hh_area_id": None},
-                    {"hh_area_id": "1", "parent_hh_area_id": None},
+                    {"hh_area_id": "144", "parent_hh_area_id": None, "name": "Autopoligon"},
+                    {"hh_area_id": "1", "parent_hh_area_id": None, "name": "Moscow"},
                 ],
             }
         )
@@ -295,3 +295,31 @@ def test_archive_manifest_and_compressed_size_caps(audit_script, tmp_path):
     assert report["local_manifests_available"] == 2
     assert report["archive_counts"]["manifests_selected"] == 1
     assert report["archive_counts"]["chunks_over_size_limit"] == 1
+
+
+def test_archive_address_support_uses_reference_names_without_clearing_area_signal(
+    audit_script, tmp_path
+):
+    root, output = tmp_path / "archive", tmp_path / "report"
+    row = archive_row()
+    row["params_json"]["area"] = "1"
+    row["payload_json"]["items"][0].update(area={"id": "144"}, address={"city": "Moscow"})
+    row["payload_hash"] = payload_digest(row["payload_json"])
+    write_chunk(root, "one", [row])
+    assert (
+        audit_script.main(
+            [
+                "--archive-dir",
+                str(root),
+                "--area-reference",
+                str(write_reference(tmp_path)),
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    report = json.loads((output / "summary.json").read_text())
+    assert report["report_schema"] == "search-quality-audit-v2"
+    assert report["counts"]["area_outside_current_tree"] == 1
+    assert report["counts"]["area_outside_address_supports_requested_area"] == 1

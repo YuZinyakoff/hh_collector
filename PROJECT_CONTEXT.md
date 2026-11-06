@@ -21,9 +21,26 @@ as well. Extent, onset and API time precision are NOT yet established. Do not
 declare all cards invalid, certify old coverage, resume blindly, or reconcile
 the partial run. See `docs/ops/search-quality-audit-2026-11-07.md` for the
 read-only stratified DB / offline archive auditor and its safety limits.
-The broad production audit is pending execution; unit/CLI tests are not a
-substitute for its results. An earlier local strict-window collector guard
-is experimental and must NOT be included in an audit-only deployment.
+The read-only audit was deployed as `5b71197`. VPS deep report
+`search-quality-deep-20261106T225929Z` covers first/last requests for all 41,592
+partitions in the last two runs: 49,172 raw hashes matched; 8,649 seen rows
+and 6,038 short snapshots had no checked source mismatches. Of 195,791
+area-outside-current-tree item occurrences, 193,693 belong to scopes 144 and
+17683 (Autopoligon and Antibesskaya). Covered leaves are affected too. This
+does not certify coverage or all data; ten older runs in the initial sample
+had no retained raw and still need archive evidence. See the audit doc.
+Official HH search docs explicitly specify five-minute rounding for date
+filters. Exact-window deviations MUST NOT be treated as API violations;
+132,545 were recorded, only 87 exceeded 300s. The uncommitted strict-window
+guard was withdrawn without deployment. The production splitter's 2s minimum
+does not account for this granularity; fixing it still needs effective-bound
+semantics/tests and separate rollout. Regional expansion remains unresolved.
+Three saved Moscow/Petersburg anomaly items have matching `address.city`
+despite different `area` IDs. The original area counter is diagnostic, not
+an error verdict. Local audit v2 adds address-city supporting buckets and
+separate region/time examples without clearing original counters. It has
+not yet been deployed or run; do not interpret these three examples as
+explaining all other-region occurrences or certifying historical coverage.
 No search recovery, inactivity correction or retention change is approved.
 
 October 27 archive sync investigation and local fix:

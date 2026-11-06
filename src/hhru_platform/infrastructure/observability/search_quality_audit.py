@@ -51,8 +51,50 @@ def _areas(params: Mapping[str, Any]) -> list[str]:
     return [str(item) for item in values if isinstance(item, str | int)]
 
 
+def build_address_city_index(areas: Iterable[Mapping[str, Any]]) -> dict[str, tuple[str, ...]]:
+    cities: dict[str, set[str]] = defaultdict(set)
+    for area in areas:
+        name, area_id = area.get("name"), area.get("hh_area_id")
+        if isinstance(name, str) and isinstance(area_id, str):
+            cities[_city_key(name)].add(area_id)
+    return {name: tuple(sorted(ids)) for name, ids in cities.items()}
+
+
+def _city_key(value: str) -> str:
+    return " ".join(value.casefold().replace("ё", "е").split())
+
+
+def address_city_relation(
+    city: object,
+    requested_areas: Sequence[str],
+    parents: Mapping[str, str | None],
+    city_index: Mapping[str, Sequence[str]],
+) -> str:
+    """Supporting evidence only: no geocoding or certification of the API filter."""
+    if not isinstance(city, str) or not city.strip():
+        return "missing"
+    if not city_index:
+        return "reference_unavailable"
+    candidates = city_index.get(_city_key(city))
+    if not candidates:
+        return "unknown_city"
+    results: set[bool | None] = set()
+    for candidate in candidates:
+        memberships = [area_membership(candidate, area, parents) for area in requested_areas]
+        results.add(True if True in memberships else None if None in memberships else False)
+    if None in results:
+        return "unknown_tree"
+    if results == {True}:
+        return "supports_requested_area"
+    if results == {False}:
+        return "outside_current_tree"
+    return "ambiguous_city"
+
+
 def inspect_search_response(
-    row: Mapping[str, Any], parents: Mapping[str, str | None]
+    row: Mapping[str, Any],
+    parents: Mapping[str, str | None],
+    city_index: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Return evidence, never a certificate of completeness or instructions to repair data."""
     params = row.get("params_json")
@@ -77,6 +119,12 @@ def inspect_search_response(
     examples: list[dict[str, Any]] = []
     result["counts"] = counts
     result["examples"] = examples
+    area_examples: list[dict[str, Any]] = []
+    time_examples: list[dict[str, Any]] = []
+    large_time_examples: list[dict[str, Any]] = []
+    result["area_examples"] = area_examples
+    result["time_examples"] = time_examples
+    result["time_over_300s_examples"] = large_time_examples
     planned = row.get("partition_search_params")
     if isinstance(planned, dict):
         fields = ("area", "date_from", "date_to", "professional_role", "text")
@@ -150,6 +198,14 @@ def inspect_search_response(
             item_ids.add(item_id)
         area = item.get("area")
         actual_area = str(area["id"]) if isinstance(area, dict) and area.get("id") else None
+        address = item.get("address")
+        city = address.get("city") if isinstance(address, dict) else None
+        example = {
+            "id": item_id,
+            "area_id": actual_area,
+            "published_at": item.get("published_at"),
+            "address_city": city if isinstance(city, str) else None,
+        }
         issue = False
         if requested_areas:
             memberships = [
@@ -162,6 +218,11 @@ def inspect_search_response(
                 counts["area_uncheckable"] += 1
             else:
                 counts["area_outside_current_tree"] += 1
+                relation = address_city_relation(city, requested_areas, parents, city_index or {})
+                counts[f"area_outside_address_{relation}"] += 1
+                example["address_city_relation"] = relation
+                if len(area_examples) < 3:
+                    area_examples.append(example)
                 issue = True
         published = aware_datetime(item.get("published_at"))
         if bounds:
@@ -179,11 +240,14 @@ def inspect_search_response(
                     counts["outside_exact_window"] += 1
                     counts["outside_window_over_300s"] += int(deviation > 300)
                     max_deviation = max(max_deviation, deviation)
+                    example["time_deviation_seconds"] = deviation
+                    if len(time_examples) < 3:
+                        time_examples.append(example)
+                    if deviation > 300 and len(large_time_examples) < 3:
+                        large_time_examples.append(example)
                     issue = True
         if issue and len(examples) < 3:
-            examples.append(
-                {"id": item_id, "area_id": actual_area, "published_at": item.get("published_at")}
-            )
+            examples.append(example)
     result["max_time_deviation_seconds"] = max_deviation
     return result
 

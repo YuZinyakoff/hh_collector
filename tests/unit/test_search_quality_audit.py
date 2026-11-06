@@ -6,7 +6,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from hhru_platform.infrastructure.observability.search_quality_audit import (
+    address_city_relation,
     area_membership,
+    build_address_city_index,
     inspect_derivatives,
     inspect_search_response,
     partition_stratum,
@@ -248,3 +250,86 @@ def test_request_lost_scope_is_distinct_from_wrong_upstream_response() -> None:
     assert result["request_scope_diff_fields"] == ["area"]
     assert result["counts"]["request_scope_differs_from_partition"] == 1
     assert result["counts"]["request_crawl_partition_id_mismatch"] == 1
+
+
+@pytest.mark.parametrize(
+    ("requested", "actual", "city"),
+    [
+        ("2", "17", "Санкт-Петербург"),
+        ("1", "3", "Москва"),
+        ("1", "1117", "Москва"),
+    ],
+)
+def test_incident_posting_area_differs_but_address_supports_query(requested, actual, city) -> None:
+    parents = {**PARENTS, "2": "113", "17": "113", "3": "113", "1117": "113"}
+    names = [{"hh_area_id": "1", "name": "Москва"}, {"hh_area_id": "2", "name": "Санкт-Петербург"}]
+    row = response()
+    row["params_json"]["area"] = requested
+    row["payload_json"]["items"][0].update(
+        area={"id": actual}, address={"city": city, "raw": "private street not for report"}
+    )
+    result = inspect_search_response(row, parents, build_address_city_index(names))
+    assert result["counts"]["area_outside_current_tree"] == 1  # Preserve original diagnostic.
+    assert result["counts"]["area_outside_address_supports_requested_area"] == 1
+    assert result["area_examples"][0]["address_city"] == city
+    assert "private street" not in str(result)
+
+
+def test_address_ambiguity_missing_unknown_and_descendant_names() -> None:
+    parents = {**PARENTS, "other": None, "lost": "missing"}
+    index = build_address_city_index(
+        [
+            {"hh_area_id": "1", "name": "Москва"},
+            {"hh_area_id": "2088", "name": "Зеленоград"},
+            {"hh_area_id": "144", "name": "Озёрный"},
+            {"hh_area_id": "other", "name": "Озерный"},
+            {"hh_area_id": "lost", "name": "Lost"},
+        ]
+    )
+    assert address_city_relation("  МОСКВА ", ["1"], parents, index) == "supports_requested_area"
+    assert address_city_relation("Зеленоград", ["1"], parents, index) == "supports_requested_area"
+    assert address_city_relation("Озёрный", ["113"], parents, index) == "ambiguous_city"
+    assert address_city_relation("Москва", ["144"], parents, index) == "outside_current_tree"
+    assert address_city_relation("Lost", ["1"], parents, index) == "unknown_tree"
+    assert address_city_relation("unmapped", ["1"], parents, index) == "unknown_city"
+    assert address_city_relation("Москва", ["1"], parents, {}) == "reference_unavailable"
+    assert address_city_relation(None, ["1"], parents, index) == "missing"
+
+
+def test_missing_address_does_not_clear_original_scope_issue() -> None:
+    result = inspect_search_response(response(), PARENTS)
+    assert result["counts"]["area_outside_current_tree"] == 1
+    assert result["counts"]["area_outside_address_missing"] == 1
+
+
+def test_area_examples_are_not_hidden_by_first_three_time_only_anomalies() -> None:
+    row = response()
+    row["params_json"]["area"] = "1"
+    row["payload_json"]["items"] = [
+        {
+            "id": str(i),
+            "name": "Engineer",
+            "area": {"id": "1"},
+            "published_at": "2026-11-01T16:42:00Z",
+        }
+        for i in range(3)
+    ] + [
+        {
+            "id": "regional",
+            "name": "Engineer",
+            "area": {"id": "1002"},
+            "published_at": "2026-11-01T16:40:01Z",
+        },
+        {
+            "id": "large-time",
+            "name": "Engineer",
+            "area": {"id": "1"},
+            "published_at": "2026-11-02T16:40:01Z",
+        },
+    ]
+    result = inspect_search_response(row, PARENTS)
+    assert len(result["examples"]) == len(result["time_examples"]) == 3
+    assert [example["id"] for example in result["area_examples"]] == ["regional"]
+    assert [example["id"] for example in result["time_over_300s_examples"]] == ["large-time"]
+    assert result["counts"]["area_outside_current_tree"] == 1
+    assert result["counts"]["outside_exact_window"] == 4

@@ -1,9 +1,12 @@
 # Search Window Mismatch, 2026-11-07
 
-Broad audit tooling and later VPS probe evidence are documented in
-`search-quality-audit-2026-11-07.md`. The strict collection guard below is
-experimental, not approved for rollout: actual time-filter precision is not
-established. Deploy the read-only audit separately from that guard.
+Broad audit tooling and later VPS evidence are documented in
+`search-quality-audit-2026-11-07.md`. The strict collection guard described
+below was a local experiment and was WITHDRAWN without deployment. Official
+[HH vacancy search docs](https://api.hh.ru/openapi/redoc#tag/Poisk-vakansij/operation/get-vacancies)
+specify five-minute rounding for date filters. Do not implement literal
+second-bound rejection. Original incident details below are retained with
+this correction, not as proof of violated effective time bounds.
 
 ## Production Evidence
 
@@ -16,11 +19,13 @@ and belonged to unrelated regions, including Minsk and Saint Petersburg.
 443 pending leaves and one unresolved leaf remained. Reconciliation was
 skipped. Existing observations must not be interpreted as a complete sweep.
 
-The stored response violates the requested time bounds. This evidence does
+The stored response is outside the literal requested time bounds; because
+of documented rounding this is not itself an API contract violation. The
+unrelated-region evidence remains a separate issue. This evidence does
 not establish when the behaviour began or whether the cause is upstream,
 redirects, configuration, or another transport intermediary.
 
-## Local Findings and Guard
+## Local Findings and Withdrawn Guard
 
 The client builds URLs using `urlencode`, including area and aware ISO date
 strings. Each synchronous request returns its own response; no response cache
@@ -32,7 +37,7 @@ Historically the list processor validated response structure, not publication
 timestamps against the query window. That is a pre-existing validation gap,
 not proof that historical API responses were wrong.
 
-The new guard runs after request/raw persistence but before vacancy upsert,
+The experimental guard ran after request/raw persistence but before vacancy upsert,
 seen events, current-state updates, snapshots or page-progress advancement.
 For bounded searches, each item must have an aware `published_at` inside
 the inclusive requested bounds. Missing dates or invalid/naive bounds fail
@@ -40,8 +45,9 @@ safely via the existing normalization-failure path. No items are silently
 filtered, no extra automatic retries are added, and the page is not treated
 as saturated or covered after rejection. Unbounded searches are unchanged.
 
-This is intentionally strict: if upstream rounds time filters, it will also
-reject those responses rather than claim coverage. Empty results provide no
+That strictness was incompatible with documented rounding, so the experiment
+and its strict-second tests were removed from the local worktree. The deployed
+collector was not changed by that experiment. Empty results provide no
 item-level evidence that filters were honoured. Region validation is not
 implemented: parent-area queries legitimately include descendant areas.
 Other search filters are also outside this guard's scope.

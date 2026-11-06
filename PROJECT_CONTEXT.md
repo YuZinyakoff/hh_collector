@@ -13,6 +13,19 @@ of scope unless explicitly requested.
 
 ## Current State
 
+November 7 search-quality incident: a failed November 5 sweep left 443 pending
+and one unresolved leaf. Separate VPS probes and retained raw show area 144
+(Autopoligon) returning unrelated regions/global results; Moscow probes did
+honour area and a day window. Saved anomalies exist in October 22 and 29 runs
+as well. Extent, onset and API time precision are NOT yet established. Do not
+declare all cards invalid, certify old coverage, resume blindly, or reconcile
+the partial run. See `docs/ops/search-quality-audit-2026-11-07.md` for the
+read-only stratified DB / offline archive auditor and its safety limits.
+The broad production audit is pending execution; unit/CLI tests are not a
+substitute for its results. An earlier local strict-window collector guard
+is experimental and must NOT be included in an audit-only deployment.
+No search recovery, inactivity correction or retention change is approved.
+
 October 27 archive sync investigation and local fix:
 `docs/ops/archive-sync-recovery-2026-10-27.md`. Morning sync failed on S3
 connection; a supervised retry started at 19:02 UTC and was still active at

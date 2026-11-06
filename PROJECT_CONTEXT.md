@@ -37,10 +37,23 @@ does not account for this granularity; fixing it still needs effective-bound
 semantics/tests and separate rollout. Regional expansion remains unresolved.
 Three saved Moscow/Petersburg anomaly items have matching `address.city`
 despite different `area` IDs. The original area counter is diagnostic, not
-an error verdict. Local audit v2 adds address-city supporting buckets and
-separate region/time examples without clearing original counters. It has
-not yet been deployed or run; do not interpret these three examples as
-explaining all other-region occurrences or certifying historical coverage.
+an error verdict. Audit v2 adds address-city supporting buckets and separate
+region/time examples without clearing original counters. Do not interpret
+these examples as explaining all other-region occurrences or certifying
+historical coverage.
+Audit v2 deployed as `86c9664`. Its full two-run pass retained identical raw /
+provenance counts. Excluding 144/17683, 230,444 item occurrences include 2,098
+posting-area mismatches: 1,528 supported by address city, 379 with address city
+also outside the requested tree, 191 missing/unknown addresses; 23 further
+items have uncheckable area IDs. Only 10 exact-window deviations in these
+other scopes exceeded 300s. These are diagnostic counts, not corrupted cards.
+Local archive pass `search-quality-archive-20261106T233014Z` assessed zero raw:
+all 1,000 selected chunks were locally absent. VPS metadata catalog has 14,806
+search manifests / 3,436,037 rows across May--October (~26 GiB compressed).
+Bounded monthly S3 sample planning/readback is prepared locally; see
+`docs/ops/historical-search-audit-sample.md`. Its plan makes no network calls;
+explicit readback is capped at 256 MiB planned object bytes. No production
+historical download/audit has run yet, and no recovery/retention change is approved.
 No search recovery, inactivity correction or retention change is approved.
 
 October 27 archive sync investigation and local fix:

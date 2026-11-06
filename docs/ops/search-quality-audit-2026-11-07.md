@@ -102,7 +102,14 @@ Local audit v2 adds address-city supporting evidence while retaining the
 original area/time counters. It also emits separate `area_examples`,
 `time_examples`, and `time_over_300s_examples` (up to three each), because
 the v1 shared example limit could hide a region anomaly behind time examples.
-The address-aware pass has NOT yet run on VPS. Existing reports are unchanged.
+The address-aware pass was deployed as `86c9664` and ran on VPS as
+`search-quality-address-20261106T232213Z`. Original area/time totals remained
+unchanged. Excluding 144/17683, 2,098 area-outside occurrences comprise 1,528
+with a supporting address city, 379 with address city also outside the requested
+tree, 165 with unknown city and 26 missing address city. Another 23 occurrences
+have uncheckable posting-area IDs. Only 10 over-300s time deviations occur in
+these other scopes. These remain diagnostic signals, not corrupted-card counts.
+Earlier reports are unchanged.
 
 ## Tool and Safety
 
@@ -178,6 +185,12 @@ jq '[.by_run_area_coverage[] | select((.counts.area_outside_current_tree // 0) >
 ```
 
 ## Offline Archive Pass
+
+The first production local-only pass selected 1,000 manifests, all with local
+data files missing: zero responses were assessed. The source manifest catalog
+covers May--October (~26 GiB compressed). Use the separately budgeted plan /
+explicit S3 readback procedure in `historical-search-audit-sample.md` rather
+than repeating local-only scans or downloading the full archive to the VPS.
 
 Prefer an analysis machine with already downloaded verified raw chunks and
 their original relative paths. Copy the DB-generated `area-reference.json`

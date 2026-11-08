@@ -104,4 +104,57 @@ Tests use fake S3 HEAD/GET clients and synthetic local manifests: six-month
 stratification, deterministic plans, size/budget/path limits, checksum and
 HEAD/GET races, partial-file safety, secret censorship and interoperability
 with the archive auditor. They do not establish that production S3 objects
-exist. Actual production plan, readback and historical audit are pending.
+exist. The user subsequently verified all selected objects and ran the archive
+audit on VPS as recorded below; those production executions are distinct
+from the synthetic automated tests.
+
+## Recorded VPS Evidence
+
+Tool commit `716985a` selected 12 chunks in each month May--October: 72 chunks,
+19,004 raw response rows, 158,438,514 planned object bytes. All were downloaded
+and size/SHA256 verified. Report `search-history-audit-20261106T235243Z` read
+all 72 chunks / 19,004 rows, with no raw payload hash mismatches. It contains
+363,504 item occurrences, not unique vacancies.
+
+221,800 occurrences have posting area outside the current reference tree.
+Scope 144 accounts for 186,428 and scope 17683 for 32,034 (98.5% combined).
+Their 9,394 and 1,614 sampled responses sum to 11,008, equal to the total
+alternate-area omissions in this archive sample. This equality of aggregate
+counts is consistent with the same known symptom, not a full per-response
+proof of which server filter was used. Other scopes still need attribution.
+Across all six months there are 72,936 literal-window deviations, only 16
+exceeding 300s; literal deviations alone are not violations of the documented
+five-minute rounding contract.
+
+On November 7 the user clarified that May--June were debugging months and
+industrial collection starts in July. Therefore July--October is the primary
+historical quality cohort; May--June is reference/onset evidence. Filter by
+raw receipt/collection month, NOT vacancy publication or first-seen date.
+Do not apply the combined six-month percentages to the production corpus.
+The separately computed July--October subset
+contains 11,263 responses / 218,686 item occurrences, 150,592 posting-area/tree
+signals and 8 deviations over 300s. See `data-corpus-boundary.md`.
+No corpus has been deleted, repaired, certified complete or re-tagged by this audit.
+
+## Industrial Cohort Attribution
+
+The user recomputed July--October independently from the existing evidence:
+
+| Scope Group | Responses | Item Occurrences | Area/Tree Signals | Address Supports Query | Address Also Outside | Unknown Area IDs | Time Over 300s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 144 + 17683 | 7478 | 148449 | 148314 | 0 | 102329 | 135 | 7 |
+| Other | 3785 | 70237 | 2278 | 1592 | 495 | 11 | 1 |
+
+98.5% of area/tree signals in this industrial sample come from the same two
+small scopes; their output is not supported by a matching address city.
+The remaining 191 other-scope signals have unknown/missing city names. The
+495 cases where both declared area and address city lie outside the query
+still need interpretation, not automatic rejection as corrupted cards.
+
+This audit does not support declaring the whole corpus corrupted or wiping
+it. Verified raw/source consistency and geographic-search validity are
+different properties. It also does not certify complete historical search
+coverage, authentic job content, correct inactive flags, or unbiased counts
+of observations. Investigation should now move to effective server-side
+arguments, five-minute splitting, and explainable coverage/recovery, rather
+than more repetitions of the same sample or an unreviewed full recollection.

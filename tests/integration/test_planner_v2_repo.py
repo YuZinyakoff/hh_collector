@@ -22,6 +22,7 @@ from hhru_platform.application.commands.sync_dictionary import (
     sync_dictionary,
 )
 from hhru_platform.application.dto import DictionaryFetchResponse
+from hhru_platform.domain.entities.area import Area
 from hhru_platform.infrastructure.db.repositories import (
     SqlAlchemyApiRequestLogRepository,
     SqlAlchemyAreaRepository,
@@ -126,6 +127,56 @@ pytestmark = pytest.mark.skipif(
     not _database_is_available(),
     reason="PostgreSQL is not available for integration tests.",
 )
+
+
+@pytest.mark.parametrize(("area_id", "unsupported_id"), [("2019", "144"), ("1229", "17683")])
+def test_whole_area_time_fallback_metadata_survives_database_reload(
+    area_id: str, unsupported_id: str
+) -> None:
+    class NoAreaSubdivisionRepository:
+        def list_active_children_by_hh_area_id(self, parent_hh_area_id: str) -> list[Area]:
+            raise AssertionError("verified whole-area fallback must not select child regions")
+
+    engine = create_engine_from_settings()
+    session_factory = create_session_factory(engine)
+    try:
+        with session_factory() as session:
+            run_repository = SqlAlchemyCrawlRunRepository(session)
+            partition_repository = SqlAlchemyCrawlPartitionRepository(session)
+            crawl_run = create_crawl_run(
+                CreateCrawlRunCommand(run_type="weekly_sweep", triggered_by=TEST_TRIGGERED_BY),
+                run_repository,
+            )
+            parent = partition_repository.add(
+                crawl_run_id=crawl_run.id,
+                partition_key=f"area:{area_id}",
+                status="pending",
+                params_json={"params": {"area": area_id}},
+                planner_policy_version="v2",
+                split_dimension="area",
+                split_value=area_id,
+            )
+            split_partition(
+                SplitPartitionCommand(partition_id=parent.id),
+                crawl_partition_repository=partition_repository,
+                crawl_run_repository=run_repository,
+                area_repository=NoAreaSubdivisionRepository(),
+            )
+            session.flush()
+            session.expire_all()
+            children = partition_repository.list_children(parent.id)
+            assert len(children) == 2
+            for child in children:
+                assert child.params_json["params"]["area"] == area_id
+                assert child.params_json["split_policy"]["unsupported_descendant_area_ids"] == [
+                    unsupported_id
+                ]
+                assert child.params_json["split_policy"]["name"] == "whole_area_time_fallback_v1"
+                assert child.split_dimension == "time_window"
+                assert child.coverage_status == "unassessed"
+            session.rollback()
+    finally:
+        engine.dispose()
 
 
 def test_plan_sweep_v2_creates_area_tree_roots_and_split_children() -> None:

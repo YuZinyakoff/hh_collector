@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from hhru_platform.application.commands.process_list_page import ProcessListPageResult
+from hhru_platform.application.commands.process_list_page import (
+    ProcessListPageCommand,
+    ProcessListPageResult,
+)
 from hhru_platform.application.commands.process_partition_v2 import (
     ProcessPartitionV2Command,
     ProcessPartitionV2Result,
@@ -13,7 +16,10 @@ from hhru_platform.application.commands.run_list_engine_v2 import (
     RunListEngineV2Command,
     run_list_engine_v2,
 )
-from hhru_platform.application.commands.split_partition import SplitPartitionResult
+from hhru_platform.application.commands.split_partition import (
+    SplitPartitionCommand,
+    SplitPartitionResult,
+)
 from hhru_platform.application.dto import StoredVacancyReference
 from hhru_platform.application.policies.list_engine import (
     PartitionSaturationPolicyV1,
@@ -206,6 +212,46 @@ def test_partition_saturation_policy_v1_keeps_smaller_scope_non_saturated() -> N
     assert decision.is_saturated is False
     assert decision.pages_total_expected == 99
     assert decision.reason is None
+
+
+def test_area_scope_failure_is_not_covered_retried_or_split() -> None:
+    partition = _build_partition(crawl_run_id=uuid4(), partition_key="area:144")
+    repository = InMemoryCrawlPartitionRepository([partition])
+    calls: list[int | None] = []
+
+    def process_page(command: ProcessListPageCommand) -> ProcessListPageResult:
+        calls.append(command.page)
+        partition.status = "failed"
+        return _page_result(
+            partition_id=partition.id,
+            page=0,
+            pages_total_expected=100,
+            vacancy_suffix="rejected",
+            partition_status="failed",
+            error_message="vacancy search area scope differs from request",
+            status_code=200,
+            error_type="SearchAreaScopeError",
+        )
+
+    def unexpected_split(command: SplitPartitionCommand) -> SplitPartitionResult:
+        raise AssertionError("a rejected search response must not drive splitting")
+
+    result = process_partition_v2(
+        ProcessPartitionV2Command(partition_id=partition.id),
+        crawl_partition_repository=repository,
+        process_list_page_step=process_page,
+        split_partition_step=unexpected_split,
+        saturation_policy=PartitionSaturationPolicyV1(pages_threshold=100),
+    )
+
+    assert len(calls) == 1
+    assert result.status == "failed"
+    assert result.search_failure_error_type == "SearchAreaScopeError"
+    assert not result.is_transport_failure and not result.is_captcha_failure
+    assert result.pages_processed == result.children_created_count == 0
+    assert result.final_coverage_status == "unassessed"
+    assert result.saturated is False
+    assert repository.covered_marks == repository.pending_marks == 0
 
 
 def test_process_partition_v2_reads_all_pages_and_marks_leaf_covered() -> None:

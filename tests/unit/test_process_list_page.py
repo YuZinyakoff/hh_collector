@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -178,6 +179,91 @@ class InMemoryVacancySnapshotRepository:
     def add(self, **kwargs: object) -> int:
         self.records.append(dict(kwargs))
         return len(self.records)
+
+
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize(
+    ("area", "arguments", "accepted"),
+    [
+        ("144", [{"argument": "per_page", "value": "2"}], False),
+        ("17683", [{"argument": "no_magic", "value": "true"}], False),
+        ("1", None, False),
+        ("1", [{"argument": "area", "value": "2"}], False),
+        ("1", [{"argument": "area", "value": "1"}], True),
+        (
+            ["1", "2"],
+            [{"argument": "area", "value": "1"}, {"argument": "area", "value": "2"}],
+            True,
+        ),
+    ],
+)
+def test_process_list_page_requires_applied_area_before_writing_observations(
+    area: object, arguments: object, accepted: bool, empty: bool
+) -> None:
+    partition = CrawlPartition(
+        id=uuid4(),
+        crawl_run_id=uuid4(),
+        partition_key="area-scope-test",
+        params_json={"params": {"area": area, "per_page": 2, "describe_arguments": "false"}},
+        status="pending",
+        pages_total_expected=None,
+        pages_processed=0,
+        items_seen=0,
+        retry_count=0,
+        started_at=None,
+        finished_at=None,
+        last_error_message=None,
+        created_at=datetime(2026, 3, 12, tzinfo=UTC),
+    )
+    request_repository = InMemoryApiRequestLogRepository()
+    raw_repository = InMemoryRawApiPayloadRepository()
+    vacancies = RecordingVacancyRepository()
+    seen = RecordingVacancySeenEventRepository()
+    current = RecordingVacancyCurrentStateRepository()
+    snapshots = InMemoryVacancySnapshotRepository()
+    calls: list[dict[str, object]] = []
+    response = _build_successful_search_response()
+    assert isinstance(response.payload_json, dict)
+    response.payload_json["arguments"] = arguments
+    if empty:
+        response.payload_json.update(items=[], found=0, pages=0)
+
+    class AreaSearchApiClient:
+        def search_vacancies(self, params_json: dict[str, object]) -> VacancySearchResponse:
+            calls.append(dict(params_json))
+            assert params_json["area"] == area
+            assert params_json["describe_arguments"] == "true"
+            return replace(response, params_json=dict(params_json))
+
+    result = process_list_page(
+        ProcessListPageCommand(partition_id=partition.id),
+        crawl_partition_repository=InMemoryCrawlPartitionRepository(partition),
+        api_client=AreaSearchApiClient(),
+        api_request_log_repository=request_repository,
+        raw_api_payload_repository=raw_repository,
+        vacancy_repository=vacancies,
+        vacancy_seen_event_repository=seen,
+        vacancy_current_state_repository=current,
+        vacancy_snapshot_repository=snapshots,
+    )
+
+    assert len(calls) == 1
+    assert len(request_repository.records) == len(raw_repository.records) == 1
+    assert raw_repository.records[0]["payload_json"] == response.payload_json
+    assert result.request_log_id == result.raw_payload_id == 1
+    if accepted:
+        assert result.partition_status == "done"
+        assert result.error_type is None
+        assert partition.pages_processed == 1
+        assert len(vacancies.records) == len(seen.observations) == (0 if empty else 1)
+    else:
+        assert result.partition_status == "failed"
+        assert result.error_type == "SearchAreaScopeError"
+        assert result.vacancies_processed == result.seen_events_created == 0
+        assert partition.pages_processed == partition.items_seen == 0
+        assert partition.pages_total_expected is None
+        assert vacancies.records == seen.observations == current.observations == []
+        assert snapshots.records == []
 
 
 def test_process_list_page_persists_request_raw_and_observations() -> None:
@@ -374,9 +460,7 @@ def test_process_list_page_creates_short_snapshots_only_for_first_seen_or_change
         vacancy_snapshot_repository=unchanged_snapshot_repository,
     )
 
-    changed_previous_hashes = {
-        first_result.processed_vacancies[0].id: "previous-short-hash"
-    }
+    changed_previous_hashes = {first_result.processed_vacancies[0].id: "previous-short-hash"}
     changed_snapshot_repository = InMemoryVacancySnapshotRepository()
     process_list_page(
         ProcessListPageCommand(partition_id=partition.id),
@@ -659,9 +743,7 @@ def _build_captcha_search_response() -> VacancySearchResponse:
         requested_at=datetime(2026, 3, 12, 12, 1, tzinfo=UTC),
         response_received_at=datetime(2026, 3, 12, 12, 1, 1, tzinfo=UTC),
         payload_json={
-            "errors": [
-                {"type": "captcha_required", "captcha_url": "https://captcha.hh.ru"}
-            ]
+            "errors": [{"type": "captcha_required", "captcha_url": "https://captcha.hh.ru"}]
         },
         error_type="captcha_required",
         error_message="https://captcha.hh.ru",

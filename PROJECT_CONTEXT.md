@@ -13,11 +13,42 @@ of scope unless explicitly requested.
 
 ## Current State
 
+November 8 live probe: with describe_arguments=true, areas 144 and 17683
+are absent from response arguments and alternate_url, with ~865k global
+results, for both no_magic=false/true. Moscow 1 is explicitly applied
+(~147.6k results). no_magic is not a fix. The prepared list-page guard
+now forces described arguments for scoped requests and rejects unconfirmed
+or altered area sets after raw persistence, before observations/progress.
+It does not fix historical coverage or cached split decisions. A subsequent
+VPS probe confirms parents 2019 (Moscow Oblast, 68,890 results) and 1229
+(Kemerovo Oblast, 9,182) retain the area argument. The prepared split
+policy now uses whole-parent time windows for these two areas, with explicit
+split_policy metadata, instead of descending into their towns. Time splits
+use a five-minute UTC grid, at least 300 seconds per child; unsplittable
+saturation stays unresolved. Old split_done trees are not rewritten: ordinary
+resume does not repair them. Bounded parent smoke, deployment/recovery and
+post-collection audit remain pending. VPS had an active six-hour run at 17:20 UTC
+on 716985a: 256ea99b-d563-4d57-8867-08a0abd46dbd, controller PID 3417556,
+container hh_collector-app-run-aeaf5b03a590. At 19:50 UTC the same controller
+and container were still active (nine hours). The user then approved publishing
+the fix and a controlled stop for rollout. Stop execution has not been
+confirmed: first stop the search timer/controller and that exact container,
+verify no active search process, then pull. Do not blindly resume the old tree.
+See
+`docs/ops/search-area-filter-recovery-2026-11-08.md`.
+
+User clarification on November 7: sustained industrial collection starts in
+July; May--June are debugging/reference months. Primary historical quality
+conclusions must separate July--October, while keeping May--June to investigate
+onset. Use observation/collection time, not vacancy publication/first-seen time.
+This is a reporting cohort boundary, not a new schema or deletion permission;
+see `docs/ops/data-corpus-boundary.md`.
+
 November 7 search-quality incident: a failed November 5 sweep left 443 pending
 and one unresolved leaf. Separate VPS probes and retained raw show area 144
 (Autopoligon) returning unrelated regions/global results; Moscow probes did
 honour area and a day window. Saved anomalies exist in October 22 and 29 runs
-as well. Extent, onset and API time precision are NOT yet established. Do not
+as well. Exact extent, onset and effective filter semantics are NOT yet established. Do not
 declare all cards invalid, certify old coverage, resume blindly, or reconcile
 the partial run. See `docs/ops/search-quality-audit-2026-11-07.md` for the
 read-only stratified DB / offline archive auditor and its safety limits.
@@ -32,9 +63,10 @@ had no retained raw and still need archive evidence. See the audit doc.
 Official HH search docs explicitly specify five-minute rounding for date
 filters. Exact-window deviations MUST NOT be treated as API violations;
 132,545 were recorded, only 87 exceeded 300s. The uncommitted strict-window
-guard was withdrawn without deployment. The production splitter's 2s minimum
-does not account for this granularity; fixing it still needs effective-bound
-semantics/tests and separate rollout. Regional expansion remains unresolved.
+guard was withdrawn without deployment. The deployed splitter's 2s minimum
+does not account for this granularity; the November 8 local grid correction
+above is tested but not deployed. Exact server-bound semantics remain a
+live-audit question. Regional expansion outside the two overrides remains unresolved.
 Three saved Moscow/Petersburg anomaly items have matching `address.city`
 despite different `area` IDs. The original area counter is diagnostic, not
 an error verdict. Audit v2 adds address-city supporting buckets and separate
@@ -50,11 +82,32 @@ other scopes exceeded 300s. These are diagnostic counts, not corrupted cards.
 Local archive pass `search-quality-archive-20261106T233014Z` assessed zero raw:
 all 1,000 selected chunks were locally absent. VPS metadata catalog has 14,806
 search manifests / 3,436,037 rows across May--October (~26 GiB compressed).
-Bounded monthly S3 sample planning/readback is prepared locally; see
-`docs/ops/historical-search-audit-sample.md`. Its plan makes no network calls;
-explicit readback is capped at 256 MiB planned object bytes. No production
-historical download/audit has run yet, and no recovery/retention change is approved.
-No search recovery, inactivity correction or retention change is approved.
+Monthly sample tool deployed as `716985a`. The user downloaded 72 chunks
+(12 per month, May--October), 158,438,514 bytes / 19,004 search rows, all
+size/SHA256 verified. Archive audit `search-history-audit-20261106T235243Z`
+read all 19,004 rows, payload hash mismatches 0; 363,504 item occurrences.
+Of 221,800 posting-area/tree mismatches, 186,428 are from scope 144 and
+32,034 from 17683 (98.5% together). Their 11,008 sampled responses numerically
+equal the total alternate-area omissions; joint attribution is not yet checked. Two May 14
+responses already show region 144 absent from alternate_url and unrelated
+areas/addresses. This is historical debugging evidence, not a new November
+drift explanation or a production-only statistic. July--October attribution was
+subsequently computed separately as recorded below. See
+`docs/ops/historical-search-audit-sample.md`.
+The July--October subset has 11,263 responses / 218,686 item occurrences,
+150,592 posting-area/tree signals and 8 time deviations over 300s. Scopes
+144/17683 contribute 7,478 responses / 148,449 occurrences, 148,314 signals
+(98.5% of production-sample signals), zero address-city support, 135 unknown
+area IDs and 7 over-300s time deviations. Other scopes: 3,785 responses /
+70,237 occurrences, 2,278 area signals (1,592 address-supported, 495 with
+address also outside, 191 missing/unknown addresses), 11 unknown area IDs
+and 1 over-300s time deviation. This is not a uniform corpus sample or a count
+of unique/corrupt vacancies. No evidence justifies wiping/rebuilding the
+whole corpus. Remaining questions are effective query/filter semantics,
+coverage/provenance interpretation, repeated observations and inactivity.
+Controlled search stop and fix publication are now approved as described above.
+No production stop/deployment/recovery is confirmed yet; no inactivity repair,
+data deletion, legacy-tree rewrite or retention change is authorized.
 
 October 27 archive sync investigation and local fix:
 `docs/ops/archive-sync-recovery-2026-10-27.md`. Morning sync failed on S3

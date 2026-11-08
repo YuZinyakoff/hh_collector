@@ -15,6 +15,10 @@ from hhru_platform.application.dto import (
     VacancySearchResponse,
     VacancyUpsertResult,
 )
+from hhru_platform.application.policies.search_scope import (
+    SearchAreaScopeError,
+    validate_search_area_scope,
+)
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.value_objects.enums import CrawlPartitionStatus, VacancySnapshotType
 from hhru_platform.infrastructure.hh_api.response_classification import (
@@ -279,7 +283,8 @@ def process_list_page(
 
         try:
             normalized_page = _normalize_response(response)
-        except VacancySearchNormalizationError as error:
+            validate_search_area_scope(request_params=search_params, payload=response.payload_json)
+        except (VacancySearchNormalizationError, SearchAreaScopeError) as error:
             failed_partition = crawl_partition_repository.mark_failed(
                 partition_id=partition.id,
                 error_message=str(error),
@@ -297,7 +302,11 @@ def process_list_page(
                 processed_vacancies=[],
                 error_message=str(error),
                 status_code=response.status_code,
-                error_type=response.error_type,
+                error_type=(
+                    error.__class__.__name__
+                    if isinstance(error, SearchAreaScopeError)
+                    else response.error_type
+                ),
             )
             record_operation_failed(
                 LOGGER,
@@ -431,6 +440,9 @@ def _build_search_params(
         if value is not None:
             search_params[key] = value
 
+    if "area" in search_params:
+        search_params["describe_arguments"] = "true"
+
     return search_params
 
 
@@ -562,9 +574,7 @@ def _create_short_snapshots(
     if not _payload_is_present(search_payload_json):
         return 0
 
-    observed_records_by_hh_id = {
-        record.hh_vacancy_id: record for record in observed_records
-    }
+    observed_records_by_hh_id = {record.hh_vacancy_id: record for record in observed_records}
     created_count = 0
 
     for record in normalized_page.items:

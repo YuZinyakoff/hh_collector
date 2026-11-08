@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -286,14 +286,12 @@ def test_split_partition_creates_child_area_partitions_and_is_idempotent() -> No
     assert len(first_split_result.created_children) == 2
     assert len(first_split_result.children) == 2
     assert all(
-        child.parent_partition_id == parent_partition.id
-        for child in first_split_result.children
+        child.parent_partition_id == parent_partition.id for child in first_split_result.children
     )
     assert all(child.depth == 1 for child in first_split_result.children)
     assert {child.partition_key for child in first_split_result.children} == {"area:1", "area:2"}
     assert all(
-        child.status == CrawlPartitionStatus.PENDING.value
-        for child in first_split_result.children
+        child.status == CrawlPartitionStatus.PENDING.value for child in first_split_result.children
     )
     assert len(second_split_result.created_children) == 0
     assert len(second_split_result.children) == 2
@@ -337,8 +335,7 @@ def test_split_partition_falls_back_to_time_window_when_area_split_has_no_childr
     } == {
         serialize_split_datetime(TIME_WINDOW_FALLBACK_START),
         serialize_split_datetime(
-            TIME_WINDOW_FALLBACK_START
-            + (crawl_run.started_at - TIME_WINDOW_FALLBACK_START) / 2
+            TIME_WINDOW_FALLBACK_START + (crawl_run.started_at - TIME_WINDOW_FALLBACK_START) / 2
         ),
     }
     assert {
@@ -346,8 +343,7 @@ def test_split_partition_falls_back_to_time_window_when_area_split_has_no_childr
         for child in result.children
     } == {
         serialize_split_datetime(
-            TIME_WINDOW_FALLBACK_START
-            + (crawl_run.started_at - TIME_WINDOW_FALLBACK_START) / 2
+            TIME_WINDOW_FALLBACK_START + (crawl_run.started_at - TIME_WINDOW_FALLBACK_START) / 2
         ),
         serialize_split_datetime(crawl_run.started_at),
     }
@@ -407,7 +403,10 @@ def test_split_partition_recursively_bisects_existing_time_window_partition() ->
     ]
 
 
-def test_split_partition_marks_parent_unresolved_when_time_window_cannot_be_refined() -> None:
+@pytest.mark.parametrize("window_seconds", [1, 300, 599])
+def test_split_partition_marks_parent_unresolved_when_time_window_cannot_be_refined(
+    window_seconds: int,
+) -> None:
     crawl_run = _build_crawl_run()
     run_repository = InMemoryCrawlRunRepository(crawl_run)
     partition_repository = InMemoryCrawlPartitionRepository()
@@ -415,7 +414,7 @@ def test_split_partition_marks_parent_unresolved_when_time_window_cannot_be_refi
     parent_definition = build_time_window_partition_definition(
         area_hh_id="1",
         date_from=datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC),
-        date_to=datetime(2026, 3, 1, 0, 0, 1, tzinfo=UTC),
+        date_to=datetime(2026, 3, 1, tzinfo=UTC) + timedelta(seconds=window_seconds),
         crawl_run=crawl_run,
         area_name="Moscow",
         path_text="Russia / Moscow",
@@ -450,3 +449,128 @@ def test_split_partition_marks_parent_unresolved_when_time_window_cannot_be_refi
     assert result.children == ()
     assert result.resolution_message is not None
     assert "time-window split cannot refine" in result.resolution_message
+    assert "search_resolution_seconds=300" in result.resolution_message
+
+
+@pytest.mark.parametrize(
+    ("parent_area_id", "unsupported_area_id"), [("2019", "144"), ("1229", "17683")]
+)
+def test_verified_parent_is_split_by_time_without_excluding_its_descendants(
+    parent_area_id: str, unsupported_area_id: str
+) -> None:
+    crawl_run = _build_crawl_run()
+    root_area = _build_area(hh_area_id=parent_area_id, name="Supported parent")
+    bad_child = _build_area(
+        hh_area_id=unsupported_area_id, name="Unsupported search area", parent_area_id=root_area.id
+    )
+    sibling = _build_area(hh_area_id="other-town", name="Other town", parent_area_id=root_area.id)
+    run_repository = InMemoryCrawlRunRepository(crawl_run)
+    partition_repository = InMemoryCrawlPartitionRepository()
+    area_repository = InMemoryAreaRepository(
+        root_areas=[root_area],
+        children_by_hh_parent_id={parent_area_id: [bad_child, sibling]},
+    )
+    planned = plan_sweep_v2(
+        PlanRunV2Command(crawl_run_id=crawl_run.id),
+        crawl_run_repository=run_repository,
+        crawl_partition_repository=partition_repository,
+        area_repository=area_repository,
+    )
+    parent = planned.partitions[0]
+    result = split_partition(
+        SplitPartitionCommand(partition_id=parent.id),
+        crawl_partition_repository=partition_repository,
+        crawl_run_repository=run_repository,
+        area_repository=area_repository,
+    )
+    expected_policy = {
+        "name": "whole_area_time_fallback_v1",
+        "query_area_hh_id": parent_area_id,
+        "unsupported_descendant_area_ids": [unsupported_area_id],
+        "reason": "descendant_area_filter_not_applied",
+        "verified_at": "2026-11-08",
+    }
+    assert parent.coverage_status == "split"
+    assert len(result.created_children) == 2
+    children = sorted(result.children, key=lambda child: child.params_json["params"]["date_from"])
+    assert children[0].params_json["params"]["date_from"] == serialize_split_datetime(
+        TIME_WINDOW_FALLBACK_START
+    )
+    assert (
+        children[0].params_json["params"]["date_to"]
+        == children[1].params_json["params"]["date_from"]
+    )
+    assert children[1].params_json["params"]["date_to"] == serialize_split_datetime(
+        crawl_run.started_at
+    )
+    for child in children:
+        assert child.split_dimension == "time_window"
+        assert child.params_json["params"]["area"] == parent_area_id
+        assert child.params_json["scope"]["hh_area_id"] == parent_area_id
+        assert child.params_json["split_policy"] == expected_policy
+        assert child.coverage_status == "unassessed" and child.status == "pending"
+
+    repeated = split_partition(
+        SplitPartitionCommand(partition_id=parent.id),
+        crawl_partition_repository=partition_repository,
+        crawl_run_repository=run_repository,
+        area_repository=area_repository,
+    )
+    assert repeated.created_children == ()
+    assert {child.id for child in repeated.children} == {child.id for child in children}
+
+    recursive = split_partition(
+        SplitPartitionCommand(partition_id=children[1].id),
+        crawl_partition_repository=partition_repository,
+        crawl_run_repository=run_repository,
+        area_repository=area_repository,
+    )
+    assert len(recursive.created_children) == 2
+    assert all(child.split_dimension == "time_window" for child in recursive.children)
+    assert all(
+        child.params_json["params"]["area"] == parent_area_id for child in recursive.children
+    )
+    assert all(child.params_json["split_policy"] == expected_policy for child in recursive.children)
+    assert not any(
+        partition.params_json["params"]["area"] in {unsupported_area_id, sibling.hh_area_id}
+        for partition in partition_repository.list_by_run_id(crawl_run.id)
+    )
+
+
+def test_existing_geographic_split_is_not_silently_replaced_with_new_policy() -> None:
+    crawl_run = _build_crawl_run()
+    area = _build_area(hh_area_id="2019", name="Supported parent")
+    run_repository = InMemoryCrawlRunRepository(crawl_run)
+    partition_repository = InMemoryCrawlPartitionRepository()
+    area_repository = InMemoryAreaRepository(root_areas=[area])
+    planned = plan_sweep_v2(
+        PlanRunV2Command(crawl_run_id=crawl_run.id),
+        crawl_run_repository=run_repository,
+        crawl_partition_repository=partition_repository,
+        area_repository=area_repository,
+    )
+    parent = planned.partitions[0]
+    old_child = partition_repository.add(
+        crawl_run_id=crawl_run.id,
+        partition_key="area:144",
+        status="done",
+        params_json={"params": {"area": "144"}},
+        parent_partition_id=parent.id,
+        planner_policy_version="v2",
+        split_dimension="area",
+        split_value="144",
+        coverage_status="covered",
+    )
+    partition_repository.mark_split_done(parent.id)
+
+    result = split_partition(
+        SplitPartitionCommand(partition_id=parent.id),
+        crawl_partition_repository=partition_repository,
+        crawl_run_repository=run_repository,
+        area_repository=area_repository,
+    )
+
+    assert result.created_children == ()
+    assert result.children == (old_child,)
+    assert old_child.coverage_status == "covered"
+    assert old_child.params_json == {"params": {"area": "144"}}

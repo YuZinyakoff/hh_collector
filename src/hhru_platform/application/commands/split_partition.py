@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -16,6 +17,11 @@ from hhru_platform.application.policies.planner import (
     build_time_window_partition_definition,
     normalize_split_datetime,
 )
+from hhru_platform.application.policies.search_area_split import get_whole_area_time_fallback
+from hhru_platform.application.policies.search_time_window import (
+    HH_SEARCH_TIME_RESOLUTION_SECONDS,
+    compute_search_time_window_midpoint,
+)
 from hhru_platform.domain.entities.area import Area
 from hhru_platform.domain.entities.crawl_partition import CrawlPartition
 from hhru_platform.domain.entities.crawl_run import CrawlRun
@@ -26,7 +32,6 @@ from hhru_platform.infrastructure.observability.operations import (
 )
 
 LOGGER = logging.getLogger(__name__)
-MIN_TIME_WINDOW_SPLIT_SECONDS = 2
 
 
 class CrawlPartitionNotFoundError(LookupError):
@@ -264,6 +269,9 @@ def split_partition(
         parent_status=result.parent_partition.status,
         children_created=len(result.created_children),
         children_total=len(result.children),
+        split_policy=result.children[0].params_json.get("split_policy")
+        if result.children
+        else None,
     )
     return result
 
@@ -303,6 +311,12 @@ def _build_area_child_definitions(
         raise UnsupportedPartitionSplitError(
             parent_partition.id,
             parent_partition.planner_policy_version,
+        )
+
+    if get_whole_area_time_fallback(parent_area_hh_id) is not None:
+        return _build_time_window_child_definitions(
+            parent_partition=parent_partition,
+            crawl_run=crawl_run,
         )
 
     child_areas = area_repository.list_active_children_by_hh_area_id(parent_area_hh_id)
@@ -346,11 +360,13 @@ def _build_time_window_child_definitions(
     else:
         window_start, window_end = time_window
 
-    midpoint = _compute_time_window_midpoint(window_start=window_start, window_end=window_end)
+    midpoint = compute_search_time_window_midpoint(window_start=window_start, window_end=window_end)
     if midpoint is None:
         unresolved_message = (
             "time-window split cannot refine this saturated partition further; "
-            f"hh_area_id={area_hh_id} interval={window_start.isoformat()}..{window_end.isoformat()}"
+            f"hh_area_id={area_hh_id} "
+            f"interval={window_start.isoformat()}..{window_end.isoformat()} "
+            f"search_resolution_seconds={HH_SEARCH_TIME_RESOLUTION_SECONDS}"
         )
         return ([], unresolved_message)
 
@@ -378,6 +394,14 @@ def _build_time_window_child_definitions(
             path_text=path_text,
         ),
     ]
+    split_policy = parent_partition.params_json.get("split_policy")
+    if _extract_partition_split_dimension(parent_partition) == AREA_SPLIT_DIMENSION:
+        fallback_policy = get_whole_area_time_fallback(area_hh_id)
+        if fallback_policy is not None:
+            split_policy = fallback_policy.to_metadata()
+    if isinstance(split_policy, dict):
+        for definition in definitions:
+            definition.params_json["split_policy"] = deepcopy(split_policy)
     return (definitions, None)
 
 
@@ -460,27 +484,6 @@ def _parse_split_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return normalize_split_datetime(parsed)
-
-
-def _compute_time_window_midpoint(
-    *,
-    window_start: datetime,
-    window_end: datetime,
-) -> datetime | None:
-    normalized_start = normalize_split_datetime(window_start)
-    normalized_end = normalize_split_datetime(window_end)
-    if normalized_end <= normalized_start:
-        return None
-
-    total_seconds = int((normalized_end - normalized_start).total_seconds())
-    if total_seconds < MIN_TIME_WINDOW_SPLIT_SECONDS:
-        return None
-
-    midpoint_offset_seconds = total_seconds // 2
-    midpoint = normalized_start + timedelta(seconds=midpoint_offset_seconds)
-    if midpoint <= normalized_start or midpoint >= normalized_end:
-        return None
-    return midpoint
 
 
 def _extract_partition_scope_text(partition: CrawlPartition, field_name: str) -> str | None:

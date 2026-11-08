@@ -664,6 +664,11 @@ def _build_search_response(
     user_agent: str,
     request_id: str,
 ) -> VacancySearchResponse:
+    assert params_json["describe_arguments"] == "true"
+    payload_json = {
+        **payload_json,
+        "arguments": [{"argument": "area", "value": params_json["area"]}],
+    }
     return VacancySearchResponse(
         endpoint="/vacancies",
         method="GET",

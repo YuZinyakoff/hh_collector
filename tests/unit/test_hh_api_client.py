@@ -3,6 +3,7 @@ from __future__ import annotations
 from http.client import IncompleteRead
 from io import BytesIO
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -12,6 +13,46 @@ from hhru_platform.infrastructure.hh_api.user_agent import (
     HHApiUserAgentValidationError,
     validate_live_vacancy_search_user_agent,
 )
+
+
+def test_search_keeps_area_and_second_precision_window_in_actual_request(monkeypatch) -> None:
+    responses = [b'{"items":[],"found":2324,"pages":100}', b'{"items":[],"found":0,"pages":0}']
+    captured_queries = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def read(self) -> bytes:
+            return responses.pop(0)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured_queries.append(parse_qs(urlsplit(request.full_url).query))
+        return FakeResponse()
+
+    monkeypatch.setattr(hh_client_module, "urlopen", fake_urlopen)
+    client = HHApiClient(user_agent="collector/1.0 (contact: ops@example.com)")
+    params = {
+        "area": "144",
+        "page": 0,
+        "per_page": 20,
+        "date_from": "2026-11-01T16:40:01+00:00",
+        "date_to": "2026-11-01T16:40:02+00:00",
+    }
+    first = client.search_vacancies(params)
+    second = client.search_vacancies({**params, "area": "2"})
+    assert captured_queries[0] == {key: [str(value)] for key, value in params.items()}
+    assert captured_queries[1]["area"] == ["2"]
+    assert first.params_json == params
+    assert second.params_json["area"] == "2"
+    assert first.payload_json["found"] == 2324
+    assert second.payload_json["found"] == 0
 
 
 @pytest.mark.parametrize(

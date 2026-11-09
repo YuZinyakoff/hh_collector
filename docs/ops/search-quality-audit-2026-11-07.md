@@ -79,10 +79,14 @@ ones still need source inspection. Direction, tie rules and upper-bucket
 inclusion must be established before implementing effective-bound validation.
 The 300s bucket is only a diagnostic envelope, not proof an item is valid.
 
-The production midpoint splitter uses a 2s minimum. Thus it does not account
-for the documented granularity and can split without actually narrowing the
-effective query. This is an algorithm/contract gap, not evidence that all
-historical vacancy cards are false. No splitter repair is deployed yet.
+At the November 7 investigation, the production midpoint splitter used a 2s
+minimum and could split without narrowing the effective query. This is an
+algorithm/contract gap, not evidence that all historical cards are false.
+Release bcebb83 subsequently deployed the five-minute grid and whole-parent
+fallback; its November 8--9 fresh sweep succeeded. See
+`search-area-filter-recovery-2026-11-08.md` for the separate live evidence and
+pending independent post-collection audit. This does not change the sampling
+limits or interpretation of the November 7 reports below.
 
 The local strict-second guard was withdrawn; it was never committed/deployed.
 The read-only auditor's counters remain unchanged for report compatibility.
@@ -127,6 +131,73 @@ payload size limit and 30-minute time budget. Each SQL statement has a 30s
 timeout and 2s lock timeout. The time budget is checked between queries; a
 query already in flight can add its timeout/connect overhead. A metadata cap
 stops the audit rather than silently taking a biased UUID prefix.
+
+### Optional Full-Response Mode
+
+The extension adds `--all-responses` for exactly one explicit,
+finished database run. Default endpoint sampling and archive mode remain
+unchanged. Publication was approved on November 9. Deployment and execution
+must be confirmed separately; the recorded November 9 endpoint audit did not
+use it.
+
+Full mode requires selecting every partition (raise `--max-partitions` above
+the known population), inventories requests linked either by run or its
+partitions, rejects cross-run/orphan references and multiple raw per request,
+and applies `--max-requests` before reading bodies. All requests are then
+traversed by partition and ascending request ID through the inventory watermark.
+Default batch size is 20, at most 50; batch size times per-payload cap cannot
+exceed 64 MB. SQL/connect/time budgets remain enforced. Metadata/seen-group
+limits fail closed instead of reporting an ordered prefix as a complete audit.
+
+Request inventory, partition metadata, run state and grouped seen-event counts
+are rechecked after traversal. A change/repeated request/missing traversal
+produces `status=incomplete` and a safe `incomplete_reason`. These are short
+READ ONLY transactions, not one atomic long-lived snapshot; raw/history are
+assumed append-only under the platform contract.
+
+`all_request_rows_visited=true` means the frozen inventory was fully visited.
+`sampling.is_full_response_audit=true` additionally requires no missing or
+oversized HTTP-200 body. A body-less transport attempt can still appear as
+raw_missing without defeating successful-response content coverage. Neither
+flag asserts that found data is correct or that HH returned every vacancy.
+Quality findings remain separate counters, even after complete traversal.
+
+`page_accounting` compares distinct HTTP-200 page numbers against stored
+progress, checks zero-based contiguous sequences, duplicates and covered-leaf
+expected page counts. An empty first page counts as one request even when
+reported pages is zero. Split parents do not need to fetch all reported pages.
+These are consistency diagnostics, not a recomputation of tree exhaustiveness.
+
+`observation_count_checks` independently compares unique raw item IDs to grouped
+seen-row counts for every inspectable response and reports unreconciled groups.
+Matching counts are not proof of every item identity/hash: those remain under
+the explicit `--max-provenance-pages` cap. Full mode selects at most the first
+nonempty response of each partition in seeded order for that derivative budget.
+`raw_item_ids_without_seen` also catches missing items inside a sampled page
+that still has some seen rows. Snapshot absence alone is not an error.
+
+Detailed evidence is streamed; summary groups are accumulated instead of retaining
+all response examples in memory. Diagnostic scalar examples are capped at 200
+characters and do not include request headers, full cards or address streets.
+Large-time examples now include publication age at receipt and available
+premium/type flags. They do not label an index race or advertising as proven.
+
+After an approved deploy and active-job check, the completed November 8 run
+can be audited with the existing background systemd-run procedure and:
+
+```bash
+docker compose --profile ops run --rm --no-deps --entrypoint python app \
+  scripts/analysis/audit_search_quality.py --database --all-responses \
+  --run-id d0cd5cea-69fd-47e3-8696-b6235b80d10d \
+  --max-partitions 20000 --max-requests 60000 --response-batch-size 20 \
+  --max-provenance-pages 1000 --max-seconds 1800 \
+  --output-dir .state/reports/search-quality-all-NEW-UTC-STAMP
+```
+
+Use a new timestamped directory, never overwrite earlier evidence. Run one
+audit at a time; do not overlap this full read with an archive catch-up or a
+backup restore drill. The extension has synthetic unit/SQL-construction tests;
+real PostgreSQL execution is not validated by those mocks.
 
 Hash-seeded round-robin sampling first spreads over run/area/coverage strata,
 then takes further partitions from each stratum. It is NOT a uniform random

@@ -333,3 +333,111 @@ def test_area_examples_are_not_hidden_by_first_three_time_only_anomalies() -> No
     assert [example["id"] for example in result["time_over_300s_examples"]] == ["large-time"]
     assert result["counts"]["area_outside_current_tree"] == 1
     assert result["counts"]["outside_exact_window"] == 4
+
+
+def test_applied_scope_arguments_are_checked_without_exporting_disable_urls() -> None:
+    row = response()
+    row["params_json"]["describe_arguments"] = "true"
+    row["payload_json"]["arguments"] = [
+        {"argument": "area", "value": "144", "disable_url": "SECRET"},
+        {"argument": "text", "value": "PRIVATE"},
+    ]
+    result = inspect_search_response(row, PARENTS)
+    assert result["counts"]["area_arguments_checked"] == 1
+    assert result["counts"]["area_arguments_mismatch"] == 0
+    assert result["applied_scope_arguments"] == [{"argument": "area", "value": "144"}]
+    assert "SECRET" not in str(result) and "PRIVATE" not in str(result)
+    row["payload_json"]["arguments"] = []
+    assert inspect_search_response(row, PARENTS)["counts"]["area_arguments_mismatch"] == 1
+    row["payload_json"]["arguments"] = None
+    assert inspect_search_response(row, PARENTS)["counts"]["applied_arguments_unavailable"] == 1
+
+
+def test_fresh_publication_evidence_does_not_assert_an_index_race() -> None:
+    row = response()
+    row["received_at"] = "2026-11-09T03:54:44.534737+00:00"
+    row["payload_json"]["items"][0].update(
+        published_at="2026-11-09T06:53:54+0300",
+        created_at="2026-11-09T06:53:54+0300",
+        premium=False,
+        is_adv_vacancy=False,
+        type={"id": "open"},
+    )
+    result = inspect_search_response(row, PARENTS)
+    example = result["time_over_300s_examples"][0]
+    assert example["published_age_at_response_seconds"] == pytest.approx(50.534737)
+    assert example["premium"] is False and example["is_adv_vacancy"] is False
+    assert example["vacancy_type_id"] == "open"
+    assert "index_race" not in result
+    row["payload_json"]["items"][0]["address"] = {"city": "x" * 1000}
+    assert len(inspect_search_response(row, PARENTS)["area_examples"][0]["address_city"]) == 200
+
+
+def test_derivative_checker_detects_a_missing_item_on_a_nonempty_seen_page() -> None:
+    row = response()
+    one = row["payload_json"]["items"][0]
+    row["payload_json"]["items"].append({**one, "id": "second"})
+    counts = inspect_derivatives(
+        row,
+        {
+            "seen": [
+                {
+                    "hh_vacancy_id": one["id"],
+                    "short_hash": payload_digest(one),
+                    "crawl_run_id": "run",
+                    "crawl_partition_id": "partition",
+                }
+            ]
+        },
+    )
+    assert counts["seen_absent_pages"] == 0
+    assert counts["raw_item_ids_without_seen"] == 1
+
+
+def test_weighted_streaming_summary_matches_individual_response_summary() -> None:
+    rows = [inspect_search_response(response(), PARENTS) for _ in range(3)]
+    expected = summarize_evidence(rows)
+    row = rows[0]
+    weighted = {
+        **row,
+        "counts": {key: value * 3 for key, value in row["counts"].items()},
+        "response_count": 3,
+    }
+    assert summarize_evidence([weighted]) == expected
+
+
+def test_batched_reader_uses_request_keyset_and_explicit_watermark(monkeypatch) -> None:
+    reader = SearchAuditReader(MagicMock())
+    batches = [
+        [{"api_request_log_id": 1}, {"api_request_log_id": 3}],
+        [{"api_request_log_id": 5}],
+    ]
+    query = MagicMock(side_effect=batches)
+    monkeypatch.setattr(reader, "query", query)
+    result = list(
+        reader.all_responses("partition", max_bytes=100, through_request_id=10, batch_size=2)
+    )
+    assert [row["api_request_log_id"] for row in result] == [1, 3, 5]
+    assert [call.args[1]["after_id"] for call in query.call_args_list] == [0, 3]
+    assert all(call.args[1]["through_id"] == 10 for call in query.call_args_list)
+    sql = query.call_args.args[0]
+    assert "id > :after_id AND id <= :through_id" in sql
+    assert "request_headers_json" not in sql and "Authorization" not in sql
+
+
+def test_batched_reader_rejects_stalled_cursor(monkeypatch) -> None:
+    reader = SearchAuditReader(MagicMock())
+    monkeypatch.setattr(reader, "query", lambda *args: [{"api_request_log_id": 0}])
+    with pytest.raises(ValueError, match="did not advance"):
+        list(reader.all_responses("partition", max_bytes=100, through_request_id=10, batch_size=1))
+
+
+def test_inventory_is_scoped_to_run_and_partition_references(monkeypatch) -> None:
+    reader = SearchAuditReader(MagicMock())
+    query = MagicMock(return_value=[{"requests": 5}])
+    monkeypatch.setattr(reader, "query", query)
+    assert reader.request_inventory("run")["requests"] == 5
+    sql = query.call_args.args[0]
+    assert "request_run_mismatches" in sql and "partition_run_mismatches" in sql
+    assert "multiple_raw_requests" in sql and "missing_200_raw" in sql
+    assert "request_headers_json" not in sql

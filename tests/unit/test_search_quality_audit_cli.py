@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -323,3 +324,356 @@ def test_archive_address_support_uses_reference_names_without_clearing_area_sign
     assert report["report_schema"] == "search-quality-audit-v2"
     assert report["counts"]["area_outside_current_tree"] == 1
     assert report["counts"]["area_outside_address_supports_requested_area"] == 1
+
+
+FULL_RUN = "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.fixture
+def full_database_audit(audit_script, tmp_path, monkeypatch):
+    import sqlalchemy
+
+    import hhru_platform.config.settings as settings
+    import hhru_platform.infrastructure.observability.search_quality_audit_db as db
+
+    params = {
+        "area": "1",
+        "per_page": 20,
+        "describe_arguments": "true",
+        "date_from": "2026-11-02T00:00:00Z",
+        "date_to": "2026-11-03T00:00:00Z",
+    }
+    partitions = [
+        {
+            "id": "p1",
+            "crawl_run_id": FULL_RUN,
+            "status": "done",
+            "coverage_status": "covered",
+            "params_json": {"params": params},
+            "pages_processed": 3,
+            "pages_total_expected": 3,
+        },
+        {
+            "id": "p2",
+            "crawl_run_id": FULL_RUN,
+            "status": "done",
+            "coverage_status": "covered",
+            "params_json": {"params": {"area": "1", "describe_arguments": "true"}},
+            "pages_processed": 1,
+            "pages_total_expected": 0,
+        },
+    ]
+    rows = {
+        "p1": [
+            {
+                "api_request_log_id": 1,
+                "crawl_run_id": FULL_RUN,
+                "crawl_partition_id": "p1",
+                "params_json": {**params, "page": 0},
+                "status_code": 0,
+                "error_type": "URLError",
+                "raw_api_payload_id": None,
+            }
+        ],
+        "p2": [],
+    }
+    for page in range(3):
+        payload = {
+            "items": [
+                {
+                    "id": str(page),
+                    "name": "PRIVATE-NAME",
+                    "area": {"id": "1"},
+                    "published_at": "2026-11-09T09:34:11+0300"
+                    if page == 1
+                    else "2026-11-02T06:45:00Z",
+                }
+            ],
+            "page": page,
+            "pages": 3,
+            "found": 41,
+            "per_page": 20,
+            "arguments": [{"argument": "area", "value": "1"}],
+        }
+        rows["p1"].append(
+            {
+                "api_request_log_id": page + 2,
+                "raw_api_payload_id": page + 102,
+                "crawl_run_id": FULL_RUN,
+                "crawl_partition_id": "p1",
+                "status_code": 200,
+                "params_json": {**params, "page": page},
+                "payload_json": payload,
+                "payload_hash": payload_digest(payload),
+            }
+        )
+    payload = {
+        "items": [],
+        "page": 0,
+        "pages": 0,
+        "found": 0,
+        "arguments": [{"argument": "area", "value": "1"}],
+    }
+    rows["p2"].append(
+        {
+            "api_request_log_id": 5,
+            "raw_api_payload_id": 105,
+            "crawl_run_id": FULL_RUN,
+            "crawl_partition_id": "p2",
+            "status_code": 200,
+            "params_json": {"area": "1", "page": 0, "describe_arguments": "true"},
+            "payload_json": payload,
+            "payload_hash": payload_digest(payload),
+        }
+    )
+
+    class Reader:
+        def __init__(self):
+            self.inventory = {
+                "requests": 5,
+                "max_request_id": 5,
+                "http_200_requests": 4,
+                "raw_rows": 4,
+                "missing_200_raw": 0,
+                "multiple_raw_requests": 0,
+                "request_run_mismatches": 0,
+                "partition_run_mismatches": 0,
+            }
+            self.after_inventory = None
+            self.inventory_calls = 0
+            self.body_calls = 0
+            self.run = {
+                "id": FULL_RUN,
+                "status": "succeeded",
+                "finished_at": "2026-11-09T10:00:00Z",
+            }
+            self.rows = rows
+            self.partitions_data = partitions
+            self.seen_rows = [
+                {
+                    "short_payload_ref_id": row["raw_api_payload_id"],
+                    "crawl_partition_id": row["crawl_partition_id"],
+                    "seen_rows": len(row["payload_json"]["items"]),
+                }
+                for rs in rows.values()
+                for row in rs
+                if row.get("payload_json", {}).get("items")
+            ]
+
+        def areas(self):
+            return [{"hh_area_id": "1", "parent_hh_area_id": None, "name": "Moscow"}]
+
+        def runs(self, **kwargs):
+            return [deepcopy(self.run)]
+
+        def partitions(self, *args, **kwargs):
+            return deepcopy(self.partitions_data)
+
+        def request_inventory(self, *args):
+            self.inventory_calls += 1
+            return deepcopy(
+                self.after_inventory
+                if self.inventory_calls > 1 and self.after_inventory
+                else self.inventory
+            )
+
+        def all_responses(self, partition_id, **kwargs):
+            assert kwargs["through_request_id"] == 5
+            self.body_calls += 1
+            yield from deepcopy(self.rows[partition_id])
+
+        def seen_inventory(self, *args, **kwargs):
+            return deepcopy(self.seen_rows)
+
+        def responses(self, *args, **kwargs):
+            raise AssertionError("all mode must not use endpoint sampling")
+
+        def derivatives(self, raw_id):
+            row = next(
+                r for rs in self.rows.values() for r in rs if r.get("raw_api_payload_id") == raw_id
+            )
+            return {
+                "seen": [
+                    {
+                        "hh_vacancy_id": item["id"],
+                        "short_hash": payload_digest(item),
+                        "crawl_run_id": row["crawl_run_id"],
+                        "crawl_partition_id": row["crawl_partition_id"],
+                    }
+                    for item in row["payload_json"]["items"]
+                ],
+                "snapshots": [],
+            }
+
+    reader = Reader()
+    monkeypatch.setattr(db, "SearchAuditReader", lambda *args, **kwargs: reader)
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(settings, "get_settings", lambda: SimpleNamespace(database_url="not-used"))
+    output = tmp_path / "full-report"
+
+    def run(extra=None):
+        code = audit_script.main(
+            [
+                "--database",
+                "--all-responses",
+                "--run-id",
+                FULL_RUN,
+                "--output-dir",
+                str(output),
+                "--max-partitions",
+                "10",
+                "--max-requests",
+                "10",
+                "--response-batch-size",
+                "2",
+            ]
+            + (extra or [])
+        )
+        return code, json.loads((output / "summary.json").read_text()), output
+
+    return reader, run
+
+
+def test_all_response_audit_visits_middle_pages_and_checks_progress(full_database_audit):
+    reader, run = full_database_audit
+    code, report, output = run()
+    assert code == 0 and reader.body_calls == 2
+    assert report["sampling"]["is_full_response_audit"] is True
+    assert report["all_request_rows_visited"] is True
+    assert report["requests_checked"] == report["counts"]["responses"] == 5
+    assert (
+        report["counts"]["payload_hash_checked"] == report["counts"]["area_arguments_checked"] == 4
+    )
+    assert report["counts"]["outside_window_over_300s"] == 1  # Only the middle page is anomalous.
+    assert report["counts"]["raw_missing"] == 1
+    assert report["page_accounting"]["partitions_checked"] == 2
+    assert report["page_accounting"]["processed_page_count_mismatches"] == 0
+    assert report["page_accounting"]["covered_expected_page_count_mismatches"] == 0
+    assert report["derivative_checks"]["derivative_pages_checked"] == 1
+    assert report["derivative_checks"]["raw_item_ids_without_seen"] == 0
+    assert report["observation_count_checks"]["response_pages_checked"] == 4
+    assert report["observation_count_checks"]["response_count_mismatches"] == 0
+    assert report["observation_count_checks"]["unreconciled_seen_rows"] == 0
+    assert "PRIVATE-NAME" not in (output / "evidence.jsonl").read_text()
+
+
+@pytest.mark.parametrize("extra", [["--max-requests", "4"], ["--max-partitions", "1"]])
+def test_all_response_caps_fail_before_payload_scan(full_database_audit, extra):
+    reader, run = full_database_audit
+    code, report, _ = run(extra)
+    assert code == 2 and report["status"] == "incomplete"
+    assert report["all_request_rows_visited"] is False
+    assert reader.body_calls == 0
+
+
+@pytest.mark.parametrize(
+    "key", ["multiple_raw_requests", "request_run_mismatches", "partition_run_mismatches"]
+)
+def test_all_response_reference_anomalies_fail_closed(full_database_audit, key):
+    reader, run = full_database_audit
+    reader.inventory[key] = 1
+    code, report, _ = run()
+    assert code == 2 and report["status"] == "incomplete" and reader.body_calls == 0
+
+
+def test_changed_source_cannot_be_called_full(full_database_audit):
+    reader, run = full_database_audit
+    reader.after_inventory = {**reader.inventory, "requests": 6}
+    code, report, _ = run()
+    assert code == 2 and report["all_request_rows_visited"] is False
+    assert report["sampling"]["is_full_response_audit"] is False
+
+
+@pytest.mark.parametrize("kind", ["oversize", "missing"])
+def test_omitted_successful_body_is_not_complete_content(full_database_audit, kind):
+    reader, run = full_database_audit
+    row = reader.rows["p1"][2]
+    if kind == "oversize":
+        row.update(payload_json=None, payload_omitted=True)
+    else:
+        row.update(payload_json=None, raw_api_payload_id=None)
+        reader.inventory.update(missing_200_raw=1, raw_rows=3)
+    code, report, _ = run()
+    assert code == 0  # Evidence collection is not an integrity verdict.
+    assert report["all_request_rows_visited"] is True
+    assert report["sampling"]["is_full_response_audit"] is False
+    assert report["successful_response_content_omissions"] == 1
+
+
+def test_duplicate_request_and_active_run_are_not_silently_truncated(full_database_audit):
+    reader, run = full_database_audit
+    reader.rows["p1"].append(reader.rows["p1"][1])
+    code, report, _ = run()
+    assert code == 2 and report["sampling"]["is_full_response_audit"] is False
+
+
+def test_running_source_is_rejected_before_audit(full_database_audit):
+    reader, run = full_database_audit
+    reader.run.update(status="created", finished_at=None)
+    code, report, _ = run()
+    assert code == 2 and report["status"] == "incomplete" and reader.body_calls == 0
+
+
+def test_all_response_count_check_detects_missing_and_misattributed_seen(full_database_audit):
+    reader, run = full_database_audit
+    reader.seen_rows[0]["seen_rows"] = 0
+    reader.seen_rows[1]["crawl_partition_id"] = "wrong-partition"
+    code, report, _ = run()
+    assert code == 0 and report["sampling"]["is_full_response_audit"] is True
+    assert report["observation_count_checks"]["response_count_mismatches"] == 2
+    assert report["observation_count_checks"]["unreconciled_seen_rows"] == 1
+
+
+@pytest.mark.parametrize("changed", ["partitions", "seen"])
+def test_inventory_change_after_content_scan_prevents_completion(
+    full_database_audit, monkeypatch, changed
+):
+    reader, run = full_database_audit
+    method = "partitions" if changed == "partitions" else "seen_inventory"
+    original = getattr(reader, method)
+    calls = 0
+
+    def changing(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = original(*args, **kwargs)
+        if calls > 1:
+            result[0]["pages_processed" if changed == "partitions" else "seen_rows"] = 99
+        return result
+
+    monkeypatch.setattr(reader, method, changing)
+    code, report, _ = run()
+    assert code == 2 and report["all_request_rows_visited"] is False
+    assert report["incomplete_reason"] == "source_changed_or_requests_not_fully_traversed"
+
+
+def test_seen_group_budget_fails_before_body_scan(full_database_audit):
+    reader, run = full_database_audit
+    reader.seen_rows = reader.seen_rows * 8
+    code, report, _ = run()
+    assert code == 2 and reader.body_calls == 0
+    assert report["incomplete_reason"] == "seen_group_budget_exceeded"
+
+
+def test_report_retains_aggregates_not_response_examples(audit_script, tmp_path):
+    report = audit_script.AuditReport(tmp_path / "aggregate-report")
+    for _ in range(3):
+        report.inspect(archive_row(), {"1": None, "144": None})
+    assert len(report.groups) == 1 and report.response_count == 3
+    assert "examples" not in next(iter(report.groups.values()))
+    report.finish(status="evidence_collected")
+    assert report.metadata["counts"]["responses"] == 3
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--archive-dir", "archive", "--area-reference", "areas"],
+        ["--database"],
+        ["--database", "--run-id", FULL_RUN, "--response-batch-size", "51"],
+        ["--database", "--run-id", FULL_RUN, "--response-batch-size", "50"],
+    ],
+)
+def test_all_response_cli_rejects_ambiguous_or_oversized_sources(audit_script, args):
+    with pytest.raises(SystemExit):
+        audit_script.parse_args(args + ["--all-responses", "--output-dir", "report"])

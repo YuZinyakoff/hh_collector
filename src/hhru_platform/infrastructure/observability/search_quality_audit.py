@@ -29,6 +29,12 @@ def payload_digest(payload: object) -> str:
     return hashlib.sha256(document.encode("utf-8")).hexdigest()
 
 
+def _example_value(value: object) -> str | int | float | bool | None:
+    if isinstance(value, str):
+        return value[:200]
+    return value if isinstance(value, int | float | bool) else None
+
+
 def area_membership(actual: str, requested: str, parents: Mapping[str, str | None]) -> bool | None:
     """Use the supplied dictionary, not an assumed equality of parent and leaf IDs."""
     if actual not in parents or requested not in parents:
@@ -115,6 +121,8 @@ def inspect_search_response(
     result["requested_areas"] = requested_areas
     result["requested_window"] = {k: params[k] for k in ("date_from", "date_to") if k in params}
     result["request_page"] = params.get("page", 0)
+    result["status_code"] = row.get("status_code")
+    result["error_type"] = row.get("error_type")
     counts: Counter[str] = Counter()
     examples: list[dict[str, Any]] = []
     result["counts"] = counts
@@ -160,6 +168,22 @@ def inspect_search_response(
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         counts["invalid_search_shape"] += 1
         return result
+    if str(params.get("describe_arguments", "")).lower() == "true":
+        arguments = payload.get("arguments")
+        if not isinstance(arguments, list) or any(not isinstance(a, dict) for a in arguments):
+            counts["applied_arguments_unavailable"] += 1
+        else:
+            counts["area_arguments_checked"] += 1
+            applied = [a.get("value") for a in arguments if a.get("argument") == "area"]
+            valid = all(isinstance(v, str | int) and not isinstance(v, bool) for v in applied)
+            counts["area_arguments_mismatch"] += int(
+                not valid or {str(v).strip() for v in applied} != set(requested_areas)
+            )
+            result["applied_scope_arguments"] = [
+                {"argument": a["argument"], "value": _example_value(a.get("value"))}
+                for a in arguments
+                if a.get("argument") in {"area", "date_from", "date_to"}
+            ]
     try:
         normalize_vacancy_search_page(payload)
     except (VacancySearchNormalizationError, TypeError, ValueError):
@@ -200,11 +224,23 @@ def inspect_search_response(
         actual_area = str(area["id"]) if isinstance(area, dict) and area.get("id") else None
         address = item.get("address")
         city = address.get("city") if isinstance(address, dict) else None
+        published = aware_datetime(item.get("published_at"))
+        received = aware_datetime(str(row.get("received_at")))
+        vacancy_type = item.get("type")
         example = {
-            "id": item_id,
-            "area_id": actual_area,
-            "published_at": item.get("published_at"),
-            "address_city": city if isinstance(city, str) else None,
+            "id": _example_value(item_id),
+            "area_id": _example_value(actual_area),
+            "published_at": _example_value(item.get("published_at")),
+            "address_city": _example_value(city),
+            "created_at": _example_value(item.get("created_at")),
+            "premium": _example_value(item.get("premium")),
+            "is_adv_vacancy": _example_value(item.get("is_adv_vacancy")),
+            "vacancy_type_id": _example_value(vacancy_type.get("id"))
+            if isinstance(vacancy_type, dict)
+            else None,
+            "published_age_at_response_seconds": (
+                (received - published).total_seconds() if received and published else None
+            ),
         }
         issue = False
         if requested_areas:
@@ -224,7 +260,6 @@ def inspect_search_response(
                 if len(area_examples) < 3:
                     area_examples.append(example)
                 issue = True
-        published = aware_datetime(item.get("published_at"))
         if bounds:
             if invalid_bounds or published is None:
                 counts["time_uncheckable"] += 1
@@ -288,6 +323,9 @@ def inspect_derivatives(
                     counts["snapshot_payload_unavailable"] += 1
                 else:
                     counts["snapshot_payload_mismatch"] += int(record["payload"] != source)
+        if kind == "seen" and len(records) <= 1000:
+            observed_ids = {record.get("hh_vacancy_id") for record in records}
+            counts["raw_item_ids_without_seen"] += len(set(items) - observed_ids)
     return dict(counts)
 
 
@@ -337,7 +375,7 @@ def summarize_evidence(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             str(row.get("coverage_status")),
         )
         counts = Counter(row.get("counts", {}))
-        counts["responses"] += 1
+        counts["responses"] += int(row.get("response_count", 1))
         groups[key].update(counts)
         totals.update(counts)
     return {

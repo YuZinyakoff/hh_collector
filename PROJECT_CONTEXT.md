@@ -13,6 +13,86 @@ of scope unless explicitly requested.
 
 ## Current State
 
+November 9 VPS verification (10:17 UTC): bcebb83 is deployed. Fresh sweep
+d0cd5cea-69fd-47e3-8696-b6235b80d10d succeeded, started November 8 20:42:11
+UTC and finished November 9 06:47:05 UTC (~8h05m). Its tree has 14,015 covered
+leaves and 1,077 split nodes, no pending/running/failed/unresolved rows.
+Area 2019 has 71 covered / 69 split time nodes; 1229 has 16 covered / 14 split
+time nodes. Both have a split area parent, with whole_area_time_fallback_v1
+on their time nodes and no area-144/17683 partitions in the supplied inventory.
+This proves successful repaired planner execution, NOT population completeness.
+The independent post-collection source/detail/coverage audit remains pending.
+
+Controlled stop and pull were verified. Four bounded parent probes passed
+the area guard; date arguments were UTC-equivalent and displayed items fell
+inside adjacent five-minute windows. Interrupted run
+256ea99b-d563-4d57-8867-08a0abd46dbd was finalized failed on November 8
+20:28:43 UTC under advisory/row locks, preserving observations/tree rows and
+without reconciliation. Search scheduling was restored, three detail workers
+drained 2,218 items, then the fresh run started. By November 9 08:17 UTC its
+first-detail backlog was zero again. Search now skips as not due, with next
+due November 15 ~20:42 UTC. At 10:17 UTC disk was 72% / 45 GiB free.
+Separate archive incident is now identified: run 20261109T024347Z-4062915
+failed at 07:54:02 UTC with max_export_batches_exhausted, max_export_batches=300.
+The driver protects partial progress with verify/sync/readback before this
+failure branch and skips DB housekeeping until export is complete. Confirm
+step logs before planning a checkpointed catch-up; do not change retention,
+raise limits or assume a new network fault. No new search is needed now.
+
+Post-fix report search-quality-postfix-20261109T103348Z completed at 10:35:36:
+all 15,092 partitions selected, but first/last requests only (NOT all pages).
+17,038 requests inspected: 17,037 raw payload hashes matched, one raw absent.
+Full request inventory subsequently confirmed 57,275 HTTP-200 requests with
+exactly 57,275 raw rows and a single status-0 URLError attempt without raw
+(request 9425115). This is an expected body-less transport attempt, not a
+demonstrated lost successful response. Hash checks still cover endpoint pages,
+not all 57,275 payloads. No checked scope/run/partition
+mismatch. Of 102,925 item occurrences, 916 have area/tree signals: 629
+address-supported, 164 address also outside, 116 unknown city and 7 missing;
+16 further posting areas are uncheckable. Of 35,867 time checks, 34 are
+outside literal bounds and 2 exceed 300s; inspect their actual examples.
+Provenance sample: 1,000 nonempty pages, 8,937 seen rows and 518 snapshots,
+no checked hash/run/partition/payload mismatches. 798 pages have no snapshot,
+which alone does not imply loss (unchanged short payloads are deduplicated).
+Two large time deviations are actual sampled raw items: raw 9449305 / request
+9449465, Tomsk area 90, vacancy 138303968 published November 9 despite an
+October 20..30 window (853,734s past upper bound); raw 9473799 / request
+9473959, Moscow area 1, vacancy 136984984 published November 9 despite a
+November 2 window (602,051s). Each response has only one out-of-window item
+among 20; all 20 posting areas match their requested tree. These cannot be
+explained by five-minute rounding. Saved metadata subsequently confirms both
+area/date bounds in arguments and alternate_url; fixes/suggests null. Both
+cards are open / is_adv_vacancy=false with no adv URL, but only Moscow is
+premium. Publication preceded receipt by 50.534737s (Tomsk) / 144.026521s
+(Moscow), and created_at equals published_at. Recent republication plus
+lagging index/card hydration is a hypothesis requiring older snapshots, not
+proven. Do not infer republishing, advertisement injection or client corruption as established,
+drop these cards, or reintroduce the withdrawn literal-time guard.
+Archive stage logs confirmed export-299=1,714 / export-300=2,418 rows, then
+successful local verify, offsite sync, offsite verify and local prune before
+the cap error. No DB-housekeeping step ran on that failure path. Checkpointed
+catch-up is a separate pending operation; no limit/retention change approved.
+Full-page accounting, whole-response content and detail provenance audits
+remain pending; this report is not a corpus completeness certificate.
+
+Read-only auditor extension is approved for publication; VPS deployment and
+execution are not yet confirmed:
+--all-responses for one explicit finished run, bounded keyset batches and
+request/partition/seen-count inventories checked before/after. It checks all
+successful raw bodies/hashes/declared area arguments, page sequence/progress,
+and per-response unique-item versus seen-row counts. Full identity/hash/detail
+provenance remains capped/sampled, not a population certificate. Evidence
+streams to JSONL and only aggregates remain in memory. Local tests include
+middle-page anomalies and incomplete/cap/source-change cases. Verification:
+461 tests passed, 27 skipped; Ruff clean, mypy clean for 200 source files.
+Real PostgreSQL integration was not available locally. Publication was approved
+on November 9; pull/run still require checking active VPS jobs first.
+
+### Preparation History
+
+The following records the November 8 preparation and prior audit evidence;
+rollout and run-completion status is superseded by the verification above.
+
 November 8 live probe: with describe_arguments=true, areas 144 and 17683
 are absent from response arguments and alternate_url, with ~865k global
 results, for both no_magic=false/true. Moscow 1 is explicitly applied
@@ -26,14 +106,14 @@ policy now uses whole-parent time windows for these two areas, with explicit
 split_policy metadata, instead of descending into their towns. Time splits
 use a five-minute UTC grid, at least 300 seconds per child; unsplittable
 saturation stays unresolved. Old split_done trees are not rewritten: ordinary
-resume does not repair them. Bounded parent smoke, deployment/recovery and
-post-collection audit remain pending. VPS had an active six-hour run at 17:20 UTC
+resume does not repair them. Bounded parent smoke and deployment/recovery were
+subsequently confirmed above; post-collection audit remains pending.
+VPS had an active six-hour run at 17:20 UTC
 on 716985a: 256ea99b-d563-4d57-8867-08a0abd46dbd, controller PID 3417556,
 container hh_collector-app-run-aeaf5b03a590. At 19:50 UTC the same controller
 and container were still active (nine hours). The user then approved publishing
-the fix and a controlled stop for rollout. Stop execution has not been
-confirmed: first stop the search timer/controller and that exact container,
-verify no active search process, then pull. Do not blindly resume the old tree.
+the fix and a controlled stop for rollout. That stop, pull and interrupted-run
+finalization were subsequently confirmed. Do not blindly resume the old tree.
 See
 `docs/ops/search-area-filter-recovery-2026-11-08.md`.
 
@@ -65,7 +145,7 @@ filters. Exact-window deviations MUST NOT be treated as API violations;
 132,545 were recorded, only 87 exceeded 300s. The uncommitted strict-window
 guard was withdrawn without deployment. The deployed splitter's 2s minimum
 does not account for this granularity; the November 8 local grid correction
-above is tested but not deployed. Exact server-bound semantics remain a
+above is deployed and passed the new sweep. Exact server-bound semantics remain a
 live-audit question. Regional expansion outside the two overrides remains unresolved.
 Three saved Moscow/Petersburg anomaly items have matching `address.city`
 despite different `area` IDs. The original area counter is diagnostic, not
@@ -106,7 +186,7 @@ of unique/corrupt vacancies. No evidence justifies wiping/rebuilding the
 whole corpus. Remaining questions are effective query/filter semantics,
 coverage/provenance interpretation, repeated observations and inactivity.
 Controlled search stop and fix publication are now approved as described above.
-No production stop/deployment/recovery is confirmed yet; no inactivity repair,
+Stop/deployment/fresh-run recovery is now confirmed. No inactivity repair,
 data deletion, legacy-tree rewrite or retention change is authorized.
 
 October 27 archive sync investigation and local fix:

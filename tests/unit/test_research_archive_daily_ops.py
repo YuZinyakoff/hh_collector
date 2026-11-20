@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,7 @@ def test_daily_research_archive_driver_runs_complete_non_destructive_pipeline(
     fake_bin.mkdir()
     calls_file = tmp_path / "docker-calls.log"
     export_count_file = tmp_path / "export-count"
+    cutoff_count_file = tmp_path / "cutoff-count"
     fake_docker = fake_bin / "docker"
     fake_docker.write_text(
         """#!/usr/bin/env bash
@@ -43,11 +45,31 @@ fi
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
+    fake_date = fake_bin / "date"
+    fake_date.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *" hours ago"* ]]; then
+  count=0
+  if [[ -f "$FAKE_CUTOFF_COUNT" ]]; then
+    count="$(cat "$FAKE_CUTOFF_COUNT")"
+  fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$FAKE_CUTOFF_COUNT"
+  printf '2026-11-11T13:37:0%sZ\\n' "$count"
+else
+  exec /usr/bin/date "$@"
+fi
+""",
+        encoding="utf-8",
+    )
+    fake_date.chmod(0o755)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_DOCKER_CALLS": str(calls_file),
         "FAKE_DOCKER_EXPORT_COUNT": str(export_count_file),
+        "FAKE_CUTOFF_COUNT": str(cutoff_count_file),
         "HHRU_RESEARCH_ARCHIVE_DAILY_ROOT_DIR": str(tmp_path),
         "HHRU_RESEARCH_ARCHIVE_DAILY_MAX_EXPORT_BATCHES": "3",
     }
@@ -73,6 +95,11 @@ fi
         "preview-research-archive-housekeeping",
     ]
     assert [call.split()[6] for call in calls] == commands
+    export_calls = [shlex.split(call) for call in calls if " export-research-archive " in call]
+    cutoffs = [call[call.index("--settled-before") + 1] for call in export_calls]
+    assert cutoffs == ["2026-11-11T13:37:01Z"] * 2
+    assert cutoff_count_file.read_text(encoding="utf-8").strip() == "1"
+    assert "settled_before=2026-11-11T13:37:01Z" in result.stdout
     assert all("apply-research-archive-housekeeping" not in call for call in calls)
     assert len(list((tmp_path / ".state/logs/research-archive-daily").iterdir())) == 1
 
@@ -334,3 +361,48 @@ printf 'total_row_count=1\\n'
         "sync-research-archive-offsite",
         "verify-research-archive-offsite",
     ]
+
+
+def test_daily_research_archive_offsite_timeout_prevents_cleanup(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls_file = tmp_path / "docker-calls.log"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
+if [[ "$*" == *" export-research-archive "* ]]; then
+  printf 'total_row_count=0\\n'
+elif [[ "$*" == *" verify-research-archive-offsite "* ]]; then
+  printf 'ReadTimeoutError\\n' >&2
+  exit 1
+else
+  printf 'status=succeeded\\n'
+fi
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_CALLS": str(calls_file),
+        "HHRU_RESEARCH_ARCHIVE_DAILY_ROOT_DIR": str(tmp_path),
+        "HHRU_RESEARCH_ARCHIVE_DAILY_HOUSEKEEPING_APPLY": "true",
+        "HHRU_RESEARCH_ARCHIVE_DAILY_PRUNE_VERIFIED_LOCAL_CHUNKS": "true",
+    }
+    result = subprocess.run(
+        ["bash", str(SCRIPT)], check=False, capture_output=True, env=env, text=True
+    )
+    assert result.returncode == 1
+    assert "step=offsite-verify status=failed" in result.stderr
+    assert "ReadTimeoutError" in result.stderr
+    calls = calls_file.read_text(encoding="utf-8").splitlines()
+    assert [shlex.split(call)[6] for call in calls] == [
+        "export-research-archive",
+        "verify-research-archive",
+        "sync-research-archive-offsite",
+        "verify-research-archive-offsite",
+    ]
+    assert "operation=daily_research_archive status=succeeded" not in result.stdout

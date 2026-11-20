@@ -637,7 +637,9 @@ After the manual production routine is proven, use
 - takes a non-blocking `flock` so two daily pipelines cannot overlap;
 - waits on the shared `.state/locks/heavy-ops.lock` so it does not overlap with
   daily backup or weekly restore drill;
-- runs bounded incremental exports until a zero-row checkpoint is written;
+- captures one UTC eligibility cutoff after acquiring the locks and passes it
+  as `--settled-before` to every bounded incremental export until a zero-row
+  checkpoint is written; the cutoff does not move as batches run;
 - always runs local verify, idempotent S3 sync and offsite verify for every
   successfully exported chunk;
 - if the configured export-batch maximum is exhausted, safely prunes eligible
@@ -651,6 +653,15 @@ After the manual production routine is proven, use
 - can pass daily-only retention overrides to both preview and apply. If these
   variables are unset, the CLI falls back to the regular
   `HHRU_HOUSEKEEPING_*` settings inside the app container.
+
+The fixed cutoff is the cycle start minus the configured settled delay, not a
+transactional snapshot across datasets. Rows that become eligible later are left
+for the next cycle; checkpoint source-id prefixes and safety barriers are unchanged.
+The CLI rejects a naive/invalid cutoff, a cutoff without `--incremental`, or a
+cutoff newer than `--settled-delay-hours` allows. Manual incremental exports
+without `--settled-before` retain the relative-delay behavior. This prevents the
+daily driver from chasing newly eligible rows with tiny successive chunks, but
+does not remove the export cap for genuinely large backlogs or fix S3 timeouts.
 
 Run one supervised driver smoke before enabling the timer:
 

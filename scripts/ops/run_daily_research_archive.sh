@@ -166,6 +166,7 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 TRIGGER_PREFIX="daily-production-archive-${RUN_ID}"
 RUN_LOG_DIR="${LOG_ROOT}/${RUN_ID}"
 mkdir -p "$RUN_LOG_DIR"
+SETTLED_BEFORE="$(date -u -d "${SETTLED_DELAY_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)"
 
 COMPOSE=(docker compose --profile ops run --rm app)
 
@@ -187,8 +188,8 @@ run_step() {
   fi
 }
 
-printf 'operation=daily_research_archive status=started run_id=%s log_dir=%s\n' \
-  "$RUN_ID" "$RUN_LOG_DIR"
+printf 'operation=daily_research_archive status=started run_id=%s log_dir=%s settled_before=%s\n' \
+  "$RUN_ID" "$RUN_LOG_DIR" "$SETTLED_BEFORE"
 
 export_complete=no
 for batch_number in $(seq 1 "$MAX_EXPORT_BATCHES"); do
@@ -197,6 +198,7 @@ for batch_number in $(seq 1 "$MAX_EXPORT_BATCHES"); do
     "${COMPOSE[@]}" export-research-archive \
     --incremental \
     --settled-delay-hours "$SETTLED_DELAY_HOURS" \
+    --settled-before "$SETTLED_BEFORE" \
     --limit-per-dataset "$LIMIT_PER_DATASET" \
     --chunk-size "$CHUNK_SIZE" \
     --batch-size "$BATCH_SIZE" \

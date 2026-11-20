@@ -130,6 +130,14 @@ def register_research_archive_commands(
         help="Safety delay for incremental exports. Defaults to 24 hours.",
     )
     export_parser.add_argument(
+        "--settled-before",
+        type=_aware_utc_datetime,
+        help=(
+            "Fixed ISO-8601 eligibility cutoff for an incremental batch sequence. "
+            "Must not be newer than --settled-delay-hours permits."
+        ),
+    )
+    export_parser.add_argument(
         "--triggered-by",
         default="export-research-archive",
         help="Actor or subsystem that initiated export.",
@@ -422,11 +430,16 @@ def register_research_archive_commands(
 def handle_export_research_archive(args: argparse.Namespace) -> int:
     settings = get_settings()
     incremental = bool(args.incremental)
-    settled_before = (
-        datetime.now(UTC) - timedelta(hours=float(args.settled_delay_hours))
-        if incremental
-        else None
-    )
+    try:
+        settled_before = _export_settled_before(
+            incremental=incremental,
+            delay_hours=float(args.settled_delay_hours),
+            fixed_cutoff=args.settled_before,
+            now=datetime.now(UTC),
+        )
+    except (ValueError, OverflowError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
     command = ExportResearchArchiveCommand(
         archive_dir=Path(args.archive_dir or settings.research_archive_dir),
         datasets=tuple(
@@ -1114,6 +1127,37 @@ def _git_revision() -> str:
 
 def _source_command() -> str:
     return " ".join(shlex.quote(argument) for argument in sys.argv[1:])
+
+
+def _export_settled_before(
+    *,
+    incremental: bool,
+    delay_hours: float,
+    fixed_cutoff: datetime | None,
+    now: datetime,
+) -> datetime | None:
+    if not incremental:
+        if fixed_cutoff is not None:
+            raise ValueError("--settled-before requires --incremental")
+        return None
+    safe_cutoff = now - timedelta(hours=delay_hours)
+    if fixed_cutoff is None:
+        return safe_cutoff
+    if fixed_cutoff > safe_cutoff:
+        raise ValueError("--settled-before must not be newer than --settled-delay-hours permits")
+    return fixed_cutoff
+
+
+def _aware_utc_datetime(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "expected an ISO-8601 timestamp with a timezone"
+        ) from error
+    if parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError("expected an ISO-8601 timestamp with a timezone")
+    return parsed.astimezone(UTC)
 
 
 def _non_negative_float(value: str) -> float:

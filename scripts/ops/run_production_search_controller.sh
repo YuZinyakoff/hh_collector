@@ -10,7 +10,7 @@ LOG_RETENTION_DAYS="${HHRU_PRODUCTION_SEARCH_LOG_RETENTION_DAYS:-30}"
 APPLY="${HHRU_PRODUCTION_SEARCH_CONTROLLER_APPLY:-false}"
 FORCE="${HHRU_PRODUCTION_SEARCH_FORCE:-false}"
 RUN_TYPE="${HHRU_PRODUCTION_SEARCH_RUN_TYPE:-production_weekly_sweep}"
-SYNC_DICTIONARIES="${HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES:-no}"
+SYNC_DICTIONARIES="${HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES:-yes}"
 DETAIL_LIMIT="${HHRU_PRODUCTION_SEARCH_DETAIL_LIMIT:-0}"
 DETAIL_REFRESH_TTL_DAYS="${HHRU_PRODUCTION_SEARCH_DETAIL_REFRESH_TTL_DAYS:-30}"
 INTERVAL_SECONDS="${HHRU_PRODUCTION_SEARCH_INTERVAL_SECONDS:-604800}"
@@ -175,8 +175,8 @@ where run_type = '${RUN_TYPE}'
   and status = 'succeeded';
 "
 
-printf 'operation=production_search_controller status=started run_id=%s log_dir=%s apply=%s force=%s run_type=%s interval_seconds=%s\n' \
-  "$RUN_ID" "$RUN_LOG_DIR" "$APPLY" "$FORCE" "$RUN_TYPE" "$INTERVAL_SECONDS"
+printf 'operation=production_search_controller status=started run_id=%s log_dir=%s apply=%s force=%s run_type=%s interval_seconds=%s sync_dictionaries=%s\n' \
+  "$RUN_ID" "$RUN_LOG_DIR" "$APPLY" "$FORCE" "$RUN_TYPE" "$INTERVAL_SECONDS" "$SYNC_DICTIONARIES"
 
 active_runs="$(query_scalar "$active_runs_sql")"
 backlog_size="$(query_scalar "$backlog_sql")"

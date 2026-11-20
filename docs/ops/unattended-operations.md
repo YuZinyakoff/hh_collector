@@ -144,6 +144,12 @@ Automated drivers are fail-closed:
   `production_weekly_sweep`, refuses to start while active first-detail backlog
   remains, and stops `detail-worker` immediately before handing off to
   `trigger-run-now`.
+- admitted production searches sync reference dictionaries before creating and
+  planning the crawl by default. Sync failure prevents collection from starting;
+  an explicit `HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES=no` still overrides this
+  default and must not be left over from the older installation example. Existing
+  environment files are not changed by a code pull. Refresh does not repair old
+  trees, backfill existing null area references, or prove external completeness.
 
 S3 backup retention apply is operationally proven as a manual dry-run-first
 procedure. The automation path is now fail-closed: schedule it after successful
@@ -296,7 +302,7 @@ printf '%s\n' \
   'HHRU_PRODUCTION_SEARCH_CONTROLLER_APPLY=true' \
   'HHRU_PRODUCTION_SEARCH_INTERVAL_SECONDS=604800' \
   'HHRU_PRODUCTION_SEARCH_RUN_TYPE=production_weekly_sweep' \
-  'HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES=no' \
+  'HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES=yes' \
   'HHRU_PRODUCTION_SEARCH_DETAIL_LIMIT=0' \
   'HHRU_PRODUCTION_SEARCH_MAX_BACKLOG_BEFORE_SEARCH=0' \
   'HHRU_PRODUCTION_SEARCH_MIN_FREE_BYTES=21474836480' \

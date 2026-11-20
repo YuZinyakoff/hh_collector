@@ -24,13 +24,55 @@ def test_production_search_controller_starts_due_search(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "action=started_search" in result.stdout
+    assert "sync_dictionaries=yes" in result.stdout
     assert "search_status=succeeded" in result.stdout
     assert any(
         "compose --profile ops run --rm app trigger-run-now" in call
+        and "--sync-dictionaries yes" in call
         and "--detail-limit 0" in call
         and "--run-type production_weekly_sweep" in call
         for call in calls
     )
+
+
+def test_production_search_controller_preserves_explicit_dictionary_sync_opt_out(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run_controller(
+        tmp_path,
+        active_runs=0,
+        backlog_size=0,
+        last_success_epoch=0,
+        running_detail_workers=0,
+        failed_units=0,
+        free_bytes=30 * 1024 * 1024 * 1024,
+        apply=True,
+        sync_dictionaries="no",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "sync_dictionaries=no" in result.stdout
+    assert any("trigger-run-now --sync-dictionaries no" in call for call in calls)
+
+
+def test_production_search_controller_rejects_invalid_dictionary_sync_setting(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run_controller(
+        tmp_path,
+        active_runs=0,
+        backlog_size=0,
+        last_success_epoch=0,
+        running_detail_workers=0,
+        failed_units=0,
+        free_bytes=30 * 1024 * 1024 * 1024,
+        apply=True,
+        sync_dictionaries="invalid",
+    )
+
+    assert result.returncode == 2
+    assert "HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES must be yes or no" in result.stderr
+    assert not calls
 
 
 def test_production_search_controller_skips_when_not_due(tmp_path: Path) -> None:
@@ -143,6 +185,7 @@ def _run_controller(
     failed_units: int,
     free_bytes: int,
     apply: bool,
+    sync_dictionaries: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -164,6 +207,9 @@ def _run_controller(
         "HHRU_PRODUCTION_SEARCH_ROOT_DIR": str(tmp_path),
         "HHRU_PRODUCTION_SEARCH_CONTROLLER_APPLY": "true" if apply else "false",
     }
+    env.pop("HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES", None)
+    if sync_dictionaries is not None:
+        env["HHRU_PRODUCTION_SEARCH_SYNC_DICTIONARIES"] = sync_dictionaries
 
     result = subprocess.run(
         ["bash", str(SCRIPT)],

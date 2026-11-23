@@ -31,5 +31,25 @@ The script is intentionally read-only:
 Use this snapshot before updating project readiness docs or making retention /
 production-corpus decisions.
 
+After a storage incident, start with sizes, not row counts:
+
+- Measure the root filesystem, Docker volumes (including PostgreSQL WAL and
+  Prometheus), local dumps, local archive chunks, reports and logs separately.
+  Do not add repeated overlay mounts or a directory total to its children.
+- Use `pg_stat_user_tables` with `pg_table_size` (including TOAST) and
+  `pg_indexes_size` to attribute live database storage without scanning rows.
+  Dead-row estimates can guide investigation, but are not measurements of
+  reclaimable disk. Ordinary deletes and VACUUM generally make room reusable
+  inside PostgreSQL rather than shrinking the filesystem.
+- Separate S3 dump generations from the research-archive prefixes and group the
+  archive by dataset. Local manifests and receipts estimate these sizes but
+  cannot account for orphaned objects, old object versions or incomplete
+  multipart transfers; check the actual bucket inventory before changing
+  retention. Do not count the same dump as a different research dataset.
+- Record baseline usage separately from peak space during a dump or restore
+  verification. Preserve the latest verified generations and raw evidence while
+  measuring; do not start a full restore, VACUUM FULL or manual cleanup as part
+  of a size snapshot.
+
 Latest recorded state:
 [current-state-2026-06-23.md](/home/yurizinyakov/projects/hh_collector/docs/ops/current-state-2026-06-23.md).

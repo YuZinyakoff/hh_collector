@@ -1,20 +1,20 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DAILY_SCRIPT = REPO_ROOT / "scripts" / "ops" / "run_daily_backup.sh"
+DUMP_SCRIPT = REPO_ROOT / "scripts" / "backup" / "backup_postgres.sh"
 RESTORE_SCRIPT = REPO_ROOT / "scripts" / "ops" / "run_weekly_backup_restore_drill.sh"
 CLEANUP_SCRIPT = REPO_ROOT / "scripts" / "ops" / "run_weekly_backup_offsite_cleanup.sh"
 NOTIFY_SCRIPT = REPO_ROOT / "scripts" / "ops" / "notify_systemd_failure.sh"
 SYSTEMD_ROOT = REPO_ROOT / "deploy" / "systemd"
 
 
-def test_daily_backup_driver_runs_verified_pipeline_and_prunes_local_dump(
-    tmp_path: Path,
-) -> None:
+def _fake_daily_backup(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     calls_file = tmp_path / "docker-calls.log"
@@ -23,18 +23,56 @@ def test_daily_backup_driver_runs_verified_pipeline_and_prunes_local_dump(
         """#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
+dump=.state/backups/fake.dump
 if [[ "$*" == *" run-backup "* ]]; then
-  mkdir -p .state/backups
-  printf 'fake backup payload' > .state/backups/fake.dump
-  printf '{}\\n' > .state/backups/fake.dump.manifest.json
+  printf 'fake backup payload' > "$dump"
   printf 'status=succeeded\\nbackup_file=.state/backups/fake.dump\\n'
+elif [[ "$*" == *" verify-backup-file "* ]]; then
+  if [[ "${FAKE_LOCAL_VERIFY_FAILURE:-no}" == yes ]]; then
+    printf 'broken backup\\n' >&2
+    exit 1
+  fi
+  sha="$(sha256sum "$dump")"
+  printf 'backup_sha256=%s\\n' "${sha%% *}"
 elif [[ "$*" == *" sync-backup-offsite "* ]]; then
-  printf '{}\\n' > .state/backups/fake.dump.offsite.json
+  if [[ "${FAKE_SYNC_FAILURE:-no}" == yes ]]; then
+    printf 'S3 read timeout\\n' >&2
+    exit 1
+  fi
+  python3 - "$dump" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+dump = Path(sys.argv[1])
+payload = dump.read_bytes()
+manifest = {
+    "backup_file": dump.name,
+    "backup_size_bytes": len(payload),
+    "backup_sha256": hashlib.sha256(payload).hexdigest(),
+    "chunk_size_bytes": 64,
+    "parts": [{}],
+}
+raw = json.dumps(manifest).encode()
+Path(f"{dump}.manifest.json").write_bytes(raw)
+receipt = {
+    **manifest,
+    "part_count": 1,
+    "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+    "offsite_url": "https://example.test",
+    "offsite_root": "/backups",
+    "remote_backup_path": f"/backups/{dump.name}.parts",
+    "remote_manifest_path": f"/backups/{dump.name}.manifest.json",
+    "verified_object_count": 2,
+}
+Path(f"{dump}.offsite.json").write_text(json.dumps(receipt))
+PY
   printf 'status=succeeded\\nscanned_backup_count=1\\n'
   printf 'backup=/app/.state/backups/fake.dump uploaded=yes skipped=no\\n'
 elif [[ "$*" == *" verify-backup-offsite "* ]]; then
-  printf '{}\\n' > .state/backups/fake.dump.offsite.verified.json
-  printf 'status=succeeded\\n'
+  cp "$dump.offsite.json" "$dump.offsite.verified.json"
+  sha="$(sha256sum "$dump")"
+  printf 'status=succeeded\\nbackup_sha256=%s\\n' "${sha%% *}"
 else
   printf 'status=succeeded\\n'
 fi
@@ -42,14 +80,29 @@ fi
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
+    fake_df = fake_bin / "df"
+    fake_df.write_text(
+        '#!/bin/bash\nprintf "Filesystem 1-blocks Used Available Capacity Mounted on\\n'
+        'test 60000000000 10000000000 %s 25%% /\\n" "$FAKE_FREE_BYTES"\n',
+        encoding="utf-8",
+    )
+    fake_df.chmod(0o755)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_DOCKER_CALLS": str(calls_file),
+        "FAKE_FREE_BYTES": "50000000000",
+        "HHRU_BACKUP_DAILY_RESERVE_BYTES": "10737418240",
+        "HHRU_BACKUP_DAILY_PRUNE_VERIFIED_LOCAL_DUMPS": "true",
         "HHRU_BACKUP_DAILY_ROOT_DIR": str(tmp_path),
     }
+    backup_file = tmp_path / ".state" / "backups" / "fake.dump"
+    backup_file.parent.mkdir(parents=True)
+    return env, calls_file, backup_file
 
-    result = subprocess.run(
+
+def _run_daily_backup(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["bash", str(DAILY_SCRIPT)],
         check=False,
         capture_output=True,
@@ -57,18 +110,31 @@ fi
         text=True,
     )
 
+
+def _backup_commands(calls_file: Path) -> list[str]:
+    calls = [line.split() for line in calls_file.read_text(encoding="utf-8").splitlines()]
+    return [call[call.index("app") + 1] for call in calls]
+
+
+def test_daily_backup_driver_runs_verified_pipeline_and_prunes_local_dump(
+    tmp_path: Path,
+) -> None:
+    env, calls_file, backup_file = _fake_daily_backup(tmp_path)
+    result = _run_daily_backup(env)
     assert result.returncode == 0, result.stderr
     assert "operation=daily_backup status=succeeded" in result.stdout
     calls = calls_file.read_text(encoding="utf-8").splitlines()
-    assert [call.split()[6] for call in calls] == [
+    assert _backup_commands(calls_file) == [
         "run-backup",
         "verify-backup-file",
         "sync-backup-offsite",
         "verify-backup-offsite",
     ]
     assert all("cleanup-backup-offsite" not in call for call in calls)
-    backup_file = tmp_path / ".state" / "backups" / "fake.dump"
+    assert "HHRU_BACKUP_MAX_DUMP_BYTES=39262581760" in calls[0]
+    assert "--backup-file .state/backups/fake.dump" in calls[2]
     assert not backup_file.exists()
+    assert not Path(f"{backup_file}.local-ready").exists()
     assert Path(f"{backup_file}.manifest.json").is_file()
     assert Path(f"{backup_file}.offsite.json").is_file()
     assert Path(f"{backup_file}.offsite.verified.json").is_file()
@@ -86,45 +152,122 @@ fi
 def test_daily_backup_driver_fails_before_offsite_when_local_verify_fails(
     tmp_path: Path,
 ) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    calls_file = tmp_path / "docker-calls.log"
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\\n' "$*" >> "$FAKE_DOCKER_CALLS"
-if [[ "$*" == *" run-backup "* ]]; then
-  printf 'status=succeeded\\nbackup_file=.state/backups/fake.dump\\n'
-elif [[ "$*" == *" verify-backup-file "* ]]; then
-  printf 'broken backup\\n' >&2
-  exit 1
-fi
-""",
-        encoding="utf-8",
-    )
-    fake_docker.chmod(0o755)
-    env = {
-        **os.environ,
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "FAKE_DOCKER_CALLS": str(calls_file),
-        "HHRU_BACKUP_DAILY_ROOT_DIR": str(tmp_path),
-    }
-
-    result = subprocess.run(
-        ["bash", str(DAILY_SCRIPT)],
-        check=False,
-        capture_output=True,
-        env=env,
-        text=True,
-    )
-
+    env, calls_file, backup_file = _fake_daily_backup(tmp_path)
+    env["FAKE_LOCAL_VERIFY_FAILURE"] = "yes"
+    result = _run_daily_backup(env)
     assert result.returncode == 1
-    calls = calls_file.read_text(encoding="utf-8").splitlines()
-    assert [call.split()[6] for call in calls] == [
+    assert not Path(f"{backup_file}.local-ready").exists()
+    assert _backup_commands(calls_file) == [
         "run-backup",
         "verify-backup-file",
     ]
+
+
+def test_daily_backup_resumes_one_previously_checked_dump_instead_of_creating_another(
+    tmp_path: Path,
+) -> None:
+    env, calls_file, backup_file = _fake_daily_backup(tmp_path)
+    assert _run_daily_backup({**env, "FAKE_SYNC_FAILURE": "yes"}).returncode == 1
+    assert backup_file.exists()
+    assert Path(f"{backup_file}.local-ready").exists()
+
+    calls_file.unlink()
+    result = _run_daily_backup({**env, "FAKE_FREE_BYTES": "12000000000"})
+    assert result.returncode == 0, result.stderr
+    assert "action=resume" in result.stdout
+    assert _backup_commands(calls_file) == [
+        "verify-backup-file",
+        "sync-backup-offsite",
+        "verify-backup-offsite",
+    ]
+    assert not backup_file.exists()
+
+
+def test_daily_backup_blocks_legacy_unconfirmed_dump(tmp_path: Path) -> None:
+    env, calls_file, backup_file = _fake_daily_backup(tmp_path)
+    backup_file.write_bytes(b"partial or unknown")
+    result = _run_daily_backup(env)
+    assert result.returncode == 1
+    assert "reason=unconfirmed_local_dump" in result.stderr
+    assert not calls_file.exists()
+    assert backup_file.read_bytes() == b"partial or unknown"
+
+
+def test_daily_backup_blocks_changed_pending_dump(tmp_path: Path) -> None:
+    env, calls_file, backup_file = _fake_daily_backup(tmp_path)
+    assert _run_daily_backup({**env, "FAKE_SYNC_FAILURE": "yes"}).returncode == 1
+    backup_file.write_bytes(b"changed")
+    calls_file.unlink()
+    result = _run_daily_backup(env)
+    assert result.returncode == 1
+    assert "reason=local_backup_hash_mismatch" in result.stderr
+    assert _backup_commands(calls_file) == ["verify-backup-file"]
+    assert backup_file.read_bytes() == b"changed"
+
+
+def test_daily_backup_blocks_low_space_based_on_latest_verified_size(tmp_path: Path) -> None:
+    env, calls_file, backup_file = _fake_daily_backup(tmp_path)
+    receipt = Path(f"{backup_file}.offsite.verified.json")
+    receipt.write_text(json.dumps({"backup_size_bytes": 23084281929}), encoding="utf-8")
+    result = _run_daily_backup({**env, "FAKE_FREE_BYTES": "34000000000"})
+    assert result.returncode == 1
+    assert "reason=insufficient_disk_space_preflight" in result.stderr
+    assert not calls_file.exists()
+
+
+def _run_dump_script(
+    tmp_path: Path, *, dump_body: str, max_bytes: str = ""
+) -> subprocess.CompletedProcess[str]:
+    fake_dump = tmp_path / "pg_dump"
+    fake_dump.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        'for arg in "$@"; do\n'
+        '  if [[ "$arg" == --file=* ]]; then out="${arg#--file=}"; fi\n'
+        "done\n"
+        '[[ "$out" == *.dump.partial.* ]]\n'
+        + dump_body
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_dump.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "HHRU_BACKUP_DIR": str(tmp_path / "backups"),
+        "HHRU_BACKUP_MAX_DUMP_BYTES": max_bytes,
+        "HHRU_DB_NAME": "test",
+        "HHRU_DB_USER": "test",
+        "HHRU_DB_PASSWORD": "test",
+    }
+    return subprocess.run(
+        ["bash", str(DUMP_SCRIPT)], env=env, check=False, capture_output=True, text=True,
+    )
+
+
+def test_dump_is_published_only_after_success(tmp_path: Path) -> None:
+    result = _run_dump_script(tmp_path, dump_body='printf complete >"$out"')
+    assert result.returncode == 0, result.stderr
+    dump, = (tmp_path / "backups").iterdir()
+    assert dump.suffix == ".dump"
+    assert dump.read_bytes() == b"complete"
+    assert f"backup_file={dump}" in result.stdout
+
+
+def test_failed_dump_removes_partial_file(tmp_path: Path) -> None:
+    result = _run_dump_script(tmp_path, dump_body='printf partial >"$out"\nexit 9')
+    assert result.returncode == 9
+    assert not list((tmp_path / "backups").iterdir())
+    assert "backup_file=" not in result.stdout
+
+
+def test_dump_cannot_grow_past_reserved_file_budget(tmp_path: Path) -> None:
+    result = _run_dump_script(
+        tmp_path, dump_body='dd if=/dev/zero of="$out" bs=1024 count=4 status=none',
+        max_bytes="2048",
+    )
+    assert result.returncode != 0
+    assert not list((tmp_path / "backups").iterdir())
+    assert "backup_file=" not in result.stdout
 
 
 def test_weekly_restore_driver_defaults_to_disk_light_integrity_drill(

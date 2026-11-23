@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pytest
 
 from hhru_platform.application.commands.run_backup import RunBackupCommand, run_backup
 from hhru_platform.application.commands.run_backup_offsite_restore_drill import (
@@ -21,6 +24,7 @@ from hhru_platform.config.settings import Settings
 from hhru_platform.infrastructure.backup.backup_service import (
     BackupArchiveSummary,
     BackupService,
+    BackupToolError,
     RestoreDrillSummary,
 )
 from hhru_platform.infrastructure.observability.metrics import FileBackedMetricsRegistry
@@ -59,6 +63,44 @@ def test_backup_service_inspects_backup_archive_with_hash_and_entry_count(tmp_pa
     assert summary.size_bytes == len(b"backup-payload")
     assert summary.sha256 == hashlib.sha256(b"backup-payload").hexdigest()
     assert summary.archive_entry_count == 2
+
+
+def _stub_pg_restore_list(monkeypatch, code: str) -> None:
+    popen = subprocess.Popen
+
+    def run_stub(args, **kwargs):
+        assert args == ["pg_restore", "--list"]
+        return popen([sys.executable, "-c", code], **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", run_stub)
+
+
+def test_inspect_backup_stream_hashes_data_after_pg_restore_exits(tmp_path, monkeypatch) -> None:
+    _stub_pg_restore_list(
+        monkeypatch,
+        "import sys; assert sys.stdin.buffer.read(3) == b'TOC'; print('1; TABLE sample')",
+    )
+    blocks = (b"TOC", b"x" * (1024 * 1024), b"last block")
+    backup_file = tmp_path / "sample.dump"
+
+    result = BackupService(repo_root=tmp_path).inspect_backup_stream(backup_file, iter(blocks))
+
+    assert result.archive_entry_count == 1
+    assert result.size_bytes == sum(map(len, blocks))
+    assert result.sha256 == hashlib.sha256(b"".join(blocks)).hexdigest()
+    assert not backup_file.exists()
+
+
+def test_inspect_backup_stream_does_not_ignore_pg_restore_failure(tmp_path, monkeypatch) -> None:
+    _stub_pg_restore_list(
+        monkeypatch,
+        "import sys; print('invalid archive', file=sys.stderr); sys.exit(1)",
+    )
+
+    with pytest.raises(BackupToolError, match="pg_restore failed: invalid archive"):
+        BackupService(repo_root=tmp_path).inspect_backup_stream(
+            tmp_path / "bad.dump", [b"x" * (1024 * 1024)]
+        )
 
 
 def test_backup_service_restore_to_target_db_verifies_required_tables(tmp_path) -> None:
@@ -308,8 +350,13 @@ def test_run_backup_offsite_restore_drill_downloads_parts_and_restores(tmp_path)
     )
 
 
+@pytest.mark.parametrize(
+    "error", [None, "part checksum mismatch", "streamed backup checksum", "S3 retry limit"]
+)
 def test_run_backup_offsite_integrity_drill_downloads_parts_without_restore(
     tmp_path,
+    monkeypatch,
+    error: str | None,
 ) -> None:
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
@@ -323,7 +370,7 @@ def test_run_backup_offsite_integrity_drill_downloads_parts_without_restore(
         "upload_mode": "parts",
         "backup_file": backup_file.name,
         "backup_size_bytes": len(backup_payload),
-        "backup_sha256": backup_sha256,
+        "backup_sha256": "0" * 64 if error == "streamed backup checksum" else backup_sha256,
         "chunk_size_bytes": 10,
         "parts": [
             {
@@ -345,46 +392,46 @@ def test_run_backup_offsite_integrity_drill_downloads_parts_without_restore(
     class FakeRemoteDownloader:
         def __init__(self) -> None:
             self.download_calls: list[str] = []
+            self.temp_dirs: set[Path] = set()
             self.payloads_by_remote_path = {
                 manifest_file.name: manifest_file.read_bytes(),
                 f"{backup_file.name}.parts/000001.part": parts[0],
-                f"{backup_file.name}.parts/000002.part": parts[1],
+                f"{backup_file.name}.parts/000002.part": (
+                    b"x" * len(parts[1]) if error == "part checksum mismatch" else parts[1]
+                ),
             }
 
         def download_file(self, *, local_file: Path, remote_path: str) -> None:
+            assert not list(local_file.parent.glob("*.part"))
+            assert not list(local_file.parent.glob("*.dump"))
+            self.temp_dirs.add(local_file.parent)
             self.download_calls.append(remote_path)
             local_file.write_bytes(self.payloads_by_remote_path[remote_path])
+            if remote_path.endswith("000002.part") and error == "S3 retry limit":
+                raise RuntimeError(error)
 
-    class StubBackupService:
-        def __init__(self) -> None:
-            self.inspected_backup_payload: bytes | None = None
-
-        def inspect_backup_file(self, backup_file: Path) -> BackupArchiveSummary:
-            self.inspected_backup_payload = backup_file.read_bytes()
-            return BackupArchiveSummary(
-                backup_file=backup_file,
-                size_bytes=backup_file.stat().st_size,
-                sha256=hashlib.sha256(self.inspected_backup_payload).hexdigest(),
-                archive_entry_count=11,
-            )
-
-        def restore_to_target_db(self, **kwargs) -> RestoreDrillSummary:  # pragma: no cover
-            raise AssertionError("integrity drill must not restore a database")
-
+    _stub_pg_restore_list(monkeypatch, "print('1; TABLE sample')")
     remote_downloader = FakeRemoteDownloader()
-    backup_service = StubBackupService()
+    command = RunBackupOffsiteIntegrityDrillCommand(
+        backup_file=backup_file,
+        backup_dir=backup_dir,
+        offsite_url="https://s3.example.test/bucket",
+        offsite_root="/hhru-platform/backups",
+        triggered_by="unit-test",
+        recorded_at=datetime(2026, 6, 28, 12, 0, tzinfo=UTC),
+    )
+    backup_service = BackupService(repo_root=tmp_path)
+    if error is not None:
+        with pytest.raises(RuntimeError, match=error):
+            run_backup_offsite_integrity_drill(
+                command, remote_downloader=remote_downloader, backup_service=backup_service
+            )
+        assert remote_downloader.temp_dirs
+        assert not any(path.exists() for path in remote_downloader.temp_dirs)
+        return
 
     result = run_backup_offsite_integrity_drill(
-        RunBackupOffsiteIntegrityDrillCommand(
-            backup_file=backup_file,
-            backup_dir=backup_dir,
-            offsite_url="https://s3.example.test/bucket",
-            offsite_root="/hhru-platform/backups",
-            triggered_by="unit-test",
-            recorded_at=datetime(2026, 6, 28, 12, 0, tzinfo=UTC),
-        ),
-        remote_downloader=remote_downloader,
-        backup_service=backup_service,  # type: ignore[arg-type]
+        command, remote_downloader=remote_downloader, backup_service=backup_service
     )
 
     assert result.status == "succeeded"
@@ -395,8 +442,8 @@ def test_run_backup_offsite_integrity_drill_downloads_parts_without_restore(
     assert result.chunk_size_bytes == 10
     assert result.part_count == 2
     assert result.downloaded_part_count == 2
-    assert result.archive_entry_count == 11
-    assert backup_service.inspected_backup_payload == backup_payload
+    assert result.archive_entry_count == 1
+    assert not any(path.exists() for path in remote_downloader.temp_dirs)
     assert remote_downloader.download_calls == [
         manifest_file.name,
         f"{backup_file.name}.parts/000001.part",

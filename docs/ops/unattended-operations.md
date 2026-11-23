@@ -92,15 +92,32 @@ stops them when an active crawl run appears. The production search controller is
 also separate from heavy-ops lock; it gates on failed units, disk space, active
 crawl runs and first-detail backlog before starting a long search run.
 
-Daily backup prunes local `.dump` files immediately after exact S3 verification
-when adjacent `.manifest.json`, `.offsite.json` and `.offsite.verified.json`
-receipts exist. This keeps the local dump as a short technical artifact rather
+Daily backup prunes only the selected local `.dump` after exact S3 verification,
+matching the manifest and both offsite receipts. It keeps the receipts and
+manifest. This keeps the local dump as a short technical artifact rather
 than long-term storage, while preserving the sidecars required for offsite
 integrity/restore drills. Set
 `HHRU_BACKUP_DAILY_PRUNE_VERIFIED_LOCAL_DUMPS=false` only for a deliberate local
 restore/debug window. The older age-based
 `HHRU_BACKUP_DAILY_LOCAL_RETENTION_DAYS=1` remains as a safety net for local
-dumps that were not yet offsite-verified.
+dumps; the daily driver first refuses ambiguous or unconfirmed pending dumps.
+
+Daily backup holds the existing storage locks across admission and the pipeline.
+One unverified dump with a daily-driver `.local-ready` SHA-256 marker is checked
+again and uploaded by exact path, without creating a second dump. Multiple
+pending dumps, a missing marker (including legacy files), or a changed dump stop
+the cycle for operator review. Do not create a marker for an incomplete dump.
+
+For a new dump, the driver requires free bytes on the backup filesystem of
+at least the latest verified dump size plus 10 percent and
+`HHRU_BACKUP_DAILY_RESERVE_BYTES` (10 GiB by default, configurable in
+`backup-daily.env`). With no previous receipt it uses a 1 GiB size estimate;
+the child process is still capped at the available bytes minus the reserve.
+`pg_dump` writes a temporary `.dump.partial.*` file, published as `.dump` only
+after success. A normal command failure cleans up the temporary output. A host
+crash or SIGKILL can leave a partial file for inspection; it is never uploaded
+as a completed dump. The file-size cap does not constrain unrelated writers or
+replace capacity monitoring.
 
 ## 3. Safety Boundary
 

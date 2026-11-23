@@ -353,6 +353,54 @@ def test_sync_backup_offsite_uploads_latest_backup_and_manifest_once(
     assert second_uploader.upload_calls == []
 
 
+def test_sync_backup_offsite_targets_an_explicit_dump(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    selected = backup_dir / "old.dump"
+    newest = backup_dir / "new.dump"
+    selected.write_bytes(b"selected")
+    newest.write_bytes(b"ignored")
+    uploader = FakeOffsiteUploader()
+    result = sync_backup_offsite(
+        SyncBackupOffsiteCommand(
+            backup_dir=backup_dir,
+            backup_file=selected,
+            offsite_url="https://example.test",
+            username="test",
+            password="example",
+        ),
+        offsite_uploader=uploader,
+        receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+    )
+    assert result.scanned_backup_count == 1
+    assert result.summaries[0].backup_file == selected
+    assert uploader.upload_calls[0][1] == b"selected"
+    assert not Path(f"{newest}.manifest.json").exists()
+
+
+def test_sync_backup_offsite_refuses_dumps_outside_backup_dir(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    outside = tmp_path / "outside.dump"
+    outside.write_bytes(b"must not upload")
+    link = backup_dir / "link.dump"
+    link.symlink_to(outside)
+    uploader = FakeOffsiteUploader()
+    with pytest.raises(ValueError, match="inside backup_dir"):
+        sync_backup_offsite(
+            SyncBackupOffsiteCommand(
+                backup_dir=backup_dir,
+                backup_file=link,
+                offsite_url="https://example.test",
+                username="test",
+                password="example",
+            ),
+            offsite_uploader=uploader,
+            receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+        )
+    assert uploader.upload_calls == []
+
+
 class FailingOnceOffsiteUploader:
     def __init__(self) -> None:
         self.upload_calls: list[tuple[str, bytes]] = []

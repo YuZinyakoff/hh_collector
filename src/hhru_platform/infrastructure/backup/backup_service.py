@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Iterable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import BinaryIO, Final
 
 from hhru_platform.config.settings import Settings, get_settings
 
@@ -82,6 +84,56 @@ class BackupService:
             backup_file=backup_path,
             size_bytes=backup_path.stat().st_size,
             sha256=_sha256(backup_path),
+            archive_entry_count=archive_entry_count,
+        )
+
+    def inspect_backup_stream(
+        self, backup_file: Path, blocks: Iterable[bytes]
+    ) -> BackupArchiveSummary:
+        """Inspect the archive TOC and hash the complete stream without materializing it."""
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            try:
+                process = subprocess.Popen(
+                    ["pg_restore", "--list"],
+                    stdin=subprocess.PIPE,
+                    stdout=stdout,
+                    stderr=stderr,
+                    cwd=str(self._repo_root),
+                )
+            except FileNotFoundError as error:
+                raise BackupToolError("backup tool not found: pg_restore") from error
+            with process:
+                stdin = process.stdin
+                assert stdin is not None
+                try:
+                    for block in blocks:
+                        size_bytes += len(block)
+                        digest.update(block)
+                        if not stdin.closed:
+                            try:
+                                stdin.write(block)
+                            except BrokenPipeError:
+                                # pg_restore may exit after reading only the TOC.
+                                with suppress(BrokenPipeError):
+                                    stdin.close()
+                                _check_archive_list_status(process, stderr)
+                except BaseException:
+                    process.kill()
+                    raise
+                finally:
+                    with suppress(BrokenPipeError):
+                        stdin.close()
+                _check_archive_list_status(process, stderr)
+            stdout.seek(0)
+            archive_entry_count = _count_archive_entries(stdout.read().decode(errors="replace"))
+        if archive_entry_count <= 0:
+            raise BackupToolError(f"backup archive has no restorable entries: {backup_file}")
+        return BackupArchiveSummary(
+            backup_file=backup_file,
+            size_bytes=size_bytes,
+            sha256=digest.hexdigest(),
             archive_entry_count=archive_entry_count,
         )
 
@@ -208,6 +260,13 @@ class BackupService:
         if not script_path.is_file():
             raise BackupToolError(f"backup script not found: {script_path}")
         return script_path
+
+
+def _check_archive_list_status(process: subprocess.Popen[bytes], stderr: BinaryIO) -> None:
+    if process.wait() != 0:
+        stderr.seek(0)
+        details = stderr.read().decode(errors="replace").strip() or "unknown error"
+        raise BackupToolError(f"pg_restore failed: {details}")
 
 
 def _count_archive_entries(payload: str) -> int:

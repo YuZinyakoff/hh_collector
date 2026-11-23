@@ -42,6 +42,7 @@ class SyncBackupOffsiteCommand:
     limit: int | None = 1
     triggered_by: str = "sync-backup-offsite"
     synced_at: datetime | None = None
+    backup_file: Path | None = None
 
     def __post_init__(self) -> None:
         normalized_triggered_by = self.triggered_by.strip()
@@ -67,6 +68,8 @@ class SyncBackupOffsiteCommand:
             raise ValueError("chunk_size_bytes must be greater than or equal to one")
         if self.limit is not None and self.limit < 1:
             raise ValueError("limit must be greater than or equal to one")
+        if self.backup_file is not None and self.limit not in (None, 1):
+            raise ValueError("an explicit backup file cannot be used with limit greater than one")
 
         basic_auth = bool(normalized_username and normalized_password)
         bearer_auth = bool(normalized_bearer_token)
@@ -179,7 +182,17 @@ def sync_backup_offsite(
 
     try:
         backup_root = command.backup_dir.resolve()
-        backup_files = _list_backup_files(backup_root=backup_root, limit=command.limit)
+        if command.backup_file is None:
+            backup_files = _list_backup_files(backup_root=backup_root, limit=command.limit)
+        else:
+            backup_file = command.backup_file.resolve()
+            if (
+                not backup_file.is_relative_to(backup_root)
+                or backup_file.suffix != ".dump"
+                or not backup_file.is_file()
+            ):
+                raise ValueError("backup_file must be an existing .dump inside backup_dir")
+            backup_files = [backup_file]
         summaries = tuple(
             _sync_one_backup(
                 command=command,

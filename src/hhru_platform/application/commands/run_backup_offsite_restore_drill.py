@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -348,6 +349,9 @@ def _run_backup_offsite_integrity_drill(
 
     recorded_at = command.recorded_at or datetime.now(UTC)
     parts = _manifest_parts(manifest_payload)
+    expected_size = _payload_int(manifest_payload, "backup_size_bytes")
+    expected_sha256 = str(manifest_payload["backup_sha256"])
+    downloaded_parts: list[BackupOffsiteDownloadedPart] = []
     with tempfile.TemporaryDirectory(prefix="hhru-backup-offsite-integrity-") as temp_dir:
         temp_root = Path(temp_dir)
         _download_and_verify_remote_manifest(
@@ -356,21 +360,25 @@ def _run_backup_offsite_integrity_drill(
             remote_manifest_relative_path=manifest_relative_path,
             temp_root=temp_root,
         )
-        assembled_backup = temp_root / backup_file.name
-        downloaded_parts = _download_and_assemble_parts(
-            remote_downloader=remote_downloader,
-            parts=parts,
-            assembled_backup=assembled_backup,
-            operation="run_backup_offsite_integrity_drill",
-        )
-        expected_size = _payload_int(manifest_payload, "backup_size_bytes")
-        expected_sha256 = str(manifest_payload["backup_sha256"])
-        _verify_assembled_backup(
-            assembled_backup=assembled_backup,
-            expected_size=expected_size,
-            expected_sha256=expected_sha256,
-        )
-        archive_summary = backup_service.inspect_backup_file(assembled_backup)
+
+        def blocks() -> Iterator[bytes]:
+            for part, part_file in _download_verified_parts(
+                remote_downloader=remote_downloader,
+                parts=parts,
+                temp_root=temp_root,
+                operation="run_backup_offsite_integrity_drill",
+            ):
+                yield from _file_blocks(part_file)
+                downloaded_parts.append(part)
+
+        archive_summary = backup_service.inspect_backup_stream(backup_file, blocks())
+        if archive_summary.size_bytes != expected_size:
+            raise RuntimeError(
+                f"streamed backup size mismatch: expected={expected_size} "
+                f"actual={archive_summary.size_bytes}"
+            )
+        if archive_summary.sha256 != expected_sha256:
+            raise RuntimeError("streamed backup checksum mismatch")
 
     return _to_integrity_result(
         command=command,
@@ -479,64 +487,75 @@ def _download_and_assemble_parts(
 ) -> list[BackupOffsiteDownloadedPart]:
     downloaded_parts: list[BackupOffsiteDownloadedPart] = []
     with assembled_backup.open("wb") as assembled_handle:
-        for expected_index, part in enumerate(parts, start=1):
-            part_index = _payload_int(part, "index")
-            if part_index != expected_index:
-                raise RuntimeError(
-                    f"backup manifest part index is not sequential: "
-                    f"expected={expected_index} actual={part_index}"
-                )
-            remote_path = str(part["file"])
-            expected_size = _payload_int(part, "size_bytes")
-            expected_sha256 = str(part["sha256"])
-            part_file = assembled_backup.parent / Path(remote_path).name
-            log_event(
-                LOGGER,
-                logging.INFO,
-                f"{operation}.part_download.started",
-                operation=operation,
-                status="started",
-                part_index=part_index,
-                part_count=len(parts),
-                part_size_bytes=expected_size,
-                remote_path=remote_path,
-            )
-            remote_downloader.download_file(local_file=part_file, remote_path=remote_path)
-            actual_size = part_file.stat().st_size
-            if actual_size != expected_size:
-                raise RuntimeError(
-                    f"downloaded part size mismatch for {remote_path}: "
-                    f"expected={expected_size} actual={actual_size}"
-                )
-            actual_sha256 = _sha256_file(part_file)
-            if actual_sha256 != expected_sha256:
-                raise RuntimeError(
-                    f"downloaded part checksum mismatch for {remote_path}: "
-                    f"expected={expected_sha256} actual={actual_sha256}"
-                )
-            with part_file.open("rb") as part_handle:
-                for chunk in iter(lambda: part_handle.read(1024 * 1024), b""):
-                    assembled_handle.write(chunk)
-            part_file.unlink()
-            downloaded_parts.append(
-                BackupOffsiteDownloadedPart(
-                    remote_path=remote_path,
-                    size_bytes=actual_size,
-                    sha256=actual_sha256,
-                )
-            )
-            log_event(
-                LOGGER,
-                logging.INFO,
-                f"{operation}.part_download.succeeded",
-                operation=operation,
-                status="succeeded",
-                part_index=part_index,
-                part_count=len(parts),
-                part_size_bytes=actual_size,
-                remote_path=remote_path,
-            )
+        for part, part_file in _download_verified_parts(
+            remote_downloader=remote_downloader,
+            parts=parts,
+            temp_root=assembled_backup.parent,
+            operation=operation,
+        ):
+            for block in _file_blocks(part_file):
+                assembled_handle.write(block)
+            downloaded_parts.append(part)
     return downloaded_parts
+
+
+def _download_verified_parts(
+    *,
+    remote_downloader: BackupOffsiteRemoteDownloader,
+    parts: list[dict[str, object]],
+    temp_root: Path,
+    operation: str,
+) -> Iterator[tuple[BackupOffsiteDownloadedPart, Path]]:
+    for expected_index, part in enumerate(parts, start=1):
+        part_index = _payload_int(part, "index")
+        if part_index != expected_index:
+            raise RuntimeError(
+                f"backup manifest part index is not sequential: "
+                f"expected={expected_index} actual={part_index}"
+            )
+        remote_path = str(part["file"])
+        expected_size = _payload_int(part, "size_bytes")
+        expected_sha256 = str(part["sha256"])
+        part_file = temp_root / f"download-{part_index:06d}.part"
+        log_event(
+            LOGGER,
+            logging.INFO,
+            f"{operation}.part_download.started",
+            operation=operation,
+            status="started",
+            part_index=part_index,
+            part_count=len(parts),
+            part_size_bytes=expected_size,
+            remote_path=remote_path,
+        )
+        remote_downloader.download_file(local_file=part_file, remote_path=remote_path)
+        actual_size = part_file.stat().st_size
+        if actual_size != expected_size:
+            raise RuntimeError(
+                f"downloaded part size mismatch for {remote_path}: "
+                f"expected={expected_size} actual={actual_size}"
+            )
+        actual_sha256 = _sha256_file(part_file)
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"downloaded part checksum mismatch for {remote_path}: "
+                f"expected={expected_sha256} actual={actual_sha256}"
+            )
+        log_event(
+            LOGGER,
+            logging.INFO,
+            f"{operation}.part_download.succeeded",
+            operation=operation,
+            status="succeeded",
+            part_index=part_index,
+            part_count=len(parts),
+            part_size_bytes=actual_size,
+            remote_path=remote_path,
+        )
+        try:
+            yield BackupOffsiteDownloadedPart(remote_path, actual_size, actual_sha256), part_file
+        finally:
+            part_file.unlink(missing_ok=True)
 
 
 def _manifest_parts(manifest_payload: dict[str, object]) -> list[dict[str, object]]:
@@ -568,11 +587,13 @@ def _payload_int(payload: dict[str, object], key: str) -> int:
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _file_blocks(path: Path) -> Iterator[bytes]:
+    with path.open("rb") as handle:
+        yield from iter(lambda: handle.read(1024 * 1024), b"")
 
 
 def _normalize_offsite_root(offsite_root: str) -> str:

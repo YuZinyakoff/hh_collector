@@ -124,6 +124,11 @@ def register_backup_commands(
         help="Maximum latest backup dumps to inspect in one run. Defaults to 1.",
     )
     offsite_parser.add_argument(
+        "--backup-file",
+        type=Path,
+        help="Upload only this existing dump inside HHRU_BACKUP_DIR.",
+    )
+    offsite_parser.add_argument(
         "--triggered-by",
         default="sync-backup-offsite",
         help=(
@@ -506,6 +511,7 @@ def _build_backup_offsite_command_and_uploader(
             timeout_seconds=settings.backup_offsite_timeout_seconds,
             chunk_size_bytes=chunk_size_bytes,
             limit=args.limit,
+            backup_file=args.backup_file,
             triggered_by=str(args.triggered_by),
         )
         s3_uploader = S3BackupOffsiteUploader.with_credentials(
@@ -535,6 +541,7 @@ def _build_backup_offsite_command_and_uploader(
         timeout_seconds=settings.backup_offsite_timeout_seconds,
         chunk_size_bytes=chunk_size_bytes,
         limit=args.limit,
+        backup_file=args.backup_file,
         triggered_by=str(args.triggered_by),
     )
     if command.auth_mode == "bearer":

@@ -15,6 +15,28 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_file="${backup_dir%/}/${backup_prefix}_${db_name}_${timestamp}.dump"
 max_dump_bytes="${HHRU_BACKUP_MAX_DUMP_BYTES:-}"
 
+dump_args=(
+  --host="${db_host}"
+  --port="${db_port}"
+  --username="${db_user}"
+  --dbname="${db_name}"
+  --format=custom
+  --compress=9
+  --clean
+  --if-exists
+  --create
+  --no-owner
+  --no-privileges
+)
+export PGPASSWORD="${db_password}"
+
+if [[ "$#" == 1 && "${1:-}" == --stdout ]]; then
+  exec pg_dump "${dump_args[@]}"
+elif (( $# != 0 )); then
+  printf 'usage: backup_postgres.sh [--stdout]\n' >&2
+  exit 2
+fi
+
 mkdir -p "${backup_dir}"
 
 if [[ -n "$max_dump_bytes" ]] &&
@@ -29,25 +51,11 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-export PGPASSWORD="${db_password}"
-
 (
   if [[ -n "$max_dump_bytes" ]]; then
     ulimit -f "$((max_dump_bytes / 1024))"
   fi
-  exec pg_dump \
-    --host="${db_host}" \
-    --port="${db_port}" \
-    --username="${db_user}" \
-    --dbname="${db_name}" \
-    --format=custom \
-    --compress=9 \
-    --clean \
-    --if-exists \
-    --create \
-    --no-owner \
-    --no-privileges \
-    --file="${partial_file}"
+  exec pg_dump "${dump_args[@]}" --file="${partial_file}"
 )
 
 # Publish only a completed dump; the hard link also refuses a name collision.

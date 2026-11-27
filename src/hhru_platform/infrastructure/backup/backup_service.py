@@ -4,11 +4,11 @@ import hashlib
 import os
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
-from contextlib import suppress
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Final
+from typing import IO, BinaryIO, Final
 
 from hhru_platform.config.settings import Settings, get_settings
 
@@ -69,6 +69,33 @@ class BackupService:
         if not backup_file_value:
             raise BackupToolError("backup script did not report backup_file")
         return self.inspect_backup_file(Path(backup_file_value))
+
+    @contextmanager
+    def open_backup_stream(self) -> Iterator[IO[bytes]]:
+        """Read pg_dump stdout and require a successful exit after the stream is consumed."""
+        with tempfile.TemporaryFile() as stderr:
+            try:
+                process = subprocess.Popen(
+                    ["bash", str(self._script_path("backup_postgres.sh")), "--stdout"],
+                    stdout=subprocess.PIPE,
+                    stderr=stderr,
+                    cwd=str(self._repo_root),
+                    env=self._database_environment(),
+                )
+            except FileNotFoundError as error:
+                raise BackupToolError("backup tool not found: bash") from error
+            with process:
+                assert process.stdout is not None
+                try:
+                    with process.stdout as stream:
+                        yield stream
+                except BaseException:
+                    process.kill()
+                    raise
+                if process.wait() != 0:
+                    stderr.seek(0)
+                    details = stderr.read().decode(errors="replace").strip()
+                    raise BackupToolError(f"pg_dump failed: {details or process.returncode}")
 
     def inspect_backup_file(self, backup_file: Path | str) -> BackupArchiveSummary:
         backup_path = Path(backup_file).expanduser()

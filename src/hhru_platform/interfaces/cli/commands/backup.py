@@ -24,6 +24,10 @@ from hhru_platform.application.commands.run_restore_drill import (
     RunRestoreDrillCommand,
     run_restore_drill,
 )
+from hhru_platform.application.commands.stream_backup_offsite import (
+    StreamBackupOffsiteCommand,
+    stream_backup_offsite,
+)
 from hhru_platform.application.commands.sync_backup_offsite import (
     BackupOffsiteUploader,
     SyncBackupOffsiteCommand,
@@ -45,6 +49,8 @@ from hhru_platform.infrastructure.backup import (
 )
 from hhru_platform.infrastructure.housekeeping import WebDavArchiveUploader
 from hhru_platform.infrastructure.observability.metrics import get_metrics_registry
+
+STREAM_BACKUP_PILOT_DIR = Path(".state/reports/streaming-backup-pilot")
 
 
 def register_backup_commands(
@@ -146,6 +152,24 @@ def register_backup_commands(
         ),
     )
     offsite_parser.set_defaults(handler=handle_sync_backup_offsite)
+
+    stream_parser = subparsers.add_parser(
+        "stream-backup-offsite",
+        help="Pilot: stream PostgreSQL to an isolated S3 prefix without a local dump.",
+    )
+    stream_parser.add_argument(
+        "--max-backup-bytes",
+        type=int,
+        required=True,
+        help="Maximum compressed size of one pilot generation, excluding retransmissions.",
+    )
+    stream_parser.add_argument(
+        "--chunk-size-bytes",
+        type=int,
+        help="Part size, up to 64 MiB; defaults to HHRU_BACKUP_OFFSITE_CHUNK_SIZE_BYTES.",
+    )
+    stream_parser.add_argument("--triggered-by", default="stream-backup-offsite-pilot")
+    stream_parser.set_defaults(handler=handle_stream_backup_offsite)
 
     verify_offsite_parser = subparsers.add_parser(
         "verify-backup-offsite",
@@ -388,6 +412,69 @@ def handle_sync_backup_offsite(args: argparse.Namespace) -> int:
 
     _print_sync_backup_offsite_summary(result)
     return 0
+
+
+def handle_stream_backup_offsite(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    try:
+        command, uploader = _build_stream_backup_pilot(args=args, settings=settings)
+        result = stream_backup_offsite(
+            command,
+            backup_service=BackupService(settings),
+            offsite_uploader=uploader,
+            receipt_store=LocalBackupOffsiteUploadReceiptStore(),
+        )
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    print("completed streaming backup pilot")
+    print("status=succeeded")
+    print(f"backup_dir={command.backup_dir}")
+    print(f"offsite_root={command.offsite_root}")
+    print(f"backup_file={result.backup_file}")
+    print(f"manifest_file={result.manifest_file}")
+    print(f"receipt_file={result.receipt_file}")
+    print(f"backup_size_bytes={result.backup_size_bytes}")
+    print(f"backup_sha256={result.backup_sha256}")
+    print(f"part_count={result.part_count}")
+    return 0
+
+
+def _build_stream_backup_pilot(
+    *, args: argparse.Namespace, settings: Settings
+) -> tuple[StreamBackupOffsiteCommand, BackupOffsiteUploader]:
+    if settings.backup_offsite_backend.strip().lower() != "s3":
+        raise ValueError("stream-backup-offsite pilot requires the S3 backend")
+    root = settings.backup_offsite_root.strip().rstrip("/")
+    if not root or root.endswith("-streaming-pilot"):
+        raise ValueError("configure the regular backup prefix for the streaming pilot")
+    live_dir = Path(settings.backup_dir).resolve()
+    pilot_dir = STREAM_BACKUP_PILOT_DIR.resolve()
+    if pilot_dir.is_relative_to(live_dir) or live_dir.is_relative_to(pilot_dir):
+        raise ValueError("streaming pilot directory must not overlap the regular backup directory")
+    pilot_settings = settings.model_copy(
+        update={"backup_dir": str(pilot_dir), "backup_offsite_root": f"{root}-streaming-pilot"}
+    )
+    sync_command, uploader = _build_backup_offsite_command_and_uploader(
+        args=argparse.Namespace(
+            backup_file=None,
+            chunk_size_bytes=args.chunk_size_bytes,
+            limit=1,
+            triggered_by=args.triggered_by,
+        ),
+        settings=pilot_settings,
+    )
+    command = StreamBackupOffsiteCommand(
+        backup_dir=pilot_dir,
+        backup_name_prefix=f"{settings.backup_prefix}_{settings.db_name}",
+        offsite_url=sync_command.offsite_url,
+        offsite_root=sync_command.offsite_root,
+        chunk_size_bytes=sync_command.chunk_size_bytes,
+        max_backup_bytes=args.max_backup_bytes,
+        triggered_by=sync_command.triggered_by,
+    )
+    return command, uploader
 
 
 def handle_verify_backup_offsite(args: argparse.Namespace) -> int:
